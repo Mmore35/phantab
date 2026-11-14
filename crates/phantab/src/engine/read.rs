@@ -26,13 +26,14 @@ const MAX_TEXT: usize = 18_000;
 /// get [`PAGE_TEXT_LIMIT`].
 const MAX_ELEMENT_TEXT: usize = 160;
 const MAX_HREF: usize = super::URL_LIMIT;
-const ELEMENT_FIELDS: [(&str, usize); 6] = [
+const ELEMENT_FIELDS: [(&str, usize); 7] = [
     ("tag", PAGE_TEXT_LIMIT),
     ("id", PAGE_TEXT_LIMIT),
     ("name", PAGE_TEXT_LIMIT),
     ("type", PAGE_TEXT_LIMIT),
     ("text", MAX_ELEMENT_TEXT),
     ("href", MAX_HREF),
+    ("selected", MAX_ELEMENT_TEXT),
 ];
 
 /// A call's abort signal (`AbortSignal`): set when the page detached or closed under the call.

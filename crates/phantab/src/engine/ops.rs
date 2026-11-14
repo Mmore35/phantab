@@ -15,7 +15,7 @@ use super::recover::Failed;
 use super::{Engine, PAGE_TEXT_LIMIT, cut};
 use crate::bridge::{Profile, TabId};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::{ACTIONABLE, CLICK, PRESENT};
+use crate::page_js::{ACTIONABLE, CLICK, PRESENT, SELECT_OPTIONS};
 use crate::signin::{Phase, SignInRecord};
 use crate::util::{js_string, random_hex, same_secret, truthy};
 
@@ -593,7 +593,11 @@ impl Engine {
                                     type_of(value)
                                 ))));
                             };
-                            p.select(&selector, std::slice::from_ref(v)).await.map_err(|e| said(e.into()))?;
+                            let options =
+                                p.eval_on_selector(&selector, SELECT_OPTIONS).await.map_err(|e| said(e.into()))?;
+                            let v = pick_option(&options, v)
+                                .map_err(|why| Failed::Settled(EngineError(format!("{selector}: {why}"))))?;
+                            p.select(&selector, &[v]).await.map_err(|e| said(e.into()))?;
                         }
                         // A timed-out key-down never gets its key-up, and the next press of that key would then go
                         // out as a repeat.
@@ -1025,6 +1029,37 @@ impl Engine {
     }
 }
 
+/// The option value a select of `want` picks, from `options` (`select_options.js`'s `[value, label]`
+/// list): the option whose value is `want`, else the one whose label is (trimmed, case aside), so the
+/// label a snapshot shows works as well as the value behind it. Anything but a list (not a `<select>`)
+/// leaves `want` as it is, for the select itself to refuse. No match is an error naming the options: a
+/// select that matched nothing used to succeed with nothing chosen.
+fn pick_option(options: &Value, want: &str) -> Result<String, String> {
+    let Some(list) = options.as_array() else { return Ok(want.to_owned()) };
+    let pairs: Vec<(&str, &str)> = list
+        .iter()
+        .filter_map(|o| Some((o.get(0)?.as_str()?, o.get(1)?.as_str()?)))
+        .collect();
+    if pairs.iter().any(|(value, _)| *value == want) {
+        return Ok(want.to_owned());
+    }
+    let folded = want.trim().to_lowercase();
+    if let Some((value, _)) = pairs.iter().find(|(_, label)| label.trim().to_lowercase() == folded) {
+        return Ok((*value).to_owned());
+    }
+    let named: Vec<String> = pairs
+        .iter()
+        .map(|(value, label)| {
+            if value == label { format!("{value:?}") } else { format!("{label:?} (value {value:?})") }
+        })
+        .collect();
+    Err(format!(
+        "no option has the value or label {:?}; the options are {}",
+        cut(want, PAGE_TEXT_LIMIT),
+        cut(&named.join(", "), PAGE_TEXT_LIMIT)
+    ))
+}
+
 #[allow(clippy::cast_possible_truncation, reason = "a tab id far outside i64 is not a tab id anyway")]
 fn js_int(f: f64) -> i64 {
     f as i64
@@ -1041,5 +1076,22 @@ mod tests {
         // The page chose the covering element's id; nothing was sent, so the error stays as it is.
         let covered = format!("{}<div#timed out>, so the click was not sent.", phantab_cdp::COVERED_PREFIX);
         assert_eq!(unconfirmed(EngineError(covered.clone()), "click").0, covered);
+    }
+
+    #[test]
+    fn a_select_matches_a_value_then_a_label() {
+        let options = json!([["", "Month"], ["1", "January"], ["3", "March"], ["May", "May"]]);
+        assert_eq!(pick_option(&options, "3").unwrap(), "3");
+        assert_eq!(pick_option(&options, "March").unwrap(), "3");
+        assert_eq!(pick_option(&options, " march ").unwrap(), "3");
+        assert_eq!(pick_option(&options, "May").unwrap(), "May");
+        // A value wins over another option's label.
+        let tricky = json!([["March", "Third"], ["3", "March"]]);
+        assert_eq!(pick_option(&tricky, "March").unwrap(), "March");
+        let none = pick_option(&options, "Marzo").unwrap_err();
+        assert!(none.starts_with("no option has the value or label \"Marzo\"; the options are \"Month\" (value \"\")"), "{none}");
+        assert!(none.contains("\"March\" (value \"3\")") && none.contains("\"May\""), "{none}");
+        // Not a <select>: left to the select itself.
+        assert_eq!(pick_option(&Value::Null, "x").unwrap(), "x");
     }
 }

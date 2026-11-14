@@ -16,6 +16,9 @@ pub const READ_FRAME: &str = include_str!("read_frame.js");
 pub const TITLE_IS: &str = include_str!("title_is.js");
 /// `act`'s click in a hidden workspace window: a DOM click, since hidden targets paint no frames.
 pub const CLICK: &str = include_str!("click.js");
+/// `act`'s select: each `[value, label]` of a `<select>`'s options, or null for any other element, so a
+/// select can be matched by the label a person sees as well as by its value.
+pub const SELECT_OPTIONS: &str = include_str!("select_options.js");
 
 /// What the main frame says about a
 /// verification check. It only reads. It counts the provider response fields by value length and never
@@ -30,6 +33,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("read_frame.js", READ_FRAME),
     ("title_is.js", TITLE_IS),
     ("click.js", CLICK),
+    ("select_options.js", SELECT_OPTIONS),
 ];
 
 /// The hardened reads, each `(file, the plain read, phantab's text)`: reads through
@@ -123,9 +127,10 @@ pub(crate) mod tests {
     const GOLDEN: &[(&str, &str)] = &[
         ("actionable.js", "af6058452f786175ae70af8485f22cd06e2a03de5ce28695155d939302078869"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
-        ("read_frame.js", "aa26da5a270d0f7db10c63fdcda2087a1d19865cf3249dd0227fe73af256bf16"),
+        ("read_frame.js", "7afc0a457a986c1a41c9fd93e42d091c0f45e020ed02e6ece8e4fed7ebd28176"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),
         ("click.js", "67034e2d21ed6407789dba9496c5cfff6baf6e589fb6527f37d45b26b8de654a"),
+        ("select_options.js", "00a830ec9a4699ccc585f0855d24b786e8e438e7760061384886436e3a6b2d1a"),
     ];
 
     /// `(name, SHA-256)` of each `(name, body)`, after checking each body is one expression's text.

@@ -78,7 +78,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "snapshot",
-            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. Controls marked fN (frame N of the FRAMES line) or shadow take click_xy and press, because selectors reach the main document only. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. Values in input fields are not read; text the page displays is, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything.",
+            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. Controls marked fN (frame N of the FRAMES line) or shadow take click_xy and press, because selectors reach the main document only. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. Typed values in input fields are not read, but a ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything.",
             json!({ "pageId": s(), "full": { "type": "boolean" } }),
             &["pageId"],
         ),
@@ -348,6 +348,7 @@ impl Shown {
                     }
                     ("inShadow", Value::Bool(true)) => line.push_str(" shadow"),
                     ("offscreen", Value::Bool(true)) => line.push_str(" offscreen"),
+                    ("checked", Value::Bool(true)) => line.push_str(" checked"),
                     ("frame", Value::String(s)) => {
                         let n = frames.iter().position(|f| f == s).unwrap_or_else(|| {
                             frames.push(s.clone());

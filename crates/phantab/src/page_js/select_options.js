@@ -1,0 +1,1 @@
+e=>e instanceof HTMLSelectElement?Array.prototype.map.call(Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'options').get.call(e),o=>[Object.getOwnPropertyDescriptor(HTMLOptionElement.prototype,'value').get.call(o),Object.getOwnPropertyDescriptor(HTMLOptionElement.prototype,'label').get.call(o)]):null

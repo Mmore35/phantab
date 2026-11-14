@@ -1258,7 +1258,7 @@ These remain after every requirement holds. The README must say them in plain wo
 - **R7 Other extensions.** An extension with debugger or all-sites access can do anything phantab can
   in the profile. Quiet debugging hides its debugger use too (SR-49). An extension drawing into an
   open shadow root is read as page content.
-- **R8 Third-party frames are read.** Snapshots read website frames, a payment frame included. Values in inputs stay unread; displayed text does not.
+- **R8 Third-party frames are read.** Snapshots read website frames, a payment frame included. Typed values in inputs stay unread; displayed text does not, and neither does whether a box or radio is ticked or which option a select shows.
 - **R9 Viewer fragment.** The viewer token sits in the `/view` URL fragment until the page strips it. An extension with access to that tab can read it first.
 - **R10 Provider parent check.** A provider that checks its parent process must expect
   `phantab serve`; one written for another parent fails closed, and sign-in answers `refused`.

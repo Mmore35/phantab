@@ -10,6 +10,11 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   the page has stopped changing for 1.5 s, instead of after the full 10 s: `#x: not found after 1.6 s,
   and the page had stopped changing`. A page that is still loading or changing keeps the 10 s. In an
   agent benchmark, a guessed selector cost the app and shop tasks about 9 s each.
+- A `browser_act` select also matches an option by the label a person sees (`March`), not only by its
+  value (`3`), and one that matches no option fails and lists the options; before, it succeeded with
+  nothing chosen. A snapshot marks a ticked checkbox or radio `checked` and shows a select's chosen
+  option as `selected="March"`; typed values are still never read. In an agent benchmark's sign-up
+  task, every run took two screenshots to check what the form held.
 
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
