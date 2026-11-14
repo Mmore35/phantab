@@ -34,6 +34,8 @@ export CARGO_TARGET_DIR=target-<yours>
 ```
 PowerShell: `. scripts/dev-env.ps1`.
 
+Each worktree's cargo target dir grows to 7–34 GB: remove it once that branch's work is done.
+
 A copy of the tree (a `git archive` export, a mutation copy) and a worktree that share one target dir
 reuse each other's builds, as two worktrees do (`CONTRIBUTING.md`): Cargo keys a workspace crate by its
 path inside the workspace and by file mtimes, not by the checkout folder, so a copy whose files are older
