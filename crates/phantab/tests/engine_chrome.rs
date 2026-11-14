@@ -376,6 +376,11 @@ async fn snapshots_read_shadow_roots_and_website_frames_and_click_xy_reaches_the
     assert_eq!(element(&snap, "light").unwrap()["offscreen"], Value::Null);
     assert_eq!(element(&snap, "shadow").unwrap()["inShadow"], json!(true));
     assert_eq!(element(&snap, "otherframe").unwrap()["frame"], json!(lane.fixtures.twin_origin()));
+    // A selector for an open shadow root's element fails saying where click_xy reaches it.
+    let inside = element(&snap, "shadow").unwrap();
+    let told = lane.act("a", &a, json!({ "action": "click", "selector": "#shadow" })).await.unwrap_err();
+    let place = format!("an open shadow root has it at {},{}: click_xy reaches it", inside["x"], inside["y"]);
+    assert!(told.starts_with("#shadow: not found in the document (") && told.contains(&place), "{told}");
     for id in ["light", "shadow", "sameframe", "otherframe"] {
         let e = element(&snap, id).unwrap();
         let r = lane.act("a", &a, json!({ "action": "click_xy", "x": e["x"], "y": e["y"] })).await;

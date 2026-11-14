@@ -15,6 +15,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   nothing chosen. A snapshot marks a ticked checkbox or radio `checked` and shows a select's chosen
   option as `selected="March"`; typed values are still never read. In an agent benchmark's sign-up
   task, every run took two screenshots to check what the form held.
+- A `browser_act` selector that matches nothing in the document but does match an element in an open
+  shadow root, which selectors never reach, now fails saying where: `(an open shadow root has it at
+  32,192: click_xy reaches it, a selector does not)`.
 
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
