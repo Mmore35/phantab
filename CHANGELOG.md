@@ -24,6 +24,12 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   the page the agent's last call named or opened. In an agent benchmark, wall time followed the agent's
   output tokens, and nearly every call named the one page it had open.
 
+### Added
+- `browser_act` takes `steps`, each action written as a list: `[["fill", "#qty", "2"], ["click",
+  "#add"]]`. With `steps` the page's snapshot comes unless `snapshot` is false. `action` with its fields
+  and `then` still work as before. Each field an agent named cost it about 20 output tokens, and a
+  five-step act named `action` and `selector` five times.
+
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
   `cp`, which refuses to overwrite the shared `extension.zip` it had just copied. v0.4.0's files were

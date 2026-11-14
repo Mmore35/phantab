@@ -34,6 +34,10 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         a.extend(fields);
         let step = json!({ "type": "object", "properties": action(), "required": ["action"], "additionalProperties": false });
         a.insert("then".into(), json!({ "type": "array", "items": step }));
+        a.insert(
+            "steps".into(),
+            json!({ "type": "array", "items": { "type": "array", "items": { "type": ["string", "number"] } } }),
+        );
         a.insert("snapshot".into(), json!({ "type": "boolean" }));
         // The guardrails' owner confirmation (docs/GUARDRAILS.md) is the first action's alone: a `then`
         // step it would refuse is repeated on its own, once the owner approves that step.
@@ -91,9 +95,9 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "act",
-            "Interact with your assigned page. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step. then lists more actions to do after this one, in order, each with this tool's fields but pageId; the first that fails stops the rest and says which. With snapshot true, the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it, so a run of steps and its check is one call. Leave pageId out for the page your last call named.",
+            "Interact with your assigned page. steps lists the actions to do, in order, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url]. The first that fails stops the rest and says which, and the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it (snapshot false leaves it out), so a run of steps and its check is one call. action with its fields is the older form of one step, and then of the ones after it (each with this tool's fields but pageId); with them the snapshot comes only with snapshot true. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step; it covers the first step. Leave pageId out for the page your last call named.",
             act,
-            &["action"],
+            &[],
         ),
         (
             "show",
@@ -531,13 +535,38 @@ fn checked<'a>(
 
 /// `act`'s own `then` and `snapshot`, taken out of its arguments and checked before any call reaches
 /// the service: the further steps, without their page, and whether a snapshot follows. A `then` step's
-/// argument that an action does not define is an error, as for the tool's own (SR-33).
+/// argument that an action does not define is an error, as for the tool's own (SR-33). `steps` stands in
+/// for the first action's fields and `then` (`act_step`), and with it the snapshot comes unless refused.
 fn act_plan(
     arguments: &mut serde_json::Map<String, Value>,
     properties: &Value,
 ) -> Result<(Vec<serde_json::Map<String, Value>>, bool), String> {
-    let snapshot = snapshot_after(arguments)?;
     let fields = &properties["then"]["items"]["properties"];
+    if let Some(steps) = arguments.remove("steps") {
+        if let Some(both) = arguments.keys().find(|k| k.as_str() == "then" || fields.get(k.as_str()).is_some()) {
+            let shown: String = both.chars().take(40).collect();
+            return Err(format!("steps takes the place of action, its fields and then: leave {shown:?} out."));
+        }
+        let Value::Array(items) = steps else { return Err(STEPS_FORM.to_owned()) };
+        if items.is_empty() {
+            return Err(STEPS_FORM.to_owned());
+        }
+        let mut plan = items.iter().enumerate().map(|(i, item)| act_step(item, i + 1)).collect::<Result<Vec<_>, _>>()?;
+        let then = plan.split_off(1);
+        arguments.extend(plan.remove(0));
+        // Every cost-task call that acted and then looked at the page asked for the snapshot, so the
+        // compact form gives it unless refused.
+        let snapshot = match arguments.remove("snapshot") {
+            None | Some(Value::Bool(true)) => true,
+            Some(Value::Bool(false)) => false,
+            Some(_) => return Err("snapshot must be true or false.".to_owned()),
+        };
+        return Ok((then, snapshot));
+    }
+    if !arguments.contains_key("action") {
+        return Err("browser_act needs steps, or action with its fields.".to_owned());
+    }
+    let snapshot = snapshot_after(arguments)?;
     let mut steps = Vec::new();
     match arguments.remove("then") {
         None => {}
@@ -556,6 +585,53 @@ fn act_plan(
         Some(_) => return Err("then must be a list of actions.".to_owned()),
     }
     Ok((steps, snapshot))
+}
+
+/// What `act`'s `steps` must be, said when they are not.
+const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url].";
+
+/// Item `n` of `act`'s `steps` as the action fields it stands for: `["fill", "#qty", "2"]` is
+/// `{"action": "fill", "selector": "#qty", "text": "2"}`. In climb
+/// 2026-11-13-phantab-2x-faster-than-competition's agent runs, wall time followed the agent's output
+/// tokens, and each field it named cost about 20 of them beyond its value: a five-step act wrote
+/// `action` and `selector` five times over. A number stands for itself where one is wanted, and for its
+/// digits where text is; a number written as text is read as one.
+fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, String> {
+    let bad = || format!("steps item {n}: each must be {}", &STEPS_FORM["steps must be a list of actions, each ".len()..]);
+    let Some(parts) = item.as_array() else { return Err(bad()) };
+    let Some(action) = parts.first().and_then(Value::as_str) else { return Err(bad()) };
+    let names: &[&str] = match action {
+        "click" => &["selector"],
+        "fill" | "select" => &["selector", "text"],
+        "press" => &["key"],
+        "scroll" => &["deltaY"],
+        "click_xy" => &["x", "y"],
+        "navigate" => &["url"],
+        _ => return Err(bad()),
+    };
+    if parts.len() != names.len() + 1 {
+        return Err(bad());
+    }
+    let mut step = serde_json::Map::new();
+    step.insert("action".into(), Value::String(action.to_owned()));
+    for (name, v) in names.iter().zip(&parts[1..]) {
+        let number = matches!(*name, "deltaY" | "x" | "y");
+        let v = match v {
+            Value::Number(_) if number => v.clone(),
+            Value::String(t) if number => t
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .ok_or_else(bad)?,
+            Value::String(_) => v.clone(),
+            Value::Number(d) => Value::String(d.to_string()),
+            _ => return Err(bad()),
+        };
+        step.insert((*name).to_owned(), v);
+    }
+    Ok(step)
 }
 
 /// `act`'s and `open`'s own `snapshot`, taken out of their arguments: whether the page's snapshot follows.
@@ -1096,6 +1172,37 @@ mod tests {
         let schema = &tools().unwrap()[9].input_schema;
         assert_eq!(schema["properties"]["then"]["items"]["required"], json!(["action"]));
         assert_eq!(schema["properties"]["snapshot"], json!({ "type": "boolean" }));
+        assert_eq!(schema["required"], json!([]));
+        // The compact form: one list per step, never beside the older fields, checked whole first.
+        let compact = |steps: Value| json!({ "pageId": "p", "steps": steps });
+        let form = &STEPS_FORM["steps must be a list of actions, each ".len()..];
+        assert_eq!(
+            refused(json!({ "pageId": "p", "steps": [["click", "#a"]], "selector": "#b" })).await,
+            json!("steps takes the place of action, its fields and then: leave \"selector\" out.")
+        );
+        assert_eq!(refused(compact(json!([]))).await, json!(STEPS_FORM));
+        assert_eq!(refused(compact(json!({ "click": "#a" }))).await, json!(STEPS_FORM));
+        for bad in [json!([["click", "#a"], ["fill", "#b"]]), json!([["click", "#a"], ["hover", "#b"]]), json!([["click", "#a"], ["scroll", "far"]])] {
+            assert_eq!(refused(compact(bad)).await, json!(format!("steps item 2: each must be {form}")));
+        }
+        assert_eq!(
+            refused(json!({ "pageId": "p" })).await,
+            json!("browser_act needs steps, or action with its fields.")
+        );
+        let properties = &schema["properties"];
+        let plan = |a: Value| {
+            let mut a = a.as_object().cloned().unwrap();
+            let (then, snapshot) = act_plan(&mut a, properties).unwrap();
+            (Value::Object(a), Value::Array(then.into_iter().map(Value::Object).collect()), snapshot)
+        };
+        let (first, then, snapshot) =
+            plan(json!({ "steps": [["fill", "#qty", 2], ["click_xy", "32", 192], ["press", "Enter"]], "ownerConfirmed": true }));
+        assert_eq!(first, json!({ "action": "fill", "selector": "#qty", "text": "2", "ownerConfirmed": true }));
+        assert_eq!(then, json!([{ "action": "click_xy", "x": 32.0, "y": 192 }, { "action": "press", "key": "Enter" }]));
+        assert!(snapshot);
+        assert!(!plan(json!({ "steps": [["click", "#a"]], "snapshot": false })).2);
+        // The older form keeps its snapshot opt-in.
+        assert!(!plan(json!({ "action": "click", "selector": "#a" })).2);
     }
 
     /// A Claude Code session's id names its pages, so a resumed conversation keeps them; an earlier

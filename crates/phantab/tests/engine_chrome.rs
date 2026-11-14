@@ -568,6 +568,14 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         let said = stopped["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with("Step 2 of 3 (navigate) failed, the 1 before it was done: "), "{said}");
         assert!(said.contains("Only HTTP(S) website URLs are accepted."), "{said}");
+        // `steps` writes each action as a list, and its snapshot comes unasked.
+        let stepped = call("browser_act", json!({ "steps": [["fill", "#name", "by steps"], ["click", "#go"]] }));
+        assert_eq!(stepped["isError"], Value::Null, "{stepped}");
+        let said = stepped["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")) && said.contains("by steps"), "{said}");
+        let quiet = call("browser_act", json!({ "steps": [["fill", "#name", "from mcp"]], "snapshot": false }));
+        assert_eq!(quiet["isError"], Value::Null, "{quiet}");
+        assert!(!quiet["content"][0]["text"].as_str().unwrap_or_default().contains("CONTROLS"), "{quiet}");
         // With snapshot true, the snapshot follows the failure.
         let missed = call(
             "browser_act",
