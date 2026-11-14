@@ -91,7 +91,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "act",
-            "Interact with your assigned page. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step. then lists more actions to do after this one, in order, each with this tool's fields but pageId; the first that fails stops the rest and says which. With snapshot true, the result ends with the page's snapshot after them, as browser_snapshot shows it, so a run of steps and its check is one call.",
+            "Interact with your assigned page. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step. then lists more actions to do after this one, in order, each with this tool's fields but pageId; the first that fails stops the rest and says which. With snapshot true, the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it, so a run of steps and its check is one call.",
             act,
             &["pageId", "action"],
         ),
@@ -686,18 +686,25 @@ impl Server {
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join(" ");
-            match rpc("act", Value::Object(step), &self.client, true).await {
-                Ok(value) => lines.push(self.answer("act", value, page.clone(), false)),
-                Err(e) if total == 1 => return failure(&e.to_string()),
+            let said = match rpc("act", Value::Object(step), &self.client, true).await {
+                Ok(value) => {
+                    lines.push(self.answer("act", value, page.clone(), false));
+                    continue;
+                }
+                Err(e) if total == 1 => e.to_string(),
                 Err(e) => {
                     let done = match i {
                         0 => "none before it was done".to_owned(),
                         1 => "the 1 before it was done".to_owned(),
                         n => format!("the {n} before it were done"),
                     };
-                    return failure(&format!("Step {} of {total} ({what}) failed, {done}: {e}", i + 1));
+                    format!("Step {} of {total} ({what}) failed, {done}: {e}", i + 1)
                 }
-            }
+            };
+            // The snapshot asked for comes after a failure too: in climb
+            // 2026-11-13-phantab-2x-faster-than-competition's shop runs, an agent whose step failed read
+            // the page in its very next call, a turn of its own.
+            return failure(&if snapshot { self.and_snapshot(said, page, false, "the failure").await } else { said });
         }
         let bare = |l: &String| matches!(serde_json::from_str::<Value>(l), Ok(Value::Object(m)) if m.len() == 1 && m.contains_key("pageId"));
         let all_bare = lines.iter().all(bare);

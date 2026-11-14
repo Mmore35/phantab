@@ -568,6 +568,15 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         let said = stopped["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with("Step 2 of 3 (navigate) failed, the 1 before it was done: "), "{said}");
         assert!(said.contains("Only HTTP(S) website URLs are accepted."), "{said}");
+        // With snapshot true, the snapshot follows the failure.
+        let missed = call(
+            "browser_act",
+            json!({ "pageId": page, "action": "click", "selector": "#nowhere", "snapshot": true }),
+        );
+        assert_eq!(missed["isError"], json!(true), "{missed}");
+        let said = missed["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with("#nowhere: not found after ") && said.contains("
+CONTROLS"), "{said}");
         let shot = call("browser_screenshot", json!({ "pageId": page }));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
         let closed = call("browser_close", json!({ "pageId": page }));

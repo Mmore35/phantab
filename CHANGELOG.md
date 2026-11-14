@@ -18,6 +18,8 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 - A `browser_act` selector that matches nothing in the document but does match an element in an open
   shadow root, which selectors never reach, now fails saying where: `(an open shadow root has it at
   32,192: click_xy reaches it, a selector does not)`.
+- A `browser_act` with `snapshot` true now ends a failed step with the page's snapshot too, so an agent
+  whose step failed need not read the page in a call of its own.
 
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
