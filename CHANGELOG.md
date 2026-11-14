@@ -3,6 +3,13 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
+## Unreleased
+
+### Fixed
+- The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
+  `cp`, which refuses to overwrite the shared `extension.zip` it had just copied. v0.4.0's files were
+  uploaded by hand from the same workflow run.
+
 ## 0.4.0 (2026-11-14)
 The first open-source release.
 
