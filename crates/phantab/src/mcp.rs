@@ -82,7 +82,12 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
             json!({ "pageId": s(), "full": { "type": "boolean" } }),
             &[],
         ),
-        ("screenshot", "Capture the assigned page for visual inspection. Leave pageId out for the page your last call named.", page(), &[]),
+        (
+            "screenshot",
+            "Capture the assigned page for visual inspection. Leave pageId out for the page your last call named.",
+            page(),
+            &[],
+        ),
         (
             "wait",
             "Wait for a CSS selector or visible text in the assigned page without stealing focus; or, with only seconds (up to 60), just pause. With verification true, wait instead for the page's verification check to reach the owner or end (up to seconds, at most 60): its verification.state says how, and its next says what to do; while the owner has it, verification.wake is a command to start in the background before you end your turn, which exits once the check ends. Leave pageId out for the page your last call named.",
@@ -788,9 +793,13 @@ impl Server {
             page = Some(whole);
         } else if DEFAULT_PAGE.contains(&method) {
             let Some(last) = self.seen().last.clone() else {
-                return failure("No page yet to default to: open one with browser_open, or name one with pageId.");
+                return failure(
+                    "No page yet to default to: open one with browser_open, or name one with pageId.",
+                );
             };
-            arguments.get_or_insert_with(serde_json::Map::new).insert("pageId".into(), Value::String(last.clone()));
+            arguments
+                .get_or_insert_with(serde_json::Map::new)
+                .insert("pageId".into(), Value::String(last.clone()));
             page = Some(last);
         }
         if page.is_some() {

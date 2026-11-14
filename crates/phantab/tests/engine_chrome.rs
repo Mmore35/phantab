@@ -596,7 +596,10 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         // Once that page is closed, there is none to default to.
         let none = call("browser_act", json!({ "action": "click", "selector": "#go" }));
         assert_eq!(none["isError"], json!(true), "{none}");
-        assert!(none["content"][0]["text"].as_str().unwrap_or_default().starts_with("No page yet to default to"), "{none}");
+        assert!(
+            none["content"][0]["text"].as_str().unwrap_or_default().starts_with("No page yet to default to"),
+            "{none}"
+        );
         drop(stdin);
         let _ = child.wait();
         (text_of, page)
