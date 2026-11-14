@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use crate::matching::{
     LAUNCH_AGENT_LABEL, app_bundle, browser_args_lines, is_browser_process, is_our_launch_agent,
-    launch_agent_plist, on_user_data_dir, ps_processes, running_state,
+    launch_agent_plist, on_user_data_dir, ps_processes, ps_switches, running_state,
 };
 use crate::{
-    ArmGuard, Browser, HideStrategy, NativeHandle, QUIT_WAIT, QuietRequest, QuietState, Result, Snapshot,
-    WindowControl, WindowError, WindowSpec,
+    ArmGuard, Browser, HideStrategy, NativeHandle, QUIT_WAIT, QuietRequest, QuietState, Quit, Result,
+    Snapshot, WindowControl, WindowError, WindowSpec,
 };
 
 const PLATFORM: &str = "macOS";
@@ -70,33 +70,35 @@ impl WindowControl for MacWindowControl {
         Ok(QuietState { running, launch_agent, ..QuietState::default() })
     }
 
-    async fn quit_browser(&self, browser: &Browser) -> Result<Option<u32>> {
+    async fn quit_browser(&self, browser: &Browser) -> Result<Option<Quit>> {
         if browser.chrome_path.is_empty() {
             return Err(WindowError::InvalidArgument(
                 "Quitting Chrome needs the configured Chrome path".into(),
             ));
         }
+        let deadline = tokio::time::Instant::now() + QUIT_WAIT;
         let text = ps().await?;
-        let pid = match browsers(&text, browser).as_slice() {
-            [] => return Ok(None),
-            [(pid, _)] => *pid,
-            more => {
-                return Err(WindowError::Os {
-                    context: "quit the browser",
-                    message: format!("{} browser processes run on that user-data dir", more.len()),
-                });
-            }
-        };
+        let Some((pid, args)) = only_browser(&text, browser)? else { return Ok(None) };
+        let args = args.to_owned();
+        // Read again just before the signal: the pid must still be that browser, with those arguments, so a
+        // pid reused since the first read is never signalled.
+        let again = ps().await?;
+        if only_browser(&again, browser)? != Some((pid, args.as_str())) {
+            return Err(WindowError::Os {
+                context: "quit the browser",
+                message: "the browser process changed while phantab read it; nothing was closed".into(),
+            });
+        }
         // SIGTERM is Chrome's own clean exit on macOS: it closes every window as Quit from the menu does
         // and keeps the session for `--restore-last-session`. By pid, never by process name.
         let pid_arg = pid.to_string();
         if !kill(&["-TERM", &pid_arg]).await? {
             return Ok(None);
         }
-        let deadline = tokio::time::Instant::now() + QUIT_WAIT;
+        let quit = Quit { pid, args: ps_switches(&args, &browser.chrome_path) };
         while tokio::time::Instant::now() < deadline {
             if !kill(&["-0", &pid_arg]).await? {
-                return Ok(Some(pid));
+                return Ok(Some(quit));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -150,6 +152,19 @@ pub(crate) fn browsers<'a>(ps_output: &'a str, browser: &Browser) -> Vec<(u32, &
                 && on_user_data_dir(args, &browser.user_data_dir, browser.default_dir, false)
         })
         .collect()
+}
+
+/// The one browser process [`browsers`] finds, `None` for none; more than one is an error, as which to quit
+/// would be a guess.
+fn only_browser<'a>(ps_output: &'a str, browser: &Browser) -> Result<Option<(u32, &'a str)>> {
+    match browsers(ps_output, browser).as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        more => Err(WindowError::Os {
+            context: "quit the browser",
+            message: format!("{} browser processes run on that user-data dir", more.len()),
+        }),
+    }
 }
 
 /// Where phantab's `LaunchAgent` goes: the request's folder, or `~/Library/LaunchAgents` in a real macOS

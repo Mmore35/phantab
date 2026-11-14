@@ -335,7 +335,10 @@ Every test, in every lane:
    pass it as the Run key or host key. The `<pid>` key is deleted when the last test under it ends.
    No test reads or writes the real Run key. Quiet debugging's shortcuts and LaunchAgent go the same
    way: tests pass a scratch folder (`--shortcut-dir`, `--launch-agents-dir` in a `TempDir`), and a
-   `test-seams` build given none rewrites no shortcut and writes no LaunchAgent. No test quits a Chrome
+   `test-seams` build given none rewrites no shortcut and writes no LaunchAgent.
+   `quiet_debugging_round_trip_on_scratch_shortcuts` makes its `.lnk` files through `WScript.Shell`
+   and runs install's on, off and uninstall on them. Like `--run-key`, these flags are left out of the
+   usage text but not gated behind `test-seams`: each only narrows install to a folder the caller names. No test quits a Chrome
    it did not start.
 5. **Never the owner's client configs.** Installer tests write Claude and Codex configs in a `TempDir`
    and pass their paths. No test reads `~/.claude.json`, `~/.claude/` or `~/.codex/`.

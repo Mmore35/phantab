@@ -55,7 +55,7 @@ pub use fake::{Call, Noop, Recording};
 pub use mac::MacWindowControl;
 pub use matching::{
     LAUNCH_AGENT_LABEL, QUIET_FLAG, ScreenRect, app_bundle, browser_args_lines, check_token, expand_env,
-    is_browser_process, is_our_launch_agent, launch_agent_plist, on_user_data_dir, ps_processes,
+    is_browser_process, is_our_launch_agent, launch_agent_plist, on_user_data_dir, ps_processes, ps_switches,
     rect_matches, rewrite_run_value, rewrite_shortcut_args, running_state, user_data_dir_of, windows_args,
 };
 pub use unsupported::Unsupported;
@@ -123,11 +123,20 @@ pub struct QuietState {
     /// Whether the running browser (the one on the configured user-data dir) has the flag, `None` when
     /// none runs.
     pub running: Option<bool>,
-    /// Windows: the shortcuts that start the browser, now in the asked mode.
+    /// Windows: this user's own shortcuts that start the browser, now in the asked mode.
     pub shortcuts: usize,
-    /// Windows: shortcuts that start the browser but could not be rewritten (all users' ones without
-    /// admin rights, say), by path. They still start Chrome as they did.
+    /// Windows: how many of those this call rewrote; the rest were in the asked mode already.
+    pub changed: usize,
+    /// Windows: this user's shortcuts that start the browser but could not be rewritten (read-only, say),
+    /// by path. They still start Chrome as they did.
     pub unwritable: Vec<String>,
+    /// Windows: all users' shortcuts (the `ProgramData` Start menu, the Public Desktop) that start the
+    /// browser and are not in the asked mode, by path. Reported, never written: another account's Chrome
+    /// starts from them too.
+    pub shared_shortcuts: Vec<String>,
+    /// Windows: shortcuts on a `OneDrive` Desktop that start the browser and are not in the asked mode, by
+    /// path. Reported, never written: a change there syncs to the owner's other PCs.
+    pub synced_shortcuts: Vec<String>,
     /// macOS: whether phantab's `LaunchAgent` is in place now. `None` on Windows.
     pub launch_agent: Option<bool>,
 }
@@ -144,12 +153,45 @@ pub struct Browser {
     pub default_dir: bool,
 }
 
-/// A folder whose `.lnk` shortcuts `quiet` rewrites (Windows).
+/// A folder whose `.lnk` shortcuts `quiet` rewrites or reports (Windows).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutDir {
     pub path: std::path::PathBuf,
     /// Into its subfolders too (the Start menu's), or only the folder itself (a Desktop).
     pub recurse: bool,
+    pub kind: ShortcutKind,
+}
+
+impl ShortcutDir {
+    /// One of this user's own folders, whose shortcuts `quiet` rewrites.
+    #[must_use]
+    pub fn own(path: impl Into<std::path::PathBuf>, recurse: bool) -> Self {
+        Self { path: path.into(), recurse, kind: ShortcutKind::Own }
+    }
+}
+
+/// Whose a shortcut folder is, which decides whether `quiet` may write its shortcuts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ShortcutKind {
+    /// This user's own: rewritten.
+    #[default]
+    Own,
+    /// All users' (the `ProgramData` Start menu, the Public Desktop): another account's Chrome starts from
+    /// it too, so it is only reported ([`QuietState::shared_shortcuts`]).
+    Shared,
+    /// Under `OneDrive`: a change there syncs to the owner's other PCs, so it is only reported
+    /// ([`QuietState::synced_shortcuts`]).
+    Synced,
+}
+
+/// The browser `quit_browser` closed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Quit {
+    pub pid: u32,
+    /// Its arguments after the program, as its command line gave them, so a restart keeps the owner's own
+    /// switches (`--proxy-server=…`, say). On macOS `ps` joins argv without quoting, so an argument starts at
+    /// each ` -` ([`ps_switches`]).
+    pub args: Vec<String>,
 }
 
 /// What `quiet` is asked to do.
@@ -160,9 +202,11 @@ pub struct QuietRequest {
     pub browser: Browser,
     /// Windows: the HKCU key holding Chrome's sign-in entry; `None` is [`DEFAULT_RUN_KEY`].
     pub run_key: Option<String>,
-    /// Windows: the folders whose shortcuts are rewritten. `None` is the real ones: both Start menus,
-    /// Quick Launch (with the pinned taskbar and Start items under it) and the Desktops, `OneDrive`'s and the
-    /// Public one included. A test build never uses the real ones: there `None` rewrites no shortcut.
+    /// Windows: the folders whose shortcuts are rewritten or reported. `None` is the real ones: this
+    /// user's Start menu, Quick Launch (with the pinned taskbar and Start items under it) and Desktop,
+    /// rewritten; all users' Start menu and the Public Desktop ([`ShortcutKind::Shared`]) and the `OneDrive`
+    /// Desktops ([`ShortcutKind::Synced`]), only reported. A test build never uses the real ones: there
+    /// `None` rewrites no shortcut.
     pub shortcut_dirs: Option<Vec<ShortcutDir>>,
     /// macOS: the folder for phantab's `LaunchAgent`. `None` is `~/Library/LaunchAgents`; a test build
     /// never uses that: there `None` writes no `LaunchAgent`.
@@ -231,24 +275,25 @@ pub trait WindowControl: Send + Sync + std::fmt::Debug {
 
     async fn snapshot(&self) -> Result<Snapshot>;
 
-    /// Windows: adds (`mode_on`) or removes [`QUIET_FLAG`] on each Run entry and each shortcut that starts
-    /// the browser at `chrome_path`, touching no other argument and nothing else, and reports whether the
-    /// running browser has it. The Run key must be under HKCU.
+    /// Windows: adds (`mode_on`) or removes [`QUIET_FLAG`] on each Run entry and each of this user's own
+    /// shortcuts that starts the browser at `chrome_path`, touching no other argument and nothing else,
+    /// reports the all users' and `OneDrive` ones it leaves alone, and reports whether the running browser
+    /// has it. The Run key must be under HKCU.
     ///
     /// macOS: writes (`mode_on`) or removes phantab's own `LaunchAgent`, which starts Chrome with the flag
     /// at login (docs/MAC.md Q4), and reports the running browser as above. Never a file it did not write.
     async fn quiet(&self, request: &QuietRequest) -> Result<QuietState>;
 
     /// Quits the running browser on `browser`'s user-data dir the way a system restart does, so Chrome
-    /// saves the whole session as it closes, and waits for it to exit. `Ok(None)` when none runs. It acts
-    /// on that one process, found by its path and user-data dir, never on a process name. The default
-    /// refuses: only Windows and macOS have one.
-    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
+    /// saves the whole session as it closes, and waits for it to exit, all within [`QUIT_WAIT`]. `Ok(None)`
+    /// when none runs. It acts on that one process, found by its path and user-data dir, never on a process
+    /// name. The default refuses: only Windows and macOS have one.
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<Quit>> {
         Err(WindowError::Unsupported(std::env::consts::OS))
     }
 }
 
-/// How long `quit_browser` waits for Chrome to save its session and exit.
+/// How long `quit_browser` takes at most, from its ask to Chrome's exit: Chrome saves its session and exits.
 pub const QUIT_WAIT: Duration = Duration::from_secs(45);
 
 /// Stops this process's stdin, stdout and stderr from being inherited by the children it starts later
@@ -462,7 +507,7 @@ mod tests {
         let quiet = QuietState { run_value: Some(true), shortcuts: 2, ..QuietState::default() };
         assert_eq!(
             serde_json::to_string(&quiet).unwrap(),
-            r#"{"runValue":true,"running":null,"shortcuts":2,"unwritable":[],"launchAgent":null}"#
+            r#"{"runValue":true,"running":null,"shortcuts":2,"changed":0,"unwritable":[],"sharedShortcuts":[],"syncedShortcuts":[],"launchAgent":null}"#
         );
         let old: QuietState = serde_json::from_str(r#"{"runValue":true,"running":false}"#).unwrap();
         assert_eq!(old, QuietState { run_value: Some(true), running: Some(false), ..QuietState::default() });

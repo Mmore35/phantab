@@ -156,7 +156,7 @@ impl WindowControl for Win32 {
         off_workers("quiet debugging", move || crate::quiet_win32::quiet(&request)).await
     }
 
-    async fn quit_browser(&self, browser: &Browser) -> Result<Option<u32>> {
+    async fn quit_browser(&self, browser: &Browser) -> Result<Option<crate::Quit>> {
         let browser = browser.clone();
         off_workers("quit the browser", move || crate::quiet_win32::quit_browser(&browser)).await
     }

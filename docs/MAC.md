@@ -197,9 +197,12 @@ The problem on macOS is **getting it onto Chrome's command line**:
 - It does not load the agent into launchd now (that would open Chrome); it takes effect at the next
   login. Install tells the owner to turn Chrome's own "open at login" off.
 - `running` comes from `ps -o args=` on the browser process on the configured user-data dir.
-- `phantab chrome restart-quiet` quits that one pid with `SIGTERM` (Chrome's normal quit, which saves
-  the session), waits for it to exit, and starts Chrome again with the flag and
-  `--restore-last-session`.
+- `phantab chrome restart-quiet` reads that pid's arguments with `ps` again just before the signal
+  and quits only if the pid still runs the same browser with the same arguments, then quits it with
+  `SIGTERM` (Chrome's normal quit, which saves the session), waits for it to exit, and starts Chrome
+  again with the switches it was running with, the flag and `--restore-last-session`.
+- Install's question says that a yes also opens Chrome at each login (the LaunchAgent). A Chrome
+  started from the Dock or Finder while already logged in lacks the flag; `status` says so.
 
 **Mac-unverified** (unit-tested on any OS, never yet run on a Mac): launchd running the agent at
 login, `open --args` reaching a Chrome that is not yet running, `SIGTERM` saving a session that

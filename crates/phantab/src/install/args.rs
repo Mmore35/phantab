@@ -62,9 +62,7 @@ impl Args {
         super::quiet::Places {
             run_key: self.run_key.clone(),
             shortcut_dirs: self.shortcut_dirs.as_ref().map(|dirs| {
-                dirs.iter()
-                    .map(|path| phantab_window::ShortcutDir { path: path.clone(), recurse: true })
-                    .collect()
+                dirs.iter().map(|path| phantab_window::ShortcutDir::own(path.clone(), true)).collect()
             }),
             launch_agents_dir: self.launch_agents_dir.clone(),
         }

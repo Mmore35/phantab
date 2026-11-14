@@ -78,17 +78,25 @@ terminal asks once, **Hide Chrome's debugging bar?** (Enter is yes), and keeps y
 `--quiet-debugging on|off` answers it without asking. The trade-off: with the bar hidden, every
 extension that uses Chrome's debugger attaches silently, not only phantab's bridge.
 
-Quiet debugging adds Chrome's `--silent-debugger-extension-api` switch wherever Chrome is started from,
-and nothing else:
-- **Windows**: Chrome's sign-in entry in your Run key, and the Chrome shortcuts in the Start menus,
-  the taskbar's pinned items and your Desktops (each check again at every bridge connect). A shortcut
-  phantab may not write is named, and left as it was. `off` takes the switch away again.
+Quiet debugging adds Chrome's `--silent-debugger-extension-api` switch to the places your Chrome is
+started from, and nothing else:
+- **Windows**: Chrome's sign-in entry in your Run key, and your own Chrome shortcuts in the Start menu,
+  the taskbar's pinned items and your Desktop (each checked again at every bridge connect). Shortcuts
+  shared by every account on the PC (the all-users Start menu, the Public Desktop) and those on a
+  OneDrive Desktop, which syncs to your other PCs, are named but never changed: phantab never changes
+  another account's Chrome or another PC's shortcuts. A Chrome started from one of those shows the bar.
+  A shortcut phantab may not write is named too, and left as it was. `off` takes the switch away again
+  and names each shortcut that still has it, with how to take it off.
 - **macOS**: a LaunchAgent, `~/Library/LaunchAgents/dev.phantab.chrome.plist`, that opens Chrome with
-  the switch at login. Turn Chrome's own "open at login" off, or Chrome opens without it.
+  the switch at each login, so a yes also means Chrome opens at login. Turn Chrome's own "open at login"
+  off, or Chrome opens without it. macOS gives no way to add a switch to the Dock or Finder: a Chrome you
+  quit and start again from there has the bar until your next login, or until `phantab chrome
+  restart-quiet`.
 
 The switch only counts when Chrome starts, so a Chrome already open keeps the bar. `phantab status`
 says so, and `phantab chrome restart-quiet`, run by you in a terminal, closes that Chrome the way a
-system restart does (its tabs saved) and opens it again with the switch and your tabs. It asks first,
+system restart does (its tabs saved) and opens it again with the switches it had, the quiet switch and
+your tabs. It asks first,
 acts only on the Chrome phantab is set up for, and refuses while agent pages are open. phantab never
 restarts Chrome on its own.
 

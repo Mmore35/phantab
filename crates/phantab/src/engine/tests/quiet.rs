@@ -1,7 +1,7 @@
 //! Quiet debugging: what status says while the running Chrome lacks the flag, and `restart_quiet`, which
 //! restarts only the configured Chrome, only on the owner's word, never while agent pages are open.
 
-use phantab_window::{Browser, QUIET_FLAG, QuietState};
+use phantab_window::{Browser, QUIET_FLAG, QuietState, Quit};
 
 use super::*;
 use crate::engine::quiet::{QUIET_PENDING, restart_args};
@@ -39,6 +39,11 @@ fn running(running: Option<bool>) -> Recording {
     Recording::new().with_quiet(QuietState { run_value: Some(true), running, ..QuietState::default() })
 }
 
+/// The browser the fake quits: pid 77, running with these switches.
+fn quit(args: &[&str]) -> Option<Quit> {
+    Some(Quit { pid: 77, args: args.iter().map(|a| (*a).to_owned()).collect() })
+}
+
 fn quits(f: &Fixture) -> Vec<Browser> {
     f.windows
         .calls()
@@ -49,7 +54,7 @@ fn quits(f: &Fixture) -> Vec<Browser> {
 
 #[tokio::test]
 async fn restart_quiet_needs_quiet_debugging_on_and_no_agent_pages() {
-    let (f, (started, _up)) = restartable(running(Some(false)).with_quit(Some(77)), false);
+    let (f, (started, _up)) = restartable(running(Some(false)).with_quit(quit(&[])), false);
     let e = &f.engine;
     assert!(err(e.restart_quiet().await).starts_with("Quiet debugging is off"));
     std::fs::write(&e.setup.quiet_marker, "").unwrap();
@@ -66,7 +71,7 @@ async fn restart_quiet_needs_quiet_debugging_on_and_no_agent_pages() {
 #[tokio::test]
 async fn a_chrome_with_the_flag_or_none_running_is_not_restarted() {
     for (state, answer) in [(Some(true), json!(true)), (None, Value::Null)] {
-        let (f, (started, _up)) = restartable(running(state).with_quit(Some(77)), true);
+        let (f, (started, _up)) = restartable(running(state).with_quit(quit(&[])), true);
         let said = f.engine.restart_quiet().await.unwrap();
         assert_eq!(said["restarted"], false, "{said}");
         assert_eq!(said["running"], answer, "{said}");
@@ -76,11 +81,14 @@ async fn a_chrome_with_the_flag_or_none_running_is_not_restarted() {
 }
 
 /// The Chrome running without the flag closes (only the configured one, by its path and user-data dir)
-/// and starts again with the flag and the session it saved.
+/// and starts again with the switches it ran with, the flag and the session it saved.
 #[tokio::test]
 async fn a_chrome_without_the_flag_closes_and_starts_again_with_it() {
-    let (f, (started, up)) = restartable(running(Some(false)).with_quit(Some(77)), true);
+    let ran = ["--proxy-server=127.0.0.1:8080", "--no-startup-window", "https://example.com/"];
+    let (f, (started, up)) = restartable(running(Some(false)).with_quit(quit(&ran)), true);
     let e = &f.engine;
+    // The link of the Chrome about to close is still up: only the restarted one's is a reconnect.
+    let _old = Ext::connect(e.bridge()).await;
     let said = e.restart_quiet().await.unwrap();
     assert_eq!(said["restarted"], true, "{said}");
     assert_eq!(said["quitPid"], 77, "{said}");
@@ -102,11 +110,26 @@ async fn a_chrome_without_the_flag_closes_and_starts_again_with_it() {
         args,
         [
             format!("--user-data-dir={}", udd.display()),
+            "--proxy-server=127.0.0.1:8080".to_owned(),
             QUIET_FLAG.to_owned(),
             "--restore-last-session".to_owned()
         ]
     );
     assert_eq!(up.lock().unwrap().len(), 1);
+}
+
+/// A link that was up before the restart is not the restarted Chrome's, however long it stays.
+#[tokio::test]
+async fn only_a_new_link_counts_as_reconnected() {
+    let f = fixture(Recording::new());
+    let bridge = f.engine.bridge();
+    assert!(!bridge.wait_new_link_in(USUAL, None, Duration::from_millis(20)).await, "no link at all");
+    let _old = Ext::connect(bridge).await;
+    let before = bridge.link_id_in(USUAL);
+    assert!(before.is_some());
+    assert!(!bridge.wait_new_link_in(USUAL, before, Duration::from_millis(50)).await, "the old link");
+    let _new = Ext::connect(bridge).await;
+    assert!(bridge.wait_new_link_in(USUAL, before, Duration::from_millis(50)).await, "its replacement");
 }
 
 #[tokio::test]
@@ -121,7 +144,41 @@ async fn a_chrome_that_does_not_close_is_not_started_again() {
 
 #[test]
 fn chromes_default_dir_is_not_named_on_the_restart() {
-    assert_eq!(restart_args(None), [QUIET_FLAG, "--restore-last-session"]);
+    assert_eq!(restart_args(None, &[]), [QUIET_FLAG, "--restore-last-session"]);
+}
+
+/// The owner's switches come back; Chrome's own flags block, a sign-in start's switches, what is not a
+/// switch, and a second copy of the flag or the restore do not.
+#[test]
+fn the_restart_keeps_the_owners_switches_only() {
+    let ran: Vec<String> = [
+        "--user-data-dir=D:\\Chrome Data",
+        "--proxy-server=socks5://127.0.0.1:1080",
+        "--flag-switches-begin",
+        "--enable-features=X",
+        "--flag-switches-end",
+        "--no-startup-window",
+        "--win-session-start",
+        QUIET_FLAG,
+        "--restore-last-session",
+        "https://example.com/",
+        "--",
+        "--not-a-switch",
+    ]
+    .iter()
+    .map(|a| (*a).to_owned())
+    .collect();
+    let dir = std::path::Path::new(r"C:\configured");
+    assert_eq!(
+        restart_args(Some(dir), &ran),
+        [
+            "--user-data-dir=D:\\Chrome Data",
+            "--proxy-server=socks5://127.0.0.1:1080",
+            QUIET_FLAG,
+            "--restore-last-session"
+        ],
+        "the dir it ran on, not named twice"
+    );
 }
 
 /// While the Chrome running lacks the flag, status says so plainly and names the restart.
@@ -131,6 +188,13 @@ async fn status_says_the_bar_still_shows_until_chrome_restarts() {
     let e = &f.engine;
     e.st().quiet = Some(json!({ "runValue": true, "running": true, "shortcuts": 2, "unwritable": [] }));
     assert!(e.status_map()["quietDebugging"].get("note").is_none());
+    e.st().quiet = Some(json!({
+        "runValue": true, "running": true, "shortcuts": 2, "unwritable": [],
+        "sharedShortcuts": ["C:/Users/Public/Desktop/Chrome.lnk"], "syncedShortcuts": ["C:/o/Desktop/c.lnk"]
+    }));
+    let q = e.status_map()["quietDebugging"].clone();
+    assert!(q.get("note").is_none(), "shared and synced ones are listed, not nagged about: {q}");
+    assert_eq!(q["sharedShortcuts"][0], "C:/Users/Public/Desktop/Chrome.lnk");
     e.st().quiet =
         Some(json!({ "runValue": true, "running": false, "shortcuts": 2, "unwritable": ["C:/x.lnk"] }));
     let note = e.status_map()["quietDebugging"]["note"].as_str().unwrap().to_owned();

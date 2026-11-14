@@ -540,7 +540,7 @@ const _: () = assert!(REUSE_WITHIN.as_secs() * 2 <= crate::service::KEPT_IDLE.as
 const _: () = assert!(REUSE_WITHIN.as_secs() > crate::mcp::HEARTBEAT_EVERY.as_secs());
 /// An `/rpc` exchange's budget, as Node's 90000 ms abort: on a kept connection it also covers the
 /// readiness probe, on a fresh one it starts once the service is proven.
-const RPC_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(90);
 /// The longest wait for a kept connection to be ready, within [`RPC_TIMEOUT`].
 const READY_WITHIN: Duration = Duration::from_secs(1);
 
@@ -910,9 +910,18 @@ mod tests {
         let path = old.advertise(dir.path());
         let call = tokio::spawn({
             let path = path.clone();
-            async move { rpc_at(&path, "act", json!({ "delay": 2000 }), "t", false).await }
+            // Answered only long after the old service stops, so the call is still in flight then.
+            async move { rpc_at(&path, "act", json!({ "delay": 60_000 }), "t", false).await }
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // In flight means the old service has the call. A fixed sleep raced a loaded machine: a call not
+        // yet connected when the old service stopped was refused ("not running"), not cut off.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while old.calls() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the call reaches the old service");
         let new = Fake::start(&"04".repeat(32), Behaviour::Keeps).await;
         new.advertise(dir.path());
         old.stop().await;

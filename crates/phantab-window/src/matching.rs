@@ -215,6 +215,25 @@ fn same_dir(a: &str, b: &str, windows: bool) -> bool {
     if windows { a.replace('/', "\\").to_lowercase() == b.replace('/', "\\").to_lowercase() } else { a == b }
 }
 
+/// macOS: the arguments after `chrome_path` in one `ps -o args=` line. `ps` joins argv with single spaces
+/// and no quoting, so each ` -` starts another argument; one with `=` keeps its whole value (a path with
+/// spaces), one without keeps only its first word (what follows is a URL or another positional, which a
+/// restart does not need). Empty when the line is not `chrome_path`'s.
+pub fn ps_switches(args_line: &str, chrome_path: &str) -> Vec<String> {
+    let Some(rest) = args_line.trim_start().strip_prefix(chrome_path) else { return Vec::new() };
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return Vec::new();
+    }
+    rest.split(" -")
+        .skip(1)
+        .map(|piece| {
+            let piece = piece.trim_end();
+            let word = piece.split(' ').next().unwrap_or_default();
+            format!("-{}", if word.contains('=') { piece } else { word })
+        })
+        .collect()
+}
+
 /// Whether a command line is a browser process, not one of its helpers (`--type=renderer` and the rest).
 pub fn is_browser_process(command_line: &str) -> bool {
     !command_line.contains("--type=")
@@ -537,6 +556,22 @@ mod tests {
         assert!(!on_user_data_dir(&format!("{CHROME} --user-data-dir="), "", false, true), "an empty dir");
         assert!(!on_user_data_dir("/c --user-data-dir=/A", "/a", false, false), "macOS keeps case");
         assert!(on_user_data_dir("/c --user-data-dir=/a/", "/a", false, false));
+    }
+
+    #[test]
+    fn ps_switches_keep_whole_values_and_drop_positionals() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let line = format!(
+            "{chrome} --user-data-dir=/Users/a/My Chrome --proxy-server=127.0.0.1:8080 --restore-last-session \
+             https://example.com/"
+        );
+        assert_eq!(
+            ps_switches(&line, chrome),
+            ["--user-data-dir=/Users/a/My Chrome", "--proxy-server=127.0.0.1:8080", "--restore-last-session"]
+        );
+        assert_eq!(ps_switches(chrome, chrome), Vec::<String>::new());
+        assert_eq!(ps_switches(&format!("{chrome} https://x -y"), chrome), ["-y"]);
+        assert_eq!(ps_switches(&format!("{chrome}X --a"), chrome), Vec::<String>::new(), "another program");
     }
 
     #[test]

@@ -354,8 +354,10 @@ mod lane {
         // pid, and it exits by itself.
         let t = Instant::now();
         let target = lane_browser(&chrome, &browser.dir);
-        let quit = w.quit_browser(&target).await.unwrap();
-        assert_eq!(quit, Some(browser.child.id()), "the lane's own browser, by its user-data dir");
+        let quit = w.quit_browser(&target).await.unwrap().expect("the lane's browser runs");
+        assert_eq!(quit.pid, browser.child.id(), "the lane's own browser, by its user-data dir");
+        let dir_arg = format!("--user-data-dir={}", browser.dir.display());
+        assert!(quit.args.contains(&dir_arg), "its own switches come back for the restart: {:?}", quit.args);
         let exited = browser.wait_exit(Duration::from_secs(10));
         println!("timing: quit {:?} (exited by itself: {exited})", t.elapsed());
         assert!(exited, "Chrome closed itself when asked");
@@ -627,7 +629,7 @@ mod lane {
         std::fs::create_dir_all(&shortcuts).unwrap();
         let ask = |mode_on: bool, chrome_path: &str, run_key: &str| QuietRequest {
             run_key: Some(run_key.to_owned()),
-            shortcut_dirs: Some(vec![phantab_window::ShortcutDir { path: shortcuts.clone(), recurse: true }]),
+            shortcut_dirs: Some(vec![phantab_window::ShortcutDir::own(shortcuts.clone(), true)]),
             ..QuietRequest::new(mode_on, Browser { chrome_path: chrome_path.to_owned(), ..target.clone() })
         };
         let subkey = format!(r"Software\phantab-test-{}", std::process::id());

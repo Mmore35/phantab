@@ -260,9 +260,13 @@ fn execute(
                 .with_context(|| format!("{}", target.path.display()))?,
         );
     }
-    // Uninstall takes the flag off again: read the browser now, before the first write.
+    // Uninstall takes the flag off again, before any other write: a failed off then leaves everything,
+    // the answer included, as it was, so the next uninstall tries again. The answer goes only once it is off.
     let quiet_off = if args.uninstall && quiet::answered(&runtime) == Some(true) {
-        Some(quiet::browser_of(&runtime)?)
+        let browser = quiet::browser_of(&runtime)?;
+        Some(quiet::apply(false, browser, &places).context(
+            "Quiet debugging could not be turned off, so nothing was uninstalled; run phantab uninstall again",
+        )?)
     } else {
         None
     };
@@ -282,9 +286,8 @@ fn execute(
             site.write(saved["original"].as_str())?;
         }
         quiet::remove_markers(&runtime)?;
-        if let Some(browser) = quiet_off {
-            let state = quiet::apply(false, browser, &places)?;
-            quiet_off_report(out, &state)?;
+        if let Some(state) = &quiet_off {
+            quiet::report(false, state, out)?;
         }
     } else {
         if cfg!(windows) {
@@ -326,20 +329,6 @@ fn install_quiet(
         }
     };
     quiet::set(runtime, on, places, out)
-}
-
-fn quiet_off_report(out: &mut dyn Write, state: &phantab_window::QuietState) -> Result<()> {
-    let what = if cfg!(windows) {
-        let n = state.shortcuts;
-        format!(
-            "Chrome's sign-in entry and {n} shortcut{} no longer carry the flag",
-            if n == 1 { "" } else { "s" }
-        )
-    } else {
-        "phantab's LaunchAgent is gone".to_owned()
-    };
-    writeln!(out, "Quiet debugging off: {what}.")?;
-    Ok(())
 }
 
 fn report(

@@ -4,8 +4,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::{
-    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Result, Snapshot, WindowControl,
-    WindowError, WindowSpec,
+    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Quit, Result, Snapshot,
+    WindowControl, WindowError, WindowSpec,
 };
 
 /// Does nothing and succeeds, so the engine's window steps pass through a headless lane: arm catches
@@ -42,7 +42,7 @@ impl WindowControl for Noop {
     async fn quiet(&self, _request: &QuietRequest) -> Result<QuietState> {
         Ok(QuietState::default())
     }
-    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<Quit>> {
         Ok(None)
     }
 }
@@ -77,8 +77,8 @@ struct RecordingState {
     visible: Vec<NativeHandle>,
     snapshot: Snapshot,
     quiet: QuietState,
-    /// What `quit_browser` answers: the pid it quit, `None` for no browser running.
-    quit: Option<u32>,
+    /// What `quit_browser` answers: the browser it quit, `None` for no browser running.
+    quit: Option<Quit>,
     /// `quit_browser` fails, as a Chrome that would not close would.
     quits_fail: bool,
     /// `None` reads as [`HideStrategy::OsHook`], the strategy whose calls the engine makes most.
@@ -134,10 +134,10 @@ impl Recording {
         self.state().quiet = quiet;
     }
 
-    /// What `quit_browser` answers: the pid of the browser it quit (default `None`, none running).
+    /// What `quit_browser` answers: the browser it quit (default `None`, none running).
     #[must_use]
-    pub fn with_quit(self, pid: Option<u32>) -> Self {
-        self.state().quit = pid;
+    pub fn with_quit(self, quit: Option<Quit>) -> Self {
+        self.state().quit = quit;
         self
     }
 
@@ -263,7 +263,7 @@ impl WindowControl for Recording {
         Ok(self.record(Call::Quiet(request.clone())).quiet.clone())
     }
 
-    async fn quit_browser(&self, browser: &Browser) -> Result<Option<u32>> {
+    async fn quit_browser(&self, browser: &Browser) -> Result<Option<Quit>> {
         let state = self.record(Call::QuitBrowser(browser.clone()));
         if state.quits_fail {
             return Err(WindowError::Os {
@@ -271,7 +271,7 @@ impl WindowControl for Recording {
                 message: "the test failed this quit".into(),
             });
         }
-        Ok(state.quit)
+        Ok(state.quit.clone())
     }
 }
 
@@ -336,7 +336,7 @@ mod tests {
         let w = Recording::new()
             .with_arm_answer(Some(NativeHandle(9)))
             .with_quiet(QuietState { run_value: Some(true), running: Some(false), ..QuietState::default() })
-            .with_quit(Some(77));
+            .with_quit(Some(Quit { pid: 77, args: vec!["--a".into()] }));
         let mut guard = w.arm_hide(&WindowSpec::workspace(TOKEN)).await.unwrap();
         assert_eq!(guard.settle().await, Some(NativeHandle(9)));
         assert_eq!(guard.settle().await, Some(NativeHandle(9)));
@@ -349,7 +349,10 @@ mod tests {
         assert!(mac.calls().is_empty(), "strategy is not a call");
         let request = QuietRequest::new(true, Browser::default());
         assert_eq!(w.quiet(&request).await.unwrap().running, Some(false));
-        assert_eq!(w.quit_browser(&request.browser).await.unwrap(), Some(77));
+        assert_eq!(
+            w.quit_browser(&request.browser).await.unwrap(),
+            Some(Quit { pid: 77, args: vec!["--a".into()] })
+        );
         w.fail_quits(true);
         assert!(w.quit_browser(&request.browser).await.is_err());
     }

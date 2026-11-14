@@ -29,6 +29,15 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   "#add"]]`. With `steps` the page's snapshot comes unless `snapshot` is false. `action` with its fields
   and `then` still work as before. Each field an agent named cost it about 20 output tokens, and a
   five-step act named `action` and `selector` five times.
+- Quiet debugging: install at a terminal asks once, **Hide Chrome's debugging bar?** (Enter is yes),
+  and keeps the answer; `--quiet-debugging on|off` answers it without asking. On adds Chrome's
+  `--silent-debugger-extension-api` to Chrome's Windows sign-in entry and your own Chrome shortcuts, or
+  on macOS installs a LaunchAgent that opens Chrome with it at login. Shared and OneDrive shortcuts are
+  named, never changed. The trade-off, which the question states: every extension that uses Chrome's
+  debugger then attaches silently. Uninstall takes it off again.
+- `phantab chrome restart-quiet`, at a terminal on a typed y: closes the Chrome phantab is set up for as
+  a system restart does, its tabs saved, and opens it again with its own switches, the quiet flag and
+  its tabs. It refuses while agent pages are open; phantab never restarts Chrome on its own.
 
 ### Fixed
 - A `browser_act` click given `x` and `y` but no selector clicks at that point, as `click_xy` does; it

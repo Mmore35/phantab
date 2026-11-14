@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use crate::{
-    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Result, Snapshot, WindowControl,
-    WindowError, WindowSpec,
+    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Quit, Result, Snapshot,
+    WindowControl, WindowError, WindowSpec,
 };
 
 /// Fails every call with [`WindowError::Unsupported`], naming the platform.
@@ -50,7 +50,7 @@ impl WindowControl for Unsupported {
     async fn quiet(&self, _request: &QuietRequest) -> Result<QuietState> {
         self.fail()
     }
-    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<Quit>> {
         self.fail()
     }
 }

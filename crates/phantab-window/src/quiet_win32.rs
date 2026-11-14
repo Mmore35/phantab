@@ -1,7 +1,9 @@
 //! Windows quiet debugging. Chrome reads `--silent-debugger-extension-api` only from the command line that
 //! starts its browser process, so the flag goes where Windows starts Chrome from: its sign-in (Run) entry
 //! and the shortcuts that start it (Start menu, taskbar, Desktop). Only that flag is added or removed, and
-//! only on entries and shortcuts whose target is the configured Chrome. The running browser is found by
+//! only on entries and shortcuts whose target is the configured Chrome. All users' shortcuts and those on a
+//! `OneDrive` Desktop are only reported: another account's Chrome starts from the first, and a change to the
+//! second syncs to the owner's other PCs. The running browser is found by
 //! its image path and user-data dir; `quit_browser` asks that one process to close the way a system restart
 //! does, so Chrome saves the whole session first.
 //!
@@ -15,6 +17,7 @@ use std::collections::HashSet;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, FILETIME, HMODULE, WAIT_OBJECT_0};
 use windows::Win32::System::Com::{IPersistFile, STGM_READ};
@@ -28,11 +31,12 @@ use windows_registry::{CURRENT_USER, Type};
 
 use crate::matching::{
     expand_env, hkcu_subkey, is_browser_process, on_user_data_dir, rewrite_run_value, rewrite_shortcut_args,
-    running_state,
+    running_state, windows_args,
 };
 use crate::win32::{Owned, chrome_pids, command_line, image_path};
 use crate::{
-    Browser, DEFAULT_RUN_KEY, QUIT_WAIT, QuietRequest, QuietState, Result, ShortcutDir, WindowError,
+    Browser, DEFAULT_RUN_KEY, QUIT_WAIT, QuietRequest, QuietState, Quit, Result, ShortcutDir, ShortcutKind,
+    WindowError,
 };
 
 /// How deep the Start menu and Quick Launch trees are walked, and how many shortcuts at most are read in all:
@@ -51,14 +55,17 @@ pub(crate) fn quiet(request: &QuietRequest) -> Result<QuietState> {
     let run_key = request.run_key.as_deref().unwrap_or(DEFAULT_RUN_KEY);
     let run_value = run_entries(request.mode_on, &browser.chrome_path, run_key)?;
     let dirs = shortcut_dirs(request);
-    let (shortcuts, unwritable) =
-        if dirs.is_empty() { (0, Vec::new()) } else { shortcuts(&dirs, request.mode_on, browser)? };
+    let found =
+        if dirs.is_empty() { Shortcuts::default() } else { shortcuts(&dirs, request.mode_on, browser)? };
     let running = browsers(browser)?;
     Ok(QuietState {
         run_value,
         running: running_state(running.iter().map(|(_, _, line)| line.as_str())),
-        shortcuts,
-        unwritable,
+        shortcuts: found.in_mode,
+        changed: found.changed,
+        unwritable: found.unwritable,
+        shared_shortcuts: found.shared,
+        synced_shortcuts: found.synced,
         launch_agent: None,
     })
 }
@@ -133,12 +140,15 @@ fn normalize(path: &str) -> String {
     path.replace('/', "\\").to_lowercase()
 }
 
-pub(crate) fn quit_browser(browser: &Browser) -> Result<Option<u32>> {
+/// Asks the one browser on the configured user-data dir to close as at a system restart, and waits for it
+/// to exit: the ask and the wait share one [`QUIT_WAIT`] deadline.
+pub(crate) fn quit_browser(browser: &Browser) -> Result<Option<Quit>> {
     if browser.chrome_path.is_empty() {
         return Err(WindowError::InvalidArgument("Quitting Chrome needs the configured Chrome path".into()));
     }
+    let deadline = Instant::now() + QUIT_WAIT;
     let mut found = browsers(browser)?;
-    let (pid, process, _) = match found.len() {
+    let (pid, process, line) = match found.len() {
         0 => return Ok(None),
         1 => found.remove(0),
         n => {
@@ -150,11 +160,30 @@ pub(crate) fn quit_browser(browser: &Browser) -> Result<Option<u32>> {
     };
     let rm = restart_manager()?;
     let created = created(&process)?;
-    rm.shut_down(pid, created)?;
-    let wait = u32::try_from(QUIT_WAIT.as_millis()).unwrap_or(u32::MAX);
-    // SAFETY: `process` is a handle this module opened with synchronize access and still owns.
-    if unsafe { WaitForSingleObject(process.0, wait) } == WAIT_OBJECT_0 {
-        return Ok(Some(pid));
+    // RmShutdown returns only once the process is gone or the Restart Manager gives up, which can take longer
+    // than the wait. So it runs on a thread of its own, and this waits on the process, to the one deadline;
+    // a shutdown that fails ends the wait at once.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("phantab-quit".into())
+        .spawn(move || {
+            let _ = tx.send(rm.shut_down(pid, created));
+        })
+        .map_err(|e| WindowError::Os { context: "start the quit thread", message: e.to_string() })?;
+    let quit = Quit { pid, args: windows_args(&line).into_iter().skip(1).collect() };
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let slice = u32::try_from(left.min(Duration::from_millis(250)).as_millis()).unwrap_or(250);
+        // SAFETY: `process` is a handle this module opened with synchronize access and still owns.
+        if unsafe { WaitForSingleObject(process.0, slice) } == WAIT_OBJECT_0 {
+            return Ok(Some(quit));
+        }
+        if let Ok(Err(e)) = rx.try_recv() {
+            return Err(e);
+        }
+        if left.is_zero() {
+            break;
+        }
     }
     Err(WindowError::Os {
         context: "quit the browser",
@@ -300,27 +329,40 @@ fn shortcut_dirs(request: &QuietRequest) -> Vec<ShortcutDir> {
 
 /// Where Windows starts Chrome from by a shortcut: both Start menus, Quick Launch (its `User Pinned` folder
 /// holds the taskbar's and Start's pinned items), and each Desktop. `var` reads the environment;
-/// `registry_desktop` is the Desktop the shell uses (moved to `OneDrive`, say).
+/// `registry_desktop` is the Desktop the shell uses (moved to `OneDrive`, say). All users' folders are
+/// [`ShortcutKind::Shared`], and any folder under a `OneDrive` root is [`ShortcutKind::Synced`].
 fn real_shortcut_dirs(
     var: impl Fn(&str) -> Option<String>,
     registry_desktop: Option<PathBuf>,
 ) -> Vec<ShortcutDir> {
+    const ONE_DRIVES: [&str; 3] = ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"];
     let base = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let roots: Vec<String> = ONE_DRIVES
+        .iter()
+        .filter_map(|name| base(name))
+        .map(|root| normalize(&root.to_string_lossy()).trim_end_matches('\\').to_owned())
+        .collect();
+    let synced = |path: &Path| {
+        let path = normalize(&path.to_string_lossy());
+        roots.iter().any(|root| path == *root || path.starts_with(&format!("{root}\\")))
+    };
     let mut dirs = Vec::new();
-    let mut tree = |root: Option<PathBuf>, rel: &str, recurse: bool| {
+    let mut tree = |root: Option<PathBuf>, rel: &str, recurse: bool, kind: ShortcutKind| {
         if let Some(root) = root {
-            dirs.push(ShortcutDir { path: root.join(rel), recurse });
+            let path = root.join(rel);
+            let kind = if kind == ShortcutKind::Own && synced(&path) { ShortcutKind::Synced } else { kind };
+            dirs.push(ShortcutDir { path, recurse, kind });
         }
     };
-    tree(base("APPDATA"), r"Microsoft\Windows\Start Menu", true);
-    tree(base("ProgramData"), r"Microsoft\Windows\Start Menu", true);
-    tree(base("APPDATA"), r"Microsoft\Internet Explorer\Quick Launch", true);
-    tree(base("USERPROFILE"), "Desktop", false);
-    tree(registry_desktop, "", false);
-    for one_drive in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
-        tree(base(one_drive), "Desktop", false);
+    tree(base("APPDATA"), r"Microsoft\Windows\Start Menu", true, ShortcutKind::Own);
+    tree(base("ProgramData"), r"Microsoft\Windows\Start Menu", true, ShortcutKind::Shared);
+    tree(base("APPDATA"), r"Microsoft\Internet Explorer\Quick Launch", true, ShortcutKind::Own);
+    tree(base("USERPROFILE"), "Desktop", false, ShortcutKind::Own);
+    tree(registry_desktop, "", false, ShortcutKind::Own);
+    for one_drive in ONE_DRIVES {
+        tree(base(one_drive), "Desktop", false, ShortcutKind::Synced);
     }
-    tree(base("PUBLIC"), "Desktop", false);
+    tree(base("PUBLIC"), "Desktop", false, ShortcutKind::Shared);
     dirs
 }
 
@@ -333,10 +375,16 @@ fn registry_desktop() -> Option<PathBuf> {
     (!path.contains('%')).then(|| PathBuf::from(path))
 }
 
-/// Every `.lnk` file in `dirs` (into subfolders for a `recurse` one), once each, never through a link or a
-/// junction, at most [`MAX_SHORTCUTS`].
-fn shortcut_files(dirs: &[ShortcutDir]) -> Vec<PathBuf> {
-    fn walk(dir: &Path, depth: usize, seen: &mut HashSet<String>, out: &mut Vec<PathBuf>) {
+/// Every `.lnk` file in `dirs` (into subfolders for a `recurse` one), once each (with the kind of the first
+/// folder it was found in), never through a link or a junction, at most [`MAX_SHORTCUTS`].
+fn shortcut_files(dirs: &[ShortcutDir]) -> Vec<(PathBuf, ShortcutKind)> {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        kind: ShortcutKind,
+        seen: &mut HashSet<String>,
+        out: &mut Vec<(PathBuf, ShortcutKind)>,
+    ) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             if out.len() >= MAX_SHORTCUTS {
@@ -350,20 +398,20 @@ fn shortcut_files(dirs: &[ShortcutDir]) -> Vec<PathBuf> {
             }
             if ty.is_dir() {
                 if depth > 0 {
-                    walk(&path, depth - 1, seen, out);
+                    walk(&path, depth - 1, kind, seen, out);
                 }
             } else if ty.is_file()
                 && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
                 && seen.insert(normalize(&path.to_string_lossy()))
             {
-                out.push(path);
+                out.push((path, kind));
             }
         }
     }
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for dir in dirs {
-        walk(&dir.path, if dir.recurse { MAX_DEPTH } else { 0 }, &mut seen, &mut out);
+        walk(&dir.path, if dir.recurse { MAX_DEPTH } else { 0 }, dir.kind, &mut seen, &mut out);
     }
     out
 }
@@ -373,34 +421,58 @@ fn shortcut_files(dirs: &[ShortcutDir]) -> Vec<PathBuf> {
 enum Edit {
     /// It does not start the configured Chrome (or could not be read): left alone.
     Other,
-    /// It starts the browser and is in the asked mode now.
+    /// It starts the browser and was in the asked mode already.
     Done,
+    /// It starts the browser and was rewritten into the asked mode.
+    Changed,
     /// It starts the browser but saving it failed (no write access, say): left as it was.
     Unwritable,
+    /// It starts the browser and is not in the asked mode, but it was not to be written: left as it was.
+    Left,
 }
 
-/// Rewrites every shortcut in `dirs` that starts the browser, on a thread of its own with its own COM
-/// apartment. Returns how many start it and the ones that could not be saved.
-fn shortcuts(dirs: &[ShortcutDir], on: bool, browser: &Browser) -> Result<(usize, Vec<String>)> {
+/// What [`shortcuts`] found.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Shortcuts {
+    /// This user's own shortcuts that start the browser, now in the asked mode.
+    in_mode: usize,
+    /// How many of those were rewritten.
+    changed: usize,
+    unwritable: Vec<String>,
+    /// All users' and `OneDrive` ones not in the asked mode, by path: reported, never written.
+    shared: Vec<String>,
+    synced: Vec<String>,
+}
+
+/// Rewrites every one of this user's own shortcuts in `dirs` that starts the browser, and reports the shared
+/// and synced ones that are not in the asked mode, on a thread of its own with its own COM apartment.
+fn shortcuts(dirs: &[ShortcutDir], on: bool, browser: &Browser) -> Result<Shortcuts> {
     let files = shortcut_files(dirs);
     if files.is_empty() {
-        return Ok((0, Vec::new()));
+        return Ok(Shortcuts::default());
     }
     let browser = browser.clone();
     let thread = std::thread::Builder::new()
         .name("phantab-shortcuts".into())
         .spawn(move || {
             in_apartment(|com| {
-                let mut done = 0;
-                let mut unwritable = Vec::new();
-                for file in &files {
-                    match edit_shortcut(com, file, on, &browser)? {
+                let mut found = Shortcuts::default();
+                for (file, kind) in &files {
+                    let own = *kind == ShortcutKind::Own;
+                    let name = || file.display().to_string();
+                    match edit_shortcut(com, file, on, &browser, own)? {
                         Edit::Other => {}
-                        Edit::Done => done += 1,
-                        Edit::Unwritable => unwritable.push(file.display().to_string()),
+                        Edit::Done => found.in_mode += usize::from(own),
+                        Edit::Changed => {
+                            found.in_mode += 1;
+                            found.changed += 1;
+                        }
+                        Edit::Unwritable => found.unwritable.push(name()),
+                        Edit::Left if *kind == ShortcutKind::Shared => found.shared.push(name()),
+                        Edit::Left => found.synced.push(name()),
                     }
                 }
-                Ok((done, unwritable))
+                Ok(found)
             })
         })
         .map_err(|e| WindowError::Os { context: "start the shortcut thread", message: e.to_string() })?;
@@ -482,10 +554,11 @@ fn from_wide(buf: &[u16]) -> Option<String> {
     (len + 1 < buf.len()).then(|| String::from_utf16_lossy(&buf[..len]))
 }
 
-/// Reads one shortcut and, when it starts the browser, puts it in the asked mode. Turning on touches only
-/// shortcuts on the configured user-data dir (another dir is another browser); turning off takes the flag
-/// from every shortcut that starts the configured Chrome, so nothing phantab added is left behind.
-fn edit_shortcut(com: &Com, path: &Path, on: bool, browser: &Browser) -> Result<Edit> {
+/// Reads one shortcut and, when it starts the browser, puts it in the asked mode (only when `write`; else
+/// it reports [`Edit::Left`]). Turning on touches only shortcuts on the configured user-data dir (another
+/// dir is another browser); turning off takes the flag from every shortcut that starts the configured
+/// Chrome, so nothing phantab added is left behind.
+fn edit_shortcut(com: &Com, path: &Path, on: bool, browser: &Browser, write: bool) -> Result<Edit> {
     let mut raw: *mut c_void = std::ptr::null_mut();
     // SAFETY: valid GUIDs that outlive the call, no outer object, and a writable out pointer.
     let hr = unsafe {
@@ -530,11 +603,14 @@ fn edit_shortcut(com: &Com, path: &Path, on: bool, browser: &Browser) -> Result<
     if new == args {
         return Ok(Edit::Done);
     }
+    if !write {
+        return Ok(Edit::Left);
+    }
     let new = wide(&new);
     // SAFETY: a NUL-terminated string that outlives the call. Save with no name writes back the file loaded.
     let saved =
         unsafe { link.SetArguments(PCWSTR(new.as_ptr())).and_then(|()| file.Save(PCWSTR::null(), true)) };
-    Ok(if saved.is_ok() { Edit::Done } else { Edit::Unwritable })
+    Ok(if saved.is_ok() { Edit::Changed } else { Edit::Unwritable })
 }
 
 #[cfg(test)]
@@ -635,18 +711,21 @@ mod tests {
             default_dir: true,
             ..Browser::default()
         };
-        let tree = vec![ShortcutDir { path: dir.clone(), recurse: true }];
-        let (count, unwritable) = shortcuts(&tree, true, &browser).unwrap();
-        assert_eq!((count, unwritable.len()), (2, 0), "the default-dir ones start this browser");
+        let tree = vec![ShortcutDir::own(dir.clone(), true)];
+        let found = shortcuts(&tree, true, &browser).unwrap();
+        assert_eq!((found.in_mode, found.changed), (2, 2), "the default-dir ones start this browser");
+        assert!(found.unwritable.is_empty() && found.shared.is_empty() && found.synced.is_empty());
         assert_eq!(arguments(&plain), "--silent-debugger-extension-api");
         assert_eq!(arguments(&profile), r#"--silent-debugger-extension-api --profile-directory="Profile 1""#);
         assert_eq!(arguments(&elsewhere), before[2], "another user-data dir is another browser");
         assert_eq!(arguments(&notepad), before[3]);
-        assert_eq!(shortcuts(&tree, true, &browser).unwrap().0, 2, "again changes nothing");
+        let again = shortcuts(&tree, true, &browser).unwrap();
+        assert_eq!((again.in_mode, again.changed), (2, 0), "again changes nothing");
         assert_eq!(arguments(&plain), "--silent-debugger-extension-api");
 
-        let top_only = vec![ShortcutDir { path: dir.clone(), recurse: false }];
-        assert_eq!(shortcuts(&top_only, false, &browser).unwrap().0, 2, "off: every one that starts Chrome");
+        let top_only = vec![ShortcutDir::own(dir.clone(), false)];
+        let off = shortcuts(&top_only, false, &browser).unwrap();
+        assert_eq!((off.in_mode, off.changed), (2, 1), "off: every one that starts Chrome, here");
         assert_eq!(arguments(&plain), "--silent-debugger-extension-api", "not into subfolders");
         shortcuts(&tree, false, &browser).unwrap();
         let after: Vec<String> =
@@ -665,13 +744,44 @@ mod tests {
         perms.set_readonly(true);
         std::fs::set_permissions(&path, perms.clone()).unwrap();
         let browser = Browser { chrome_path: chrome, default_dir: true, ..Browser::default() };
-        let (count, unwritable) =
-            shortcuts(&[ShortcutDir { path: dir.clone(), recurse: false }], true, &browser).unwrap();
-        assert_eq!((count, unwritable), (0, vec![path.display().to_string()]));
+        let found = shortcuts(&[ShortcutDir::own(dir.clone(), false)], true, &browser).unwrap();
+        assert_eq!((found.in_mode, found.changed), (0, 0));
+        assert_eq!(found.unwritable, [path.display().to_string()]);
         assert_eq!(arguments(&path), "--no-first-run");
         #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         std::fs::set_permissions(&path, perms).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// All users' shortcuts and `OneDrive` ones are another account's Chrome or the owner's other PCs: they
+    /// are named, never written, on or off.
+    #[test]
+    fn shared_and_synced_shortcuts_are_reported_and_never_written() {
+        let dir = scratch("kinds");
+        let (shared_dir, synced_dir) = (dir.join("Public"), dir.join("OneDrive"));
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        std::fs::create_dir_all(&synced_dir).unwrap();
+        let chrome = fake_chrome();
+        let (shared, synced) = (shared_dir.join("Chrome.lnk"), synced_dir.join("Chrome.lnk"));
+        make_shortcut(&shared, &chrome, "--no-first-run");
+        make_shortcut(&synced, &chrome, "");
+        let browser = Browser { chrome_path: chrome, default_dir: true, ..Browser::default() };
+        let dirs = vec![
+            ShortcutDir { path: shared_dir, recurse: false, kind: ShortcutKind::Shared },
+            ShortcutDir { path: synced_dir, recurse: false, kind: ShortcutKind::Synced },
+        ];
+        let found = shortcuts(&dirs, true, &browser).unwrap();
+        assert_eq!(
+            found,
+            Shortcuts {
+                shared: vec![shared.display().to_string()],
+                synced: vec![synced.display().to_string()],
+                ..Shortcuts::default()
+            }
+        );
+        assert_eq!((arguments(&shared), arguments(&synced)), ("--no-first-run".to_owned(), String::new()));
+        assert_eq!(shortcuts(&dirs, false, &browser).unwrap(), Shortcuts::default(), "off: nothing to say");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -686,13 +796,13 @@ mod tests {
             std::fs::write(p, b"").unwrap();
         }
         let both = [
-            ShortcutDir { path: dir.clone(), recurse: true },
-            ShortcutDir { path: dir.clone(), recurse: false },
+            ShortcutDir::own(dir.clone(), true),
+            ShortcutDir { path: dir.clone(), recurse: false, kind: ShortcutKind::Shared },
         ];
-        let mut names: Vec<String> = shortcut_files(&both)
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let files = shortcut_files(&both);
+        assert!(files.iter().all(|(_, kind)| *kind == ShortcutKind::Own), "the first folder's kind");
+        let mut names: Vec<String> =
+            files.iter().map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["a.LNK", "c.lnk"]);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -700,6 +810,7 @@ mod tests {
 
     #[test]
     fn the_real_folders_are_the_start_menus_quick_launch_and_the_desktops() {
+        use ShortcutKind::{Own, Shared, Synced};
         let env = |name: &str| match name {
             "APPDATA" => Some(r"C:\Users\a\AppData\Roaming".to_owned()),
             "ProgramData" => Some(r"C:\ProgramData".to_owned()),
@@ -709,27 +820,37 @@ mod tests {
             "PUBLIC" => Some(r"C:\Users\Public".to_owned()),
             _ => None,
         };
-        let dirs = real_shortcut_dirs(env, Some(PathBuf::from(r"D:\Desk")));
-        let shown: Vec<(String, bool)> =
-            dirs.iter().map(|d| (d.path.display().to_string(), d.recurse)).collect();
+        let shown = |registry: &str| -> Vec<(String, bool, ShortcutKind)> {
+            real_shortcut_dirs(env, Some(PathBuf::from(registry)))
+                .iter()
+                .map(|d| (d.path.display().to_string(), d.recurse, d.kind))
+                .collect()
+        };
         assert_eq!(
-            shown,
+            shown(r"D:\Desk"),
             [
-                (r"C:\Users\a\AppData\Roaming\Microsoft\Windows\Start Menu".to_owned(), true),
-                (r"C:\ProgramData\Microsoft\Windows\Start Menu".to_owned(), true),
-                (r"C:\Users\a\AppData\Roaming\Microsoft\Internet Explorer\Quick Launch".to_owned(), true),
-                (r"C:\Users\a\Desktop".to_owned(), false),
-                (r"D:\Desk\".to_owned(), false),
-                (r"C:\Users\a\OneDrive\Desktop".to_owned(), false),
-                (r"C:\Users\Public\Desktop".to_owned(), false),
+                (r"C:\Users\a\AppData\Roaming\Microsoft\Windows\Start Menu".to_owned(), true, Own),
+                (r"C:\ProgramData\Microsoft\Windows\Start Menu".to_owned(), true, Shared),
+                (
+                    r"C:\Users\a\AppData\Roaming\Microsoft\Internet Explorer\Quick Launch".to_owned(),
+                    true,
+                    Own
+                ),
+                (r"C:\Users\a\Desktop".to_owned(), false, Own),
+                (r"D:\Desk\".to_owned(), false, Own),
+                (r"C:\Users\a\OneDrive\Desktop".to_owned(), false, Synced),
+                (r"C:\Users\Public\Desktop".to_owned(), false, Shared),
             ]
         );
+        // The shell's Desktop moved into OneDrive syncs too; a folder only named like it does not.
+        assert_eq!(shown(r"c:\users\a\onedrive\Desktop")[4].2, Synced);
+        assert_eq!(shown(r"C:\Users\a\OneDriveX\Desktop")[4].2, Own);
     }
 
     #[test]
     fn a_test_build_rewrites_no_real_shortcut() {
         assert_eq!(shortcut_dirs(&QuietRequest::default()), Vec::<ShortcutDir>::new());
-        let mine = vec![ShortcutDir { path: PathBuf::from(r"C:\scratch"), recurse: false }];
+        let mine = vec![ShortcutDir::own(r"C:\scratch", false)];
         assert_eq!(
             shortcut_dirs(&QuietRequest { shortcut_dirs: Some(mine.clone()), ..QuietRequest::default() }),
             mine

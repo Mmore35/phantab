@@ -10,7 +10,7 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
-use phantab_window::{Browser, QUIET_FLAG, QuietRequest, QuietState};
+use phantab_window::{Browser, QUIET_FLAG, QUIT_WAIT, QuietRequest, QuietState};
 use serde_json::{Map, Value, json};
 
 use super::Engine;
@@ -21,9 +21,23 @@ use crate::engine_api::{EngineError, EngineResult};
 pub(crate) const QUIET_PENDING: &str = "Chrome's debugging bar still shows on agent pages: the Chrome now running started without the flag, and the bar's X or Cancel ends an agent page. A new window doesn't change that, as hidden agent windows keep the same Chrome running. To fix it now, the owner runs `phantab chrome restart-quiet`: Chrome closes, saving every window and tab, and reopens them with the flag. Otherwise the next Chrome start picks the flag up.";
 /// Added to the note when some shortcut could not be changed.
 const UNWRITABLE: &str = "Some shortcuts that start Chrome could not be changed (`unwritable`): a Chrome started from one of them shows the bar again.";
-/// How long a restarted Chrome has to reconnect the bridge before the answer reports what it found. With
-/// the quit's [`phantab_window::QUIT_WAIT`] it stays inside the CLI's 90 s call.
+/// How long a restarted Chrome has to reconnect the bridge before the answer reports what it found.
 const RECONNECT_WAIT: Duration = Duration::from_secs(20);
+/// All of `restart_quiet`, from its first check to its answer: the quit (at most [`QUIT_WAIT`]), the start,
+/// and the reconnect wait, which gets what is left, up to [`RECONNECT_WAIT`]. Inside the CLI's call, so the
+/// owner always gets the answer rather than a timeout while Chrome is half restarted.
+const RESTART_BUDGET: Duration = Duration::from_secs(80);
+const _: () = assert!(
+    QUIT_WAIT.as_secs() + RECONNECT_WAIT.as_secs() + 10 <= RESTART_BUDGET.as_secs()
+        && RESTART_BUDGET.as_secs() + 5 <= crate::runtime::RPC_TIMEOUT.as_secs()
+);
+/// Chrome's markers around the `chrome://flags` switches it adds to its own command line at each start: a
+/// restart leaves them, and what is between, to Chrome, which adds them again.
+const FLAGS_BEGIN: &str = "--flag-switches-begin";
+const FLAGS_END: &str = "--flag-switches-end";
+/// Switches of a start at sign-in that would keep a restarted Chrome from opening its windows.
+const SIGN_IN_ONLY: [&str; 2] = ["--no-startup-window", "--win-session-start"];
+const RESTORE: &str = "--restore-last-session";
 
 impl Engine {
     /// The browser quiet acts on: `chromeExecutable` on `userDataDir` (Chrome's own default when the config
@@ -87,6 +101,7 @@ impl Engine {
     /// another Chrome, never by a process name. It refuses while agent pages are open, as they would end.
     /// Exclusive in the queue, so no page opens meanwhile.
     pub(crate) async fn restart_quiet(&self) -> EngineResult {
+        let deadline = tokio::time::Instant::now() + RESTART_BUDGET;
         if !self.setup.quiet_marker.is_file() {
             return Err(EngineError(
                 "Quiet debugging is off, so a restart would not hide the bar. Turn it on first: phantab install --quiet-debugging on".to_owned(),
@@ -122,36 +137,68 @@ impl Engine {
             Some(false) => {}
         }
         let browser = self.quiet_browser();
+        // The link up now is the Chrome about to close: only a link after it is the restarted one.
+        let old_link = self.bridge().link_id_in(USUAL);
         let quit = self
             .windows
             .quit_browser(&browser)
             .await
             .map_err(|e| EngineError(format!("Chrome did not close, so nothing was restarted: {e}")))?;
-        let args = restart_args(self.start_user_data_dir().as_deref());
+        let running_args = quit.as_ref().map(|q| q.args.as_slice()).unwrap_or_default();
+        let args = restart_args(self.start_user_data_dir().as_deref(), running_args);
         (self.setup.start_profile.0)(&chrome, &args).map_err(|e| {
             EngineError(format!("Chrome closed but could not be started again: {e}. Open Chrome yourself; it offers to restore its windows."))
         })?;
-        let reconnected = self.bridge().wait_connected_in(USUAL, RECONNECT_WAIT).await;
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let reconnected = self.bridge().wait_new_link_in(USUAL, old_link, RECONNECT_WAIT.min(left)).await;
         let after = self.quiet_now().await?;
         Ok(json!({
             "restarted": true,
-            "quitPid": quit,
+            "quitPid": quit.map(|q| q.pid),
             "reconnected": reconnected,
             "running": after.running,
         }))
     }
 }
 
-/// The arguments that start the owner's Chrome again: `--user-data-dir` only when it is not Chrome's
-/// default (as [`super::profiles::start_args`]), the flag, and the session it saved as it closed.
-pub(crate) fn restart_args(user_data_dir: Option<&std::path::Path>) -> Vec<OsString> {
-    let mut args = Vec::new();
-    if let Some(dir) = user_data_dir {
+/// The arguments that start the owner's Chrome again: the switches it ran with (`running`, so the owner's
+/// own, `--proxy-server=…` say, are kept), less Chrome's `chrome://flags` block, the sign-in start's
+/// `--no-startup-window` and anything that is not a switch (a URL it opened); then `--user-data-dir` when
+/// those name none and it is not Chrome's default (as [`super::profiles::start_args`]), the flag, and the
+/// session Chrome saved as it closed.
+pub(crate) fn restart_args(user_data_dir: Option<&std::path::Path>, running: &[String]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::new();
+    let mut in_flags = false;
+    let mut names_dir = false;
+    for arg in running {
+        // What follows is the command line's positional part (URLs and files).
+        if arg == "--" || arg == "--single-argument" {
+            break;
+        }
+        if in_flags {
+            in_flags = arg != FLAGS_END;
+            continue;
+        }
+        if arg == FLAGS_BEGIN {
+            in_flags = true;
+            continue;
+        }
+        if !arg.starts_with('-')
+            || SIGN_IN_ONLY.contains(&arg.as_str())
+            || arg == QUIET_FLAG
+            || arg == RESTORE
+        {
+            continue;
+        }
+        names_dir |= arg.to_ascii_lowercase().starts_with("--user-data-dir=");
+        args.push(arg.into());
+    }
+    if let Some(dir) = user_data_dir.filter(|_| !names_dir) {
         let mut a = OsString::from("--user-data-dir=");
         a.push(dir);
-        args.push(a);
+        args.insert(0, a);
     }
     args.push(QUIET_FLAG.into());
-    args.push("--restore-last-session".into());
+    args.push(RESTORE.into());
     args
 }

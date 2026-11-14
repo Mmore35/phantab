@@ -10,8 +10,14 @@ use phantab_window::{Browser, QuietRequest, QuietState, ShortcutDir};
 
 use super::{CONFIG, QUIET_MARKER, QUIET_OFF_MARKER};
 
-/// What install asks once, at a terminal, when the owner has not answered yet. Enter is yes.
-pub(crate) const QUESTION: &str = "Hide Chrome's debugging bar? Then every extension that uses Chrome's debugger attaches silently, not only phantab's bridge. [Y/n] ";
+/// What install asks once, at a terminal, when the owner has not answered yet. Enter is yes. On macOS a yes
+/// also installs the `LaunchAgent` that opens Chrome at each login, so the question says so.
+pub(crate) const QUESTION: &str = if cfg!(target_os = "macos") { QUESTION_MAC } else { QUESTION_WINDOWS };
+const QUESTION_WINDOWS: &str = "Hide Chrome's debugging bar? Then every extension that uses Chrome's debugger attaches silently, not only phantab's bridge. [Y/n] ";
+const QUESTION_MAC: &str = "Hide Chrome's debugging bar? Then every extension that uses Chrome's debugger attaches silently, not only phantab's bridge, and Chrome opens at each login (phantab's LaunchAgent starts it with the flag). [Y/n] ";
+/// What to do about a shortcut phantab left with the flag.
+const TAKE_IT_OFF: &str = "to take the flag off, remove --silent-debugger-extension-api from its Target \
+                           (right-click it > Properties > Shortcut)";
 
 /// Where the edits go. All `None` is the real places; tests name scratch ones (`--run-key`,
 /// `--shortcut-dir`, `--launch-agents-dir`, which the usage text leaves out).
@@ -66,24 +72,12 @@ pub(crate) fn set(runtime: &Path, on: bool, places: &Places, out: &mut dyn Write
     report(on, &state, out)
 }
 
-fn report(on: bool, state: &QuietState, out: &mut dyn Write) -> Result<()> {
+/// What an on or off found: the sign-in entry and the shortcuts phantab changed, then each shortcut it
+/// could not or would not change, with what that means (on) or what to do (off).
+pub(crate) fn report(on: bool, state: &QuietState, out: &mut dyn Write) -> Result<()> {
     let mode = if on { "on" } else { "off" };
     if cfg!(windows) {
-        let entry = match state.run_value {
-            Some(_) => "Chrome's sign-in entry",
-            None => "no sign-in entry (Chrome has none in the Run key yet)",
-        };
-        let what = if on { "now start Chrome with the flag" } else { "no longer carry the flag" };
-        let n = state.shortcuts;
-        let shortcuts = if n == 1 { "1 shortcut".to_owned() } else { format!("{n} shortcuts") };
-        writeln!(out, "Quiet debugging {mode}: {entry} and {shortcuts} {what}. Browser not restarted.")?;
-        for path in &state.unwritable {
-            writeln!(
-                out,
-                "Could not change the shortcut {path} (it needs administrator rights): Chrome started from it {}.",
-                if on { "still shows the bar" } else { "keeps the flag" }
-            )?;
-        }
+        report_windows(on, state, out)?;
     } else {
         let agent = if on {
             "phantab's LaunchAgent starts Chrome with the flag at each login. Turn off Chrome's own open at login \
@@ -103,6 +97,68 @@ fn report(on: bool, state: &QuietState, out: &mut dyn Write) -> Result<()> {
         (true, Some(true)) => writeln!(out, "The Chrome running now already has the flag.")?,
         (false, Some(true)) => writeln!(out, "The Chrome running now keeps the flag until it restarts.")?,
         (_, None) | (false, Some(false)) => {}
+    }
+    Ok(())
+}
+
+fn report_windows(on: bool, state: &QuietState, out: &mut dyn Write) -> Result<()> {
+    let count = |n: usize| if n == 1 { "1 shortcut".to_owned() } else { format!("{n} shortcuts") };
+    let has_entry = state.run_value.is_some();
+    if on {
+        let entry = if has_entry { "Chrome's sign-in entry and " } else { "" };
+        writeln!(
+            out,
+            "Quiet debugging on: {entry}{} start Chrome with the flag ({} changed now). Browser not restarted.",
+            count(state.shortcuts),
+            state.changed
+        )?;
+    } else {
+        let entry = if has_entry { "Chrome's sign-in entry no longer carries the flag, and " } else { "" };
+        writeln!(
+            out,
+            "Quiet debugging off: {entry}phantab took the flag off {}. Browser not restarted.",
+            count(state.changed)
+        )?;
+    }
+    if !has_entry {
+        writeln!(out, "Chrome has no sign-in entry in the Run key yet, so none was changed.")?;
+    }
+    for path in &state.unwritable {
+        if on {
+            writeln!(
+                out,
+                "Could not change the shortcut {path} (read-only, or it needs administrator rights): Chrome \
+                 started from it still shows the bar."
+            )?;
+        } else {
+            writeln!(
+                out,
+                "Could not change the shortcut {path} (read-only, or it needs administrator rights), so it still \
+                 carries the flag: {TAKE_IT_OFF}."
+            )?;
+        }
+    }
+    let left = [
+        (
+            &state.shared_shortcuts,
+            "every account on this PC starts Chrome from it, and phantab never changes another account's Chrome",
+        ),
+        (&state.synced_shortcuts, "it is on a OneDrive Desktop, so a change would sync to your other PCs"),
+    ];
+    for (paths, why) in left {
+        for path in paths {
+            if on {
+                writeln!(
+                    out,
+                    "Left the shortcut {path} alone: {why}. Chrome started from it shows the bar."
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "Left the shortcut {path} alone, so it still carries the flag ({why}): {TAKE_IT_OFF}."
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -184,7 +240,45 @@ mod tests {
         assert!(!yes);
         assert_eq!(said.matches(QUESTION).count(), 2, "{said}");
         assert!(said.contains("Answer y or n."));
-        assert!(QUESTION.contains("every extension that uses Chrome's debugger attaches silently"));
+        for question in [QUESTION_WINDOWS, QUESTION_MAC] {
+            assert!(question.contains("every extension that uses Chrome's debugger attaches silently"));
+            assert!(question.starts_with("Hide Chrome's debugging bar?") && question.ends_with("[Y/n] "));
+        }
+        assert!(QUESTION_MAC.contains("Chrome opens at each login"), "a yes also opens Chrome at login");
+        assert!(!QUESTION_WINDOWS.contains("login"));
+    }
+
+    fn reported(on: bool, state: &QuietState) -> String {
+        let mut out = Vec::new();
+        report_windows(on, state, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn the_windows_report_counts_what_changed_and_says_what_was_left() {
+        let state = QuietState {
+            run_value: Some(true),
+            shortcuts: 3,
+            changed: 1,
+            unwritable: vec!["C:/ro.lnk".into()],
+            shared_shortcuts: vec!["C:/Users/Public/Desktop/Chrome.lnk".into()],
+            synced_shortcuts: vec!["C:/o/Desktop/Chrome.lnk".into()],
+            ..QuietState::default()
+        };
+        let on = reported(true, &state);
+        assert!(
+            on.contains("Chrome's sign-in entry and 3 shortcuts start Chrome with the flag (1 changed now)"),
+            "{on}"
+        );
+        assert!(on.contains("Public/Desktop/Chrome.lnk alone: every account on this PC"), "{on}");
+        assert!(on.contains("never changes another account's Chrome"), "{on}");
+        assert!(on.contains("C:/o/Desktop/Chrome.lnk alone: it is on a OneDrive Desktop"), "{on}");
+        assert!(on.contains("C:/ro.lnk (read-only"), "{on}");
+        assert!(!on.contains(TAKE_IT_OFF), "{on}");
+        let off = reported(false, &QuietState { run_value: None, ..state });
+        assert!(off.contains("Quiet debugging off: phantab took the flag off 1 shortcut."), "{off}");
+        assert!(off.contains("Chrome has no sign-in entry in the Run key yet"), "{off}");
+        assert_eq!(off.matches(TAKE_IT_OFF).count(), 3, "each shortcut still flagged says what to do: {off}");
     }
 
     #[test]
