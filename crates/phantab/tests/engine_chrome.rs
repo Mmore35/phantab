@@ -575,8 +575,7 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         );
         assert_eq!(missed["isError"], json!(true), "{missed}");
         let said = missed["content"][0]["text"].as_str().unwrap_or_default();
-        assert!(said.starts_with("#nowhere: not found after ") && said.contains("
-CONTROLS"), "{said}");
+        assert!(said.starts_with("#nowhere: not found after ") && said.contains("\nCONTROLS"), "{said}");
         let shot = call("browser_screenshot", json!({ "pageId": page }));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
         let closed = call("browser_close", json!({ "pageId": page }));
