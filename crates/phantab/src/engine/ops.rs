@@ -87,6 +87,50 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
     args.get(key).filter(|v| !v.is_null())
 }
 
+/// The point `actionable.js` gave for a selector's element that only an open shadow root has, read back
+/// from the wait's failure: `… (an open shadow root has it at 32,192: click_xy reaches it …`.
+pub(super) fn in_shadow_at(e: &Failed) -> Option<(f64, f64)> {
+    let (Failed::Settled(EngineError(m)) | Failed::Unsure(EngineError(m))) = e;
+    shadow_point(m)
+}
+
+/// [`in_shadow_at`] for the failure's words alone.
+pub(super) fn shadow_point(m: &str) -> Option<(f64, f64)> {
+    let (_, at) = m.split_once(": not found in the document (an open shadow root has it at ")?;
+    let (x, rest) = at.split_once(',')?;
+    let (y, _) = rest.split_once(": click_xy reaches it")?;
+    Some((x.parse().ok()?, y.parse().ok()?))
+}
+
+/// `act`'s action. A click given a point and no selector is a click at that point: agents reading a
+/// snapshot's `32,192` wrote `click` with x and y, in 5 of 25 of one task's runs in climb
+/// 2026-11-13-phantab-2x-faster-than-competition, and each spent a call on the failure.
+fn act_action(args: &Value) -> EngineResult<String> {
+    let action = arg_str(args, "action").unwrap_or_else(|| "undefined".to_owned());
+    let selector_given = matches!(arg(args, "selector"), Some(Value::String(_)));
+    if action == "click" && !selector_given && arg(args, "x").is_some() && arg(args, "y").is_some() {
+        return Ok("click_xy".to_owned());
+    }
+    if ["click", "fill", "select"].contains(&action.as_str()) && !selector_given {
+        let point = if action == "click" { ", or x and y to click at a point" } else { "" };
+        return Err(EngineError(format!("Supply a selector to {action}{point}.")));
+    }
+    Ok(action)
+}
+
+/// A mouse click at a point. If only the release times out, the button stays recorded as pressed and every
+/// later click refuses, so a failed click resets the mouse.
+async fn click_at(p: &Page, x: f64, y: f64) -> Result<(), CdpError> {
+    let clicked = p.mouse_click(x, y).await;
+    if clicked.is_err() {
+        let page = p.clone();
+        super::relay::fire(async move {
+            let _ = page.mouse_reset().await;
+        });
+    }
+    clicked
+}
+
 fn arg_str(args: &Value, key: &str) -> Option<String> {
     arg(args, key).map(|v| js_string(Some(v)))
 }
@@ -544,7 +588,7 @@ impl Engine {
     pub(crate) async fn act(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, true)?;
         self.lock_site(&r, None)?;
-        let action = arg_str(args, "action").unwrap_or_else(|| "undefined".to_owned());
+        let action = act_action(args)?;
         let what =
             if action == "press" { format!("press {}", js_string(arg(args, "key"))) } else { action.clone() };
         let workspace = r.lock().workspace;
@@ -559,9 +603,18 @@ impl Engine {
                     let said = |e: EngineError| unconfirmed(e, &what);
                     let selector = js_string(arg(args, "selector"));
                     if ["click", "fill", "select"].contains(&action.as_str()) {
-                        let sel = Value::String(selector.clone());
-                        poll_until(&p, &selector, ACTIONABLE, &[sel], Duration::from_secs(10), Some(&signal))
-                            .await?;
+                        let (sel, ten) = ([Value::String(selector.clone())], Duration::from_secs(10));
+                        let waited = poll_until(&p, &selector, ACTIONABLE, &sel, ten, Some(&signal)).await;
+                        // A click whose element only an open shadow root has goes to that element's point, as
+                        // the failure would tell the agent to do with click_xy (a turn more for it); with
+                        // guardrails on, `confirm_first` has checked that point.
+                        match (waited, action == "click") {
+                            (Err(e), true) => {
+                                let Some((x, y)) = in_shadow_at(&e) else { return Err(e) };
+                                return click_at(&p, x, y).await.map_err(|e| said(e.into()).into());
+                            }
+                            (waited, _) => waited?,
+                        }
                     }
                     match action.as_str() {
                         "navigate" => {
@@ -618,18 +671,10 @@ impl Engine {
                             let dy = arg(args, "deltaY").and_then(Value::as_f64).unwrap_or(600.0);
                             p.mouse_wheel(dy).await.map_err(|e| said(e.into()))?;
                         }
-                        // If only the release times out, the button stays recorded as pressed and every later click
-                        // refuses.
                         "click_xy" => {
                             let x = arg(args, "x").and_then(Value::as_f64).unwrap_or(f64::NAN);
                             let y = arg(args, "y").and_then(Value::as_f64).unwrap_or(f64::NAN);
-                            if let Err(e) = p.mouse_click(x, y).await {
-                                let page = p.clone();
-                                super::relay::fire(async move {
-                                    let _ = page.mouse_reset().await;
-                                });
-                                return Err(said(e.into()).into());
-                            }
+                            click_at(&p, x, y).await.map_err(|e| said(e.into()))?;
                         }
                         _ => return Err(Failed::Settled(EngineError("Unsupported action".to_owned()))),
                     }

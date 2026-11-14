@@ -7,7 +7,8 @@
 /// `actionable`: true when the selector's element can be acted on, else why not. Why not is a string, except
 /// that a selector with no element on a loaded page answers `['not found', <the page's element count>]`, so
 /// an action's wait can tell a page that has stopped changing (`read::poll`). When an open shadow root has
-/// the selector's element, which selectors never reach, the answer says where to `click_xy` it instead.
+/// the selector's element, which selectors never reach, the answer says where to `click_xy` it instead,
+/// with a null mark, so the wait ends there.
 pub const ACTIONABLE: &str = include_str!("actionable.js");
 /// `present`: the selector exists and the text is on the page (either may be absent).
 pub const PRESENT: &str = include_str!("present.js");
@@ -126,7 +127,7 @@ pub(crate) mod tests {
     /// SHA-256 of each of [`SOURCES`], in its order. A deliberate change to a page function updates its
     /// line here (the failure prints the new list).
     const GOLDEN: &[(&str, &str)] = &[
-        ("actionable.js", "c9fcdb84205a132515c61b997cba59e2e4c511e760e6c24ad68915670e232c10"),
+        ("actionable.js", "71c60b44c08c94c9387c27c5309d9491f9fad99b4a81a00be13da7b7c1d43aed"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
         ("read_frame.js", "7afc0a457a986c1a41c9fd93e42d091c0f45e020ed02e6ece8e4fed7ebd28176"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),

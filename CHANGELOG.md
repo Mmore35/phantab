@@ -31,6 +31,10 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   five-step act named `action` and `selector` five times.
 
 ### Fixed
+- A `browser_act` click given `x` and `y` but no selector clicks at that point, as `click_xy` does; it
+  failed with `undefined: not found`. A click, fill or select with neither now says it needs a selector.
+  A click whose selector matches only an element in an open shadow root clicks it at its point; a fill or
+  select there still fails saying where `click_xy` reaches it, now at once rather than after 1.5 s.
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
   `cp`, which refuses to overwrite the shared `extension.zip` it had just copied. v0.4.0's files were
   uploaded by hand from the same workflow run.

@@ -385,16 +385,24 @@ async fn snapshots_read_shadow_roots_and_website_frames_and_click_xy_reaches_the
     assert_eq!(element(&snap, "light").unwrap()["offscreen"], Value::Null);
     assert_eq!(element(&snap, "shadow").unwrap()["inShadow"], json!(true));
     assert_eq!(element(&snap, "otherframe").unwrap()["frame"], json!(lane.fixtures.twin_origin()));
-    // A selector for an open shadow root's element fails saying where click_xy reaches it.
+    // A fill for an open shadow root's element fails saying where click_xy reaches it; a click goes there.
     let inside = element(&snap, "shadow").unwrap();
-    let told = lane.act("a", &a, json!({ "action": "click", "selector": "#shadow" })).await.unwrap_err();
+    let told =
+        lane.act("a", &a, json!({ "action": "fill", "selector": "#shadow", "text": "x" })).await.unwrap_err();
     let place = format!("an open shadow root has it at {},{}: click_xy reaches it", inside["x"], inside["y"]);
     assert!(told.starts_with("#shadow: not found in the document (") && told.contains(&place), "{told}");
+    let r = lane.act("a", &a, json!({ "action": "click", "selector": "#shadow" })).await;
+    assert!(r.is_ok(), "{r:?}");
     for id in ["light", "shadow", "sameframe", "otherframe"] {
         let e = element(&snap, id).unwrap();
         let r = lane.act("a", &a, json!({ "action": "click_xy", "x": e["x"], "y": e["y"] })).await;
         assert!(r.is_ok(), "click_xy on {id} at {},{}: {r:?}", e["x"], e["y"]);
     }
+    // A click with a point and no selector clicks there; one with neither says what it needs.
+    let r = lane.act("a", &a, json!({ "action": "click", "x": inside["x"], "y": inside["y"] })).await;
+    assert!(r.is_ok(), "{r:?}");
+    let told = lane.act("a", &a, json!({ "action": "click" })).await.unwrap_err();
+    assert!(told.starts_with("Supply a selector to click, or x and y to click at a point."), "{told}");
     // A cross-site frame that has just loaded can miss its first synthetic click in headless Chrome
     // (the browser's hit test does not route to it yet), so a
     // miss is clicked again, and the repeats are counted.

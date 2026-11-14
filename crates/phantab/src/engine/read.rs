@@ -82,7 +82,8 @@ const QUICK_CHECK: Duration = Duration::from_millis(10);
 /// count as the mark) ends the wait once the mark has held this long: a page that has stopped changing is
 /// not about to grow the element. An agent that guessed a selector waited out the whole 10 s in 9 of the
 /// 10 app and shop runs of climb 2026-11-13-phantab-2x-faster-than-competition's benchmark. Longer than
-/// the second a hidden window's timers can wait.
+/// the second a hidden window's timers can wait. A mark of null ends it at once: `actionable` answers that
+/// for an element only an open shadow root has, which no selector will reach however long it waits.
 const GIVE_UP_QUIET: Duration = Duration::from_millis(1500);
 
 /// [`until`] with the quick start, saying whether a detach can be behind its failure: a timeout whose last
@@ -115,6 +116,7 @@ async fn poll(
     // The last mark the page answered and when it first did; `quiet` once it has held GIVE_UP_QUIET.
     let mut mark: Option<(Value, Instant)> = None;
     let mut quiet = false;
+    let mut last_word = false;
     while Instant::now() < end && !aborted(signal) {
         let attempt = async {
             let frame = page.main_frame()?;
@@ -139,6 +141,10 @@ async fn poll(
                 why = cut(&js_string(Some(&said)), PAGE_TEXT_LIMIT);
                 answers += 1;
                 answered = true;
+                if now == Some(Value::Null) {
+                    last_word = true;
+                    break;
+                }
                 mark = match (now, mark) {
                     (Some(m), Some((last, since))) if m == last => Some((last, since)),
                     (m, _) => m.map(|m| (m, Instant::now())),
@@ -158,6 +164,9 @@ async fn poll(
         return Err(Failed::Unsure(EngineError(format!(
             "{label}: the page detached or closed during the wait."
         ))));
+    }
+    if last_word {
+        return Err(Failed::Settled(EngineError(format!("{label}: {why}."))));
     }
     if quiet {
         return Err(Failed::Settled(EngineError(format!(
