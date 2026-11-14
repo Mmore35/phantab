@@ -593,8 +593,10 @@ impl Engine {
                                     type_of(value)
                                 ))));
                             };
-                            let options =
-                                p.eval_on_selector(&selector, SELECT_OPTIONS).await.map_err(|e| said(e.into()))?;
+                            let options = p
+                                .eval_on_selector(&selector, SELECT_OPTIONS)
+                                .await
+                                .map_err(|e| said(e.into()))?;
                             let v = pick_option(&options, v)
                                 .map_err(|why| Failed::Settled(EngineError(format!("{selector}: {why}"))))?;
                             p.select(&selector, &[v]).await.map_err(|e| said(e.into()))?;
@@ -1036,10 +1038,8 @@ impl Engine {
 /// select that matched nothing used to succeed with nothing chosen.
 fn pick_option(options: &Value, want: &str) -> Result<String, String> {
     let Some(list) = options.as_array() else { return Ok(want.to_owned()) };
-    let pairs: Vec<(&str, &str)> = list
-        .iter()
-        .filter_map(|o| Some((o.get(0)?.as_str()?, o.get(1)?.as_str()?)))
-        .collect();
+    let pairs: Vec<(&str, &str)> =
+        list.iter().filter_map(|o| Some((o.get(0)?.as_str()?, o.get(1)?.as_str()?))).collect();
     if pairs.iter().any(|(value, _)| *value == want) {
         return Ok(want.to_owned());
     }
@@ -1049,9 +1049,11 @@ fn pick_option(options: &Value, want: &str) -> Result<String, String> {
     }
     let named: Vec<String> = pairs
         .iter()
-        .map(|(value, label)| {
-            if value == label { format!("{value:?}") } else { format!("{label:?} (value {value:?})") }
-        })
+        .map(
+            |(value, label)| {
+                if value == label { format!("{value:?}") } else { format!("{label:?} (value {value:?})") }
+            },
+        )
         .collect();
     Err(format!(
         "no option has the value or label {:?}; the options are {}",
@@ -1089,7 +1091,12 @@ mod tests {
         let tricky = json!([["March", "Third"], ["3", "March"]]);
         assert_eq!(pick_option(&tricky, "March").unwrap(), "March");
         let none = pick_option(&options, "Marzo").unwrap_err();
-        assert!(none.starts_with("no option has the value or label \"Marzo\"; the options are \"Month\" (value \"\")"), "{none}");
+        assert!(
+            none.starts_with(
+                "no option has the value or label \"Marzo\"; the options are \"Month\" (value \"\")"
+            ),
+            "{none}"
+        );
         assert!(none.contains("\"March\" (value \"3\")") && none.contains("\"May\""), "{none}");
         // Not a <select>: left to the select itself.
         assert_eq!(pick_option(&Value::Null, "x").unwrap(), "x");
