@@ -5,6 +5,12 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 
 ## Unreleased
 
+### Changed
+- A `browser_act` click, fill or select whose selector matches nothing on a loaded page now fails once
+  the page has stopped changing for 1.5 s, instead of after the full 10 s: `#x: not found after 1.6 s,
+  and the page had stopped changing`. A page that is still loading or changing keeps the 10 s. In an
+  agent benchmark, a guessed selector cost the app and shop tasks about 9 s each.
+
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
   `cp`, which refuses to overwrite the shared `extension.zip` it had just copied. v0.4.0's files were

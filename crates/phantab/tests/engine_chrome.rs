@@ -239,6 +239,12 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     lane.act("c", &c, json!({ "action": "scroll", "deltaY": 400 })).await.unwrap();
     let missing = lane.act("c", &c, json!({ "action": "click", "selector": "#disabled" })).await.unwrap_err();
     assert!(missing.starts_with("#disabled: disabled after"), "{missing}");
+    // A selector the loaded page has no element for fails once the page has stopped changing, not after
+    // the full 10 s.
+    let t = Instant::now();
+    let absent = lane.act("c", &c, json!({ "action": "click", "selector": "#nowhere" })).await.unwrap_err();
+    assert!(absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"), "{absent}");
+    assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
     let bad = lane.act("c", &c, json!({ "action": "click", "selector": "a >> nth=0" })).await.unwrap_err();
     assert!(bad.contains("not a valid selector"), "{bad}");
     let twin = lane.fixtures.twin_url("/engine/basic");

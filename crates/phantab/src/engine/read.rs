@@ -53,7 +53,7 @@ pub(crate) async fn on_abort(signal: Option<&Abort>) {
 }
 
 /// Polls `check` (a page function) from here, one evaluate per check; it returns true, or why not as a
-/// short string.
+/// short string, or `[why, mark]` (see [`GIVE_UP_QUIET`]).
 ///
 /// Not a wait inside the page: that takes several round trips per wait, which a busy page's traffic
 /// stretched past 10 s on a form that was there, and it waits out its timeout after losing the page to
@@ -76,6 +76,13 @@ pub async fn until(
 /// (perf-ops-15).
 const QUICK_FOR: Duration = Duration::from_millis(300);
 const QUICK_CHECK: Duration = Duration::from_millis(10);
+
+/// A check that answers `[why, mark]` (`actionable` on a loaded page with no such element, its element
+/// count as the mark) ends the wait once the mark has held this long: a page that has stopped changing is
+/// not about to grow the element. An agent that guessed a selector waited out the whole 10 s in 9 of the
+/// 10 app and shop runs of climb 2026-11-13-phantab-2x-faster-than-competition's benchmark. Longer than
+/// the second a hidden window's timers can wait.
+const GIVE_UP_QUIET: Duration = Duration::from_millis(1500);
 
 /// [`until`] with the quick start, saying whether a detach can be behind its failure: a timeout whose last
 /// check the page answered is [`Failed::Settled`], as is a check that threw.
@@ -104,6 +111,9 @@ async fn poll(
     let mut why = "the page did not answer".to_owned();
     let mut answers = 0u32;
     let mut answered = false;
+    // The last mark the page answered and when it first did; `quiet` once it has held GIVE_UP_QUIET.
+    let mut mark: Option<(Value, Instant)> = None;
+    let mut quiet = false;
     while Instant::now() < end && !aborted(signal) {
         let attempt = async {
             let frame = page.main_frame()?;
@@ -117,10 +127,25 @@ async fn poll(
             Ok(Err(_)) => "the page was navigating".clone_into(&mut why),
             Ok(Ok(Value::Bool(true))) => return Ok(()),
             Ok(Ok(v)) => {
+                let (said, now) = match v {
+                    Value::Array(mut a) if a.len() == 2 => {
+                        let m = a.pop();
+                        (a.pop().unwrap_or(Value::Null), m)
+                    }
+                    v => (v, None),
+                };
                 // The page's own words (SR-32).
-                why = cut(&js_string(Some(&v)), PAGE_TEXT_LIMIT);
+                why = cut(&js_string(Some(&said)), PAGE_TEXT_LIMIT);
                 answers += 1;
                 answered = true;
+                mark = match (now, mark) {
+                    (Some(m), Some((last, since))) if m == last => Some((last, since)),
+                    (m, _) => m.map(|m| (m, Instant::now())),
+                };
+                if mark.as_ref().is_some_and(|(_, since)| since.elapsed() >= GIVE_UP_QUIET) {
+                    quiet = true;
+                    break;
+                }
             }
         }
         let gap =
@@ -131,6 +156,12 @@ async fn poll(
     if aborted(signal) {
         return Err(Failed::Unsure(EngineError(format!(
             "{label}: the page detached or closed during the wait."
+        ))));
+    }
+    if quiet {
+        return Err(Failed::Settled(EngineError(format!(
+            "{label}: {why} after {:.1} s, and the page had stopped changing (the page answered {answers} checks).",
+            start.elapsed().as_secs_f64()
         ))));
     }
     let e = EngineError(format!(

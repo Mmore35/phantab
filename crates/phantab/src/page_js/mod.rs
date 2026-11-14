@@ -4,7 +4,9 @@
 //! [`tests`] pins every file to its SHA-256, so a change to what a page runs is always a deliberate one,
 //! and checks each of [`PATCHES`] (the hardened reads) is in place.
 
-/// `actionable`: true when the selector's element can be acted on, else why not.
+/// `actionable`: true when the selector's element can be acted on, else why not. Why not is a string, except
+/// that a selector with no element on a loaded page answers `['not found', <the page's element count>]`, so
+/// an action's wait can tell a page that has stopped changing (`read::poll`).
 pub const ACTIONABLE: &str = include_str!("actionable.js");
 /// `present`: the selector exists and the text is on the page (either may be absent).
 pub const PRESENT: &str = include_str!("present.js");
@@ -52,6 +54,16 @@ pub(crate) const PATCHES: &[(&str, &str, &str)] = &[
         "actionable.js",
         r"const b=e.getBoundingClientRect();",
         r"const b=Element.prototype.getBoundingClientRect.call(e);",
+    ),
+    (
+        "actionable.js",
+        r"document.readyState",
+        r"Object.getOwnPropertyDescriptor(Document.prototype,'readyState').get.call(document)",
+    ),
+    (
+        "actionable.js",
+        r"document.getElementsByTagName('*')",
+        r"Document.prototype.getElementsByTagName.call(document,'*')",
     ),
     ("present.js", r"!document.querySelector(s)", r"!Document.prototype.querySelector.call(document,s)"),
     (
@@ -109,7 +121,7 @@ pub(crate) mod tests {
     /// SHA-256 of each of [`SOURCES`], in its order. A deliberate change to a page function updates its
     /// line here (the failure prints the new list).
     const GOLDEN: &[(&str, &str)] = &[
-        ("actionable.js", "901527d21bd174f27b15b51bb6a9b37f49a7261a17a87a02b7629ea0c3f2a55c"),
+        ("actionable.js", "af6058452f786175ae70af8485f22cd06e2a03de5ce28695155d939302078869"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
         ("read_frame.js", "aa26da5a270d0f7db10c63fdcda2087a1d19865cf3249dd0227fe73af256bf16"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),
