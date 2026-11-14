@@ -1,0 +1,14 @@
+<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Verify you are human</title>
+<body style="font:16px sans-serif;margin:0"><h1>Press and hold</h1>
+<div id=b style="width:260px;height:70px;background:#3367d6;color:#fff;display:flex;align-items:center;justify-content:center;user-select:none;touch-action:none">Press &amp; hold</div>
+<p id=log></p>
+<script>
+let t0 = 0; const seen = []; const b = document.getElementById('b');
+b.addEventListener('pointerdown', e => { t0 = performance.now(); seen.push('down:' + e.isTrusted); b.style.background = '#0a0'; });
+b.addEventListener('pointerup', e => {
+  seen.push('up:' + e.isTrusted);
+  const held = performance.now() - t0;
+  document.getElementById('log').textContent = 'held ' + Math.round(held) + 'ms ' + seen.join(' ');
+  if (held >= 1500) setTimeout(() => location.href = '/verify/shop', 300); else b.style.background = '#3367d6';
+});
+</script></body>

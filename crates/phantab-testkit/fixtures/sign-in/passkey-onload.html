@@ -1,0 +1,8 @@
+<title>Sign in</title>
+<script>
+// Asks for a passkey as it loads, through a stand-in that never calls the browser's own WebAuthn
+// (see passkey-ask.html). The password form below waits under the owner's pop-up.
+navigator.credentials.get = (o) => new Promise(() => {});
+navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32) } });
+</script>
+<form method="post" action="/post/passkey-onload"><input name="user" autocomplete="username"><input name="pass" type="password"><button>Sign in</button></form>

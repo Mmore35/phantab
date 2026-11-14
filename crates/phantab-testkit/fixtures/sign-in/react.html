@@ -1,0 +1,5 @@
+<title>React</title><form id="f"><input id="p" type="password"><button>Sign in</button></form><p id="state"></p><script>
+    const d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');let tracked='';window.reactState='';
+    Object.defineProperty(p,'value',{configurable:true,get(){return d.get.call(this);},set(v){tracked=v;d.set.call(this,v);}});
+    p.addEventListener('input',()=>{const now=d.get.call(p);if(now!==tracked){tracked=now;window.reactState=now;state.textContent=now?'typed':'blank';}});
+    f.addEventListener('submit',e=>{e.preventDefault();fetch('/post/script',{method:'POST',body:new URLSearchParams({pass:window.reactState})});});</script>

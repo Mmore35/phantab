@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orders · Northwind Admin</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 200px 1fr; font-size: 14px; }
+#menu { background: #20232a; color: #ddd; padding: 12px; min-height: 100vh; }
+#menu a { color: #ddd; display: block; margin: 6px 0; }
+main { padding: 16px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid #ddd; padding: 4px 8px; text-align: left; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+#pager button { margin: 2px; }
+</style>
+</head>
+<body>
+<nav id="menu"></nav>
+<main>
+  <h1>Orders</h1>
+  <div class="toolbar">
+    <label for="search">Search</label>
+    <input type="search" id="search" placeholder="Order number or customer name">
+    <label for="status">Status</label>
+    <select id="status"><option value="">All statuses</option><option>Pending</option><option>Paid</option><option>Shipped</option><option>Delivered</option><option>Refunded</option><option>Cancelled</option></select>
+    <label for="per-page">Rows per page</label>
+    <select id="per-page"><option>25</option><option>100</option><option>All</option></select>
+    <button type="button" id="export">Export CSV</button>
+  </div>
+  <p id="summary"></p>
+  <table>
+    <thead><tr><th><button type="button" data-sort="id">Order</button></th><th><button type="button" data-sort="date">Date</button></th><th><button type="button" data-sort="customer">Customer</button></th><th>Items</th><th><button type="button" data-sort="status">Status</button></th><th><button type="button" data-sort="total">Total</button></th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="pager"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+$('menu').innerHTML = '<strong>Northwind Admin</strong>' + ['Dashboard', 'Orders', 'Returns', 'Products', 'Inventory', 'Customers', 'Discounts', 'Gift cards', 'Reports', 'Analytics', 'Marketing', 'Stores', 'Staff', 'Settings', 'Help'].map(m => `<a href="#${m.toLowerCase().replace(/\W+/g, '-')}">${m}</a>`).join('');
+// 1,200 deterministic orders. Marta Quist's nine are fixed by hand; no generated order is hers.
+const first = ['Ada', 'Ben', 'Chen', 'Dara', 'Eli', 'Fay', 'Gus', 'Hana', 'Ivo', 'Jun', 'Kai', 'Lena', 'Milo', 'Nia', 'Omar', 'Pia', 'Rui', 'Sana', 'Theo', 'Uma', 'Vera', 'Wes', 'Yara', 'Zed'];
+const last = ['Park', 'Novak', 'Quist', 'Reyes', 'Silva', 'Tanaka', 'Ueda', 'Varga', 'Weber', 'Xu', 'Young', 'Zhou', 'Abara', 'Brandt', 'Costa', 'Dahl'];
+const statuses = ['Pending', 'Paid', 'Shipped', 'Delivered', 'Delivered', 'Delivered', 'Refunded', 'Cancelled'];
+let seed = 20261110;
+const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+const pick = a => a[Math.floor(rnd() * a.length)];
+const day = n => { const d = new Date(Date.UTC(2026, 0, 1) + n * 86400000); return d.toISOString().slice(0, 10); };
+const orders = [];
+for (let i = 0; i < 1200; i++) {
+  let name = `${pick(first)} ${pick(last)}`;
+  if (name === 'Marta Quist') name = 'Mara Quist';
+  orders.push({ id: `NW-${10000 + i}`, date: day(Math.floor(i / 4)), customer: name, items: 1 + Math.floor(rnd() * 6), status: pick(statuses), total: Math.round((15 + rnd() * 480) * 100) / 100 });
+}
+const marta = [
+  [77, 'Delivered', 128.40, 2], [190, 'Refunded', 64.95, 1], [318, 'Paid', 212.00, 4], [455, 'Refunded', 149.50, 3], [602, 'Shipped', 39.99, 1],
+  [744, 'Delivered', 88.10, 2], [877, 'Refunded', 23.75, 1], [1003, 'Cancelled', 310.00, 5], [1150, 'Delivered', 57.30, 2],
+];
+for (const [i, status, total, items] of marta) Object.assign(orders[i], { customer: 'Marta Quist', status, total, items });
+let page = 0, sortKey = 'id', sortDir = 1;
+const view = () => {
+  const q = $('search').value.trim().toLowerCase(), st = $('status').value;
+  return orders.filter(o => (!q || o.id.toLowerCase().includes(q) || o.customer.toLowerCase().includes(q)) && (!st || o.status === st))
+    .sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : a[sortKey] < b[sortKey] ? -1 : 0) * sortDir);
+};
+const render = () => {
+  const all = view(), per = $('per-page').value === 'All' ? all.length || 1 : Number($('per-page').value);
+  const pages = Math.max(1, Math.ceil(all.length / per));
+  page = Math.min(page, pages - 1);
+  const shown = all.slice(page * per, page * per + per);
+  $('summary').textContent = `${all.length} orders · showing ${shown.length ? page * per + 1 : 0}–${page * per + shown.length} · page ${page + 1} of ${pages}`;
+  $('rows').innerHTML = shown.map(o => `<tr><td><a href="#order-${o.id}">${o.id}</a></td><td>${o.date}</td><td>${o.customer}</td><td>${o.items}</td><td>${o.status}</td><td>$${o.total.toFixed(2)}</td><td><button type="button">Refund</button></td></tr>`).join('');
+  const nums = Array.from({ length: pages }, (_, i) => `<button type="button" data-page="${i}"${i === page ? ' aria-current="page"' : ''}>${i + 1}</button>`).join('');
+  $('pager').innerHTML = `<button type="button" data-page="${Math.max(0, page - 1)}">Previous</button>${nums}<button type="button" data-page="${Math.min(pages - 1, page + 1)}">Next</button>`;
+};
+$('pager').onclick = e => { const p = e.target.dataset.page; if (p !== undefined) { page = Number(p); render(); } };
+document.querySelector('thead').onclick = e => { const k = e.target.dataset.sort; if (k) { sortDir = sortKey === k ? -sortDir : 1; sortKey = k; render(); } };
+$('search').oninput = () => { page = 0; render(); };
+$('status').onchange = $('per-page').onchange = () => { page = 0; render(); };
+render();
+</script>
+</body>
+</html>

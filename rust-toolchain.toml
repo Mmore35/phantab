@@ -1,0 +1,5 @@
+# Pinned so every machine that builds phantab (scripts/check.sh, scripts/release.sh) builds the same
+# thing. Bump deliberately, in its own PR.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

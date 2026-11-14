@@ -1,0 +1,1 @@
+(s,t)=>s&&!Document.prototype.querySelector.call(document,s)?'selector not found':t&&!((b=>b&&Object.getOwnPropertyDescriptor(HTMLElement.prototype,'innerText').get.call(b))(Object.getOwnPropertyDescriptor(Document.prototype,'body').get.call(document))||'').includes(t)?'text not found':true

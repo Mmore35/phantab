@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shop · Northwind Outfitters</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; font-size: 14px; color: #222; }
+header, footer { background: #1d3b2a; color: #fff; padding: 8px 16px; }
+header a, footer a { color: #fff; margin-right: 12px; }
+main { padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.card { border: 1px solid #ccc; border-radius: 6px; padding: 8px; }
+.steps span { margin-right: 12px; color: #888; } .steps .on { color: #000; font-weight: bold; }
+label { display: block; margin: 8px 0 2px; }
+.error { color: #b00020; }
+</style>
+</head>
+<body>
+<header><strong>Northwind Outfitters</strong> <nav id="topnav"></nav> <button type="button" id="cart-button">Cart (0)</button></header>
+<main id="view"></main>
+<footer id="footer"></footer>
+<script>
+const $ = id => document.getElementById(id);
+const slug = s => s.toLowerCase().replace(/\W+/g, '-');
+$('topnav').innerHTML = ['Men', 'Women', 'Kids', 'Packs', 'Footwear', 'Camp & Hike', 'Climb', 'Snow', 'Sale', 'Stores', 'Help'].map(n => `<a href="#${slug(n)}">${n}</a>`).join('');
+$('footer').innerHTML = ['Shipping', 'Returns', 'Size charts', 'Warranty', 'Contact us', 'About', 'Careers', 'Privacy', 'Terms of use'].map(l => `<a href="#${slug(l)}">${l}</a>`).join('') + '<p>© 2026 Northwind Outfitters. Prices in USD.</p>';
+const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+const catalog = [
+  ['Ridgeline Rain Shell', 'Jackets', 189, ['Slate', 'Moss', 'Ember']], ["Ridgeline Rain Shell (Women's)", 'Jackets', 189, ['Slate', 'Plum', 'Ember']],
+  ['Cirrus Down Hoody', 'Jackets', 249, ['Black', 'Navy']], ['Summit Softshell', 'Jackets', 159, ['Slate', 'Sand']], ['Packable Wind Shell', 'Jackets', 89, ['Lime', 'Black']],
+  ['Trailhead Daypack 22L', 'Packs', 79, null], ['Trailhead Daypack 30L', 'Packs', 99, null], ['Basecamp Duffel 60L', 'Packs', 129, null], ['Alpine Pack 45L', 'Packs', 219, null],
+  ['Merino Crew Tee', 'Tops', 65, ['Grey', 'Navy', 'Rust']], ['Sun Hoody', 'Tops', 55, ['White', 'Sky']], ['Grid Fleece Pullover', 'Tops', 99, ['Moss', 'Black']],
+  ['Trail Runner 3', 'Footwear', 145, ['Black', 'Blue']], ['Ridge Mid GTX Boot', 'Footwear', 199, ['Brown']], ['Camp Slide', 'Footwear', 45, ['Black']],
+  ['Ultralight Tent 2P', 'Camp', 399, null], ['Down Sleeping Bag -7C', 'Camp', 329, null], ['Inflatable Pad', 'Camp', 119, null], ['Titanium Pot 900', 'Camp', 49, null],
+  ['Headlamp 400', 'Camp', 39, null], ['Water Filter Squeeze', 'Camp', 35, null], ['Trekking Poles Carbon', 'Hike', 139, null], ['Map Case', 'Hike', 19, null],
+  ['Hiking Shorts 7"', 'Bottoms', 59, ['Khaki', 'Black']], ['Convertible Pants', 'Bottoms', 85, ['Khaki', 'Olive']], ['Rain Pants', 'Bottoms', 99, ['Black']],
+  ['Wool Socks 3-pack', 'Accessories', 42, null], ['Beanie', 'Accessories', 29, ['Rust', 'Grey']], ['Sun Cap', 'Accessories', 25, ['Sand']], ['Gaiters', 'Accessories', 49, null],
+].map(([name, cat, price, colours], i) => ({ sku: `NW-${500 + i}`, name, cat, price, colours, sized: !!colours }));
+const COUPONS = { TRAIL15: 0.15 };
+const DELIVERY = { standard: ['Standard (3–5 business days)', 6.95], express: ['Express (1–2 business days)', 14.95], pickup: ['Pick up in store', 0] };
+const state = { cart: [], coupon: null, ship: null, delivery: null, payment: null };
+const money = n => `$${n.toFixed(2)}`;
+const subtotal = () => state.cart.reduce((s, l) => s + l.price * l.qty, 0);
+const discount = () => (state.coupon ? Math.round(subtotal() * COUPONS[state.coupon] * 100) / 100 : 0);
+const total = () => Math.round((subtotal() - discount() + (state.delivery ? DELIVERY[state.delivery][1] : 0)) * 100) / 100;
+const steps = on => '<p class="steps">' + ['Cart', 'Shipping', 'Delivery', 'Payment', 'Review'].map(s => `<span class="${s === on ? 'on' : ''}">${s}</span>`).join('') + '</p>';
+const show = html => { $('view').innerHTML = html; $('cart-button').textContent = `Cart (${state.cart.reduce((s, l) => s + l.qty, 0)})`; };
+const views = {
+  catalog(cat = '') {
+    const cats = [...new Set(catalog.map(p => p.cat))];
+    show(`<h1>Shop all gear</h1><label for="cat">Category</label><select id="cat"><option value="">All</option>${cats.map(c => `<option${c === cat ? ' selected' : ''}>${c}</option>`).join('')}</select><div class="grid">`
+      + catalog.filter(p => !cat || p.cat === cat).map(p => `<div class="card"><h3>${p.name}</h3><p>${p.cat} · ${money(p.price)}</p><p>Rated ${(3.5 + (p.price % 15) / 10).toFixed(1)} of 5</p><button type="button" id="view-${p.sku}">View ${p.name}</button></div>`).join('') + '</div>');
+    $('cat').onchange = e => views.catalog(e.target.value);
+    catalog.forEach(p => { const b = $(`view-${p.sku}`); if (b) b.onclick = () => views.product(p.sku); });
+  },
+  product(sku) {
+    const p = catalog.find(x => x.sku === sku);
+    show(`<p><a href="#" id="back">Back to all gear</a></p><h1>${p.name}</h1><p>${money(p.price)} · SKU ${p.sku}</p><p>Built for long days outside, with a lifetime repair promise.</p>`
+      + (p.sized ? `<label for="size">Size</label><select id="size"><option value="">Choose a size</option>${SIZES.map(s => `<option>${s}</option>`).join('')}</select><fieldset><legend>Colour</legend>${p.colours.map(c => `<label><input type="radio" name="colour" value="${c}" id="colour-${slug(c)}"> ${c}</label>`).join('')}</fieldset>` : '')
+      + '<label for="qty">Quantity</label><input type="number" id="qty" value="1" min="1" max="9"><p class="error" id="err"></p><button type="button" id="add">Add to cart</button>');
+    $('back').onclick = e => { e.preventDefault(); views.catalog(); };
+    $('add').onclick = () => {
+      const size = p.sized ? $('size').value : null, picked = document.querySelector('input[name=colour]:checked'), colour = p.sized ? picked && picked.value : null;
+      const qty = Number($('qty').value);
+      if (p.sized && (!size || !colour)) { $('err').textContent = 'Choose a size and a colour.'; return; }
+      if (!(qty >= 1 && qty <= 9)) { $('err').textContent = 'Quantity must be 1 to 9.'; return; }
+      const same = state.cart.find(l => l.sku === p.sku && l.size === size && l.colour === colour);
+      if (same) same.qty += qty; else state.cart.push({ sku: p.sku, name: p.name, price: p.price, size, colour, qty });
+      show(`<h1>Added to your cart</h1><p>${qty} × ${p.name}${size ? `, size ${size}, ${colour}` : ''}</p><button type="button" id="more">Continue shopping</button> <button type="button" id="go-cart">View cart</button>`);
+      $('more').onclick = () => views.catalog();
+      $('go-cart').onclick = () => views.cart();
+    };
+  },
+  cart(msg = '') {
+    show('<h1>Your cart</h1>' + steps('Cart') + (state.cart.length ? '<table>' + state.cart.map((l, i) => `<tr><td>${l.name}${l.size ? ` (${l.size}, ${l.colour})` : ''}</td><td><label for="q${i}">Qty</label><input type="number" id="q${i}" value="${l.qty}" min="0" max="9"></td><td>${money(l.price * l.qty)}</td><td><button type="button" id="rm${i}">Remove</button></td></tr>`).join('') + '</table>' : '<p>Your cart is empty.</p>')
+      + `<p>Subtotal ${money(subtotal())}${state.coupon ? ` · ${state.coupon} −${money(discount())}` : ''}</p><label for="coupon">Promo code</label><input id="coupon"> <button type="button" id="apply">Apply</button><p class="error">${msg}</p><button type="button" id="shop">Continue shopping</button> <button type="button" id="checkout">Checkout</button>`);
+    state.cart.forEach((l, i) => {
+      $(`q${i}`).onchange = e => { l.qty = Number(e.target.value); if (!l.qty) state.cart.splice(i, 1); views.cart(); };
+      $(`rm${i}`).onclick = () => { state.cart.splice(i, 1); views.cart(); };
+    });
+    $('apply').onclick = () => { const c = $('coupon').value.trim().toUpperCase(); if (COUPONS[c]) { state.coupon = c; views.cart(); } else views.cart('That code is not valid.'); };
+    $('shop').onclick = () => views.catalog();
+    $('checkout').onclick = () => (state.cart.length ? views.shipping() : views.cart('Add something first.'));
+  },
+  shipping(msg = '') {
+    const f = [['name', 'Full name'], ['line1', 'Street address'], ['line2', 'Apartment, suite (optional)'], ['city', 'City'], ['postal', 'Postal code'], ['phone', 'Phone']];
+    show('<h1>Shipping address</h1>' + steps('Shipping') + f.map(([id, l]) => `<label for="${id}">${l}</label><input id="${id}" value="${(state.ship && state.ship[id]) || ''}">`).join('')
+      + '<label for="region">Province or state</label><select id="region"><option value="">Choose…</option>' + ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'ON', 'PE', 'QC', 'SK', 'CA', 'NY', 'OR', 'WA'].map(r => `<option>${r}</option>`).join('') + '</select>'
+      + '<label for="country">Country</label><select id="country"><option value="">Choose…</option><option>Canada</option><option>United States</option></select>'
+      + `<p class="error">${msg}</p><button type="button" id="to-cart">Back to cart</button> <button type="button" id="next">Continue to delivery</button>`);
+    $('to-cart').onclick = () => views.cart();
+    $('next').onclick = () => {
+      const s = Object.fromEntries(['name', 'line1', 'line2', 'city', 'postal', 'phone', 'region', 'country'].map(k => [k, $(k).value.trim()]));
+      const missing = ['name', 'line1', 'city', 'postal', 'region', 'country'].filter(k => !s[k]);
+      if (missing.length) { state.ship = s; views.shipping(`Fill in: ${missing.join(', ')}.`); return; }
+      state.ship = s; views.delivery();
+    };
+  },
+  delivery() {
+    show('<h1>Delivery</h1>' + steps('Delivery') + Object.entries(DELIVERY).map(([k, [l, p]]) => `<label><input type="radio" name="delivery" value="${k}" id="d-${k}"> ${l} — ${p ? money(p) : 'free'}</label>`).join('')
+      + '<p class="error" id="err"></p><button type="button" id="next">Continue to payment</button>');
+    $('next').onclick = () => { const d = document.querySelector('input[name=delivery]:checked'); if (!d) { $('err').textContent = 'Choose a delivery option.'; return; } state.delivery = d.value; views.payment(); };
+  },
+  payment() {
+    show('<h1>Payment</h1>' + steps('Payment') + '<label><input type="radio" name="pay" value="card" id="p-card"> Credit or debit card</label><label><input type="radio" name="pay" value="invoice" id="p-invoice"> Invoice (pay within 30 days)</label><label><input type="radio" name="pay" value="gift" id="p-gift"> Gift card</label><p class="error" id="err"></p><button type="button" id="next">Review order</button>');
+    $('next').onclick = () => { const p = document.querySelector('input[name=pay]:checked'); if (!p) { $('err').textContent = 'Choose how to pay.'; return; } if (p.value !== 'invoice') { $('err').textContent = 'That payment method is unavailable in this demo store; choose Invoice.'; return; } state.payment = p.value; views.review(); };
+  },
+  review() {
+    const s = state.ship;
+    show('<h1>Review your order</h1>' + steps('Review') + '<ul>' + state.cart.map(l => `<li>${l.qty} × ${l.name}${l.size ? ` (${l.size}, ${l.colour})` : ''} — ${money(l.price * l.qty)}</li>`).join('') + '</ul>'
+      + `<p>Subtotal ${money(subtotal())}</p><p>Discount ${state.coupon ? `${state.coupon} −${money(discount())}` : 'none'}</p><p>Delivery: ${DELIVERY[state.delivery][0]} ${money(DELIVERY[state.delivery][1])}</p><p><strong>Total ${money(total())}</strong></p>`
+      + `<p>Ship to: ${s.name}, ${s.line1}${s.line2 ? `, ${s.line2}` : ''}, ${s.city}, ${s.region} ${s.postal}, ${s.country} · ${s.phone}</p><p>Payment: invoice</p><button type="button" id="edit">Edit cart</button> <button type="button" id="place">Place order</button>`);
+    $('edit').onclick = () => views.cart();
+    $('place').onclick = async () => {
+      const order = { items: state.cart.map(({ sku, name, size, colour, qty }) => ({ sku, name, size, colour, qty })), coupon: state.coupon, ship: state.ship, delivery: state.delivery, payment: state.payment, total: total() };
+      await fetch('/post/cost-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(order) });
+      show(`<h1>Thank you!</h1><p>Order NW-ORD-77341 is confirmed. We charged ${money(total())} to your invoice account and sent a receipt by email.</p><button type="button" id="again">Keep shopping</button>`);
+      state.cart = []; state.coupon = null;
+      $('again').onclick = () => views.catalog();
+    };
+  },
+};
+$('cart-button').onclick = () => views.cart();
+views.catalog();
+</script>
+</body>
+</html>

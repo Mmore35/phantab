@@ -1,0 +1,1 @@
+<title>No form</title><div><input id="u" autocomplete="username"><input id="p" type="password"><div role="button" id="go" style="width:80px;height:30px">Log in</div></div><script>go.onclick=()=>{fetch('/post/script',{method:'POST',body:new URLSearchParams({pass:p.value})}).then(()=>{document.body.innerHTML='<p>Welcome back</p>';});};</script>

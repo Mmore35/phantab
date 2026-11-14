@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "phantab bridge",
+  "version": "0.4.0",
+  "description": "Lets the local phantab service drive pages in this Chrome profile, without Chrome's remote-debugging approval prompt.",
+  "homepage_url": "https://github.com/Mmore35/phantab",
+  "minimum_chrome_version": "125",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyQcb4DQoHd5cmBcC+y9JQURuvqDCjvV2Sttx1cn6lfWlb5p7wncdIzStFirYrq7jND3dThqrBxa6gp5z9qnfK7aGmRv0qRmcevyVsIdXl5Xyebx06FmrdCDxu3AbxsC6lKs0F79KE1cGkAYjFr5/Z8L9+WMKfViSiAzm2onOXwFP6LcXLAg5lIo1QKHE/nnhiEnWiJh2fkkeir4ifrNfews4qCmwRx62VkFXi/puo7wPz4OpaHK2z9RyDNC4YED+AcykOtiVvIu4khnYisxc/Y2diK3bhc0Sk9cIR889ktmKqZpphSKJSyIQq0yqI8j6asrjF+USdlM5I6ZOit8FcQIDAQAB",
+  "permissions": ["debugger", "tabs", "nativeMessaging", "alarms", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {"default_title": "phantab bridge: no agent working"},
+  "background": {"service_worker": "background.js", "type": "module"}
+}

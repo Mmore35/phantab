@@ -1,0 +1,1 @@
+<title>JS action</title><form id="f" action="javascript:void(0)"><input name="pass" id="p" type="password"><button>Sign in</button></form><script>f.addEventListener('submit',e=>{e.preventDefault();fetch('/post/script',{method:'POST',body:new URLSearchParams({pass:document.querySelector('[type=password]').value})});f.remove();});</script>

@@ -1,0 +1,1 @@
+<title>Leaks to DOM</title><form id="f"><input name="pass" id="p" type="password"><button>Sign in</button></form><script>f.addEventListener('submit',e=>{e.preventDefault();const v=p.value;f.remove();const out=document.createElement('p');out.textContent='You typed '+v;document.body.append(out);});</script>

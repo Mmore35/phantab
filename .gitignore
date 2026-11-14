@@ -1,0 +1,12 @@
+/target/
+/target-*/
+/extension/dist/
+/extension/node_modules/
+*.tmp
+.DS_Store
+/dist/
+*.pem
+*.crx
+.env*
+.vscode/
+.idea/

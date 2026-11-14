@@ -1,0 +1,4 @@
+<!doctype html><title>Contact us</title><body style="font:16px sans-serif"><form id=f onsubmit="return false"><input name=email id=email>
+<div class="g-recaptcha"><iframe src="/captcha-frame/www.google.com/recaptcha/api2/anchor?k=fixture&amp;fixture=verify/box" style="width:304px;height:78px;border:0"></iframe>
+<textarea id="g-recaptcha-response" name="g-recaptcha-response" style="display:none"></textarea></div><button id=send>Send</button></form>
+<script>addEventListener('message', e => { if (String(e.data).startsWith('verify-passed')) document.getElementById('g-recaptcha-response').value = 'tok-' + Date.now(); });</script></body>

@@ -1,0 +1,155 @@
+//! The installer's flags.
+
+use std::path::PathBuf;
+
+pub(crate) const USAGE: &str = "\
+Usage: phantab install [flags]      register phantab in the selected MCP clients
+       phantab uninstall [flags]    restore what install replaced (same as install --uninstall)
+
+Clients (at least one; only these files are changed):
+  --codex-config <config.toml>      a Codex config; repeatable
+  --claude-config <.claude.json>    a Claude Code config; repeatable
+Browser binding (first install needs all three; later installs keep them):
+  --profile <dir name>              the Chrome profile folder inside the user-data dir (\"Default\", \"Profile 1\")
+  --user-data-dir <dir>             Chrome's user-data dir (default: Chrome's own, when it exists)
+  --chrome <exe>                    the Chrome executable (default: the installed Google Chrome)
+Other Chrome profiles agents may use too (kept by later installs):
+  --add-profile <name or dir>       allow another profile, by Chrome's name for it (\"Work\") or its folder
+                                    (\"Profile 1\"), and install a copy of the bridge for it; repeatable
+  --remove-profile <name or dir>    stop allowing one and remove its copy; repeatable
+Other:
+  --runtime <dir>                   runtime dir (default: PHANTAB_RUNTIME, else the per-user default)
+  --server-name <name>              the MCP entry's name in both clients (default: phantab)
+  --sign-in-provider <json array>   the command browser_sign_in runs for a saved login; [] removes it
+  --quiet-debugging on|off          on removes Chrome's debugging bar, off brings it back (Windows; takes
+                                    effect at the next Windows sign-in); does nothing else
+  --extension-dir <dir>             the built extension (default: extension/ beside the binary, else in
+                                    a debug build the source tree's extension/dist)
+  --uninstall                       uninstall instead
+";
+
+#[derive(Debug, Default)]
+pub(crate) struct Args {
+    pub runtime: Option<PathBuf>,
+    pub codex_configs: Vec<PathBuf>,
+    pub claude_configs: Vec<PathBuf>,
+    pub profile: Option<String>,
+    pub user_data_dir: Option<PathBuf>,
+    pub chrome: Option<PathBuf>,
+    pub uninstall: bool,
+    pub sign_in_provider: Option<String>,
+    pub quiet_debugging: Option<bool>,
+    /// Tests only: a scratch key instead of the real Run key (`--run-key`, not in the usage text).
+    pub run_key: Option<String>,
+    pub server_name: Option<String>,
+    pub extension_dir: Option<PathBuf>,
+    pub add_profiles: Vec<String>,
+    pub remove_profiles: Vec<String>,
+    /// Tests only (Windows): the HKCU key that registers the native host, instead of Chrome's.
+    pub native_host_key: Option<String>,
+    pub help: bool,
+}
+
+/// Parses `words` (everything after `install` / `uninstall`). `Err` is a usage message.
+pub(crate) fn parse(words: &[String]) -> Result<Args, String> {
+    let mut args = Args::default();
+    let mut rest = words.iter().peekable();
+    while let Some(arg) = rest.next() {
+        let Some(flag) = arg.strip_prefix("--") else {
+            return Err(format!("unrecognized argument: {arg}"));
+        };
+        let (name, inline) = match flag.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_owned())),
+            None => (flag, None),
+        };
+        // A flag's value is the inline `=value` or the next argument, unless that is another flag.
+        let mut value = |what: &str| -> Result<String, String> {
+            if let Some(v) = inline.clone() {
+                return Ok(v);
+            }
+            match rest.next_if(|next| !next.starts_with("--")) {
+                Some(v) => Ok(v.clone()),
+                None => Err(format!("--{what} needs a value")),
+            }
+        };
+        match name {
+            "runtime" => args.runtime = Some(value(name)?.into()),
+            "codex-config" => args.codex_configs.push(value(name)?.into()),
+            "claude-config" => args.claude_configs.push(value(name)?.into()),
+            "profile" => args.profile = Some(value(name)?),
+            "user-data-dir" => args.user_data_dir = Some(value(name)?.into()),
+            "chrome" => args.chrome = Some(value(name)?.into()),
+            "sign-in-provider" => args.sign_in_provider = Some(value(name)?),
+            "quiet-debugging" => {
+                args.quiet_debugging = Some(match value(name)?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--quiet-debugging takes on or off, not {other:?}")),
+                });
+            }
+            "run-key" => args.run_key = Some(value(name)?),
+            "server-name" => args.server_name = Some(value(name)?),
+            "extension-dir" => args.extension_dir = Some(value(name)?.into()),
+            "add-profile" => args.add_profiles.push(value(name)?),
+            "remove-profile" => args.remove_profiles.push(value(name)?),
+            "native-host-key" => args.native_host_key = Some(value(name)?),
+            "uninstall" | "help" if inline.is_some() => return Err(format!("--{name} takes no value")),
+            "uninstall" => args.uninstall = true,
+            "help" => args.help = true,
+            _ => return Err(format!("unrecognized flag: --{name}")),
+        }
+    }
+    Ok(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn values_inline_or_next_and_repeatable_configs() {
+        let a = parse(&strings(&[
+            "--codex-config",
+            "a.toml",
+            "--codex-config=b.toml",
+            "--claude-config",
+            "c.json",
+            "--profile",
+            "Work Profile",
+            "--sign-in-provider",
+            "[]",
+            "--quiet-debugging=on",
+            "--add-profile",
+            "Work",
+            "--add-profile=Profile 5",
+            "--remove-profile",
+            "Other",
+            "--uninstall",
+        ]))
+        .unwrap();
+        assert_eq!(a.add_profiles, ["Work", "Profile 5"]);
+        assert_eq!(a.remove_profiles, ["Other"]);
+        assert_eq!(a.codex_configs, [PathBuf::from("a.toml"), PathBuf::from("b.toml")]);
+        assert_eq!(a.claude_configs, [PathBuf::from("c.json")]);
+        assert_eq!(a.profile.as_deref(), Some("Work Profile"));
+        assert_eq!(a.sign_in_provider.as_deref(), Some("[]"));
+        assert_eq!(a.quiet_debugging, Some(true));
+        assert!(a.uninstall);
+    }
+
+    #[test]
+    fn refuses_unknown_missing_and_bad_values() {
+        assert!(parse(&strings(&["--bogus"])).is_err());
+        assert!(parse(&strings(&["positional"])).is_err());
+        assert!(parse(&strings(&["--profile"])).is_err());
+        assert!(parse(&strings(&["--profile", "--chrome", "x"])).is_err());
+        assert!(parse(&strings(&["--quiet-debugging", "maybe"])).is_err());
+        assert!(parse(&strings(&["--uninstall=yes"])).is_err());
+        assert!(parse(&strings(&["--migrate-from"])).is_err());
+        assert!(parse(&strings(&["--instance-root", "x"])).is_err());
+    }
+}

@@ -1,0 +1,141 @@
+//! The fixture pages, compiled in so a test never depends on its working directory.
+//!
+//! Every file under `fixtures/` except `foreign-extension/` is listed here; a unit
+//! test fails when one is missing. A page is served at `/<key>` (and `/<key>.html`).
+
+use std::path::PathBuf;
+
+/// `(key, source)`: the key is the path under `fixtures/` without `.html`.
+pub(crate) static PAGES: &[(&str, &str)] = &[
+    ("changes", include_str!("../fixtures/changes.html")),
+    ("cost/app", include_str!("../fixtures/cost/app.html")),
+    ("cost/article", include_str!("../fixtures/cost/article.html")),
+    ("cost/feed", include_str!("../fixtures/cost/feed.html")),
+    ("cost/orders", include_str!("../fixtures/cost/orders.html")),
+    ("cost/shop", include_str!("../fixtures/cost/shop.html")),
+    ("cost/signin", include_str!("../fixtures/cost/signin.html")),
+    ("cost/signup", include_str!("../fixtures/cost/signup.html")),
+    ("engine/basic", include_str!("../fixtures/engine/basic.html")),
+    ("engine/clobber-pay", include_str!("../fixtures/engine/clobber-pay.html")),
+    ("engine/dialogs", include_str!("../fixtures/engine/dialogs.html")),
+    ("engine/handoff", include_str!("../fixtures/engine/handoff.html")),
+    ("engine/login", include_str!("../fixtures/engine/login.html")),
+    ("engine/moves", include_str!("../fixtures/engine/moves.html")),
+    ("engine/popup", include_str!("../fixtures/engine/popup.html")),
+    ("engine/wait", include_str!("../fixtures/engine/wait.html")),
+    ("forms/controls", include_str!("../fixtures/forms/controls.html")),
+    ("frames/cross-site", include_str!("../fixtures/frames/cross-site.html")),
+    ("navigates", include_str!("../fixtures/navigates.html")),
+    ("shadow/nested", include_str!("../fixtures/shadow/nested.html")),
+    ("sign-in/aca-c", include_str!("../fixtures/sign-in/aca-c.html")),
+    ("sign-in/aca", include_str!("../fixtures/sign-in/aca.html")),
+    ("sign-in/actionfield", include_str!("../fixtures/sign-in/actionfield.html")),
+    ("sign-in/aimframe", include_str!("../fixtures/sign-in/aimframe.html")),
+    ("sign-in/blank", include_str!("../fixtures/sign-in/blank.html")),
+    ("sign-in/captcha-frame", include_str!("../fixtures/sign-in/captcha-frame.html")),
+    ("sign-in/captcha-invisible", include_str!("../fixtures/sign-in/captcha-invisible.html")),
+    ("sign-in/captcha", include_str!("../fixtures/sign-in/captcha.html")),
+    ("sign-in/card", include_str!("../fixtures/sign-in/card.html")),
+    ("sign-in/cardframe", include_str!("../fixtures/sign-in/cardframe.html")),
+    ("sign-in/cardonly", include_str!("../fixtures/sign-in/cardonly.html")),
+    ("sign-in/clobber-base", include_str!("../fixtures/sign-in/clobber-base.html")),
+    ("sign-in/clobber-doc", include_str!("../fixtures/sign-in/clobber-doc.html")),
+    ("sign-in/clobber-get", include_str!("../fixtures/sign-in/clobber-get.html")),
+    ("sign-in/clobber-id", include_str!("../fixtures/sign-in/clobber-id.html")),
+    ("sign-in/closedframe", include_str!("../fixtures/sign-in/closedframe.html")),
+    ("sign-in/code-boxes", include_str!("../fixtures/sign-in/code-boxes.html")),
+    ("sign-in/code", include_str!("../fixtures/sign-in/code.html")),
+    ("sign-in/codebeside", include_str!("../fixtures/sign-in/codebeside.html")),
+    ("sign-in/crossframe", include_str!("../fixtures/sign-in/crossframe.html")),
+    ("sign-in/deep", include_str!("../fixtures/sign-in/deep.html")),
+    ("sign-in/detaching", include_str!("../fixtures/sign-in/detaching.html")),
+    ("sign-in/echo", include_str!("../fixtures/sign-in/echo.html")),
+    ("sign-in/forgot-password", include_str!("../fixtures/sign-in/forgot-password.html")),
+    ("sign-in/form-button", include_str!("../fixtures/sign-in/form-button.html")),
+    ("sign-in/framed", include_str!("../fixtures/sign-in/framed.html")),
+    ("sign-in/getform", include_str!("../fixtures/sign-in/getform.html")),
+    ("sign-in/getshadow", include_str!("../fixtures/sign-in/getshadow.html")),
+    ("sign-in/hides", include_str!("../fixtures/sign-in/hides.html")),
+    ("sign-in/ignores", include_str!("../fixtures/sign-in/ignores.html")),
+    ("sign-in/inertpass", include_str!("../fixtures/sign-in/inertpass.html")),
+    ("sign-in/jsaction", include_str!("../fixtures/sign-in/jsaction.html")),
+    ("sign-in/landed", include_str!("../fixtures/sign-in/landed.html")),
+    ("sign-in/landsthendetaches", include_str!("../fixtures/sign-in/landsthendetaches.html")),
+    ("sign-in/leak-clobber", include_str!("../fixtures/sign-in/leak-clobber.html")),
+    ("sign-in/leak-dom", include_str!("../fixtures/sign-in/leak-dom.html")),
+    ("sign-in/leak-hash", include_str!("../fixtures/sign-in/leak-hash.html")),
+    ("sign-in/leak-url", include_str!("../fixtures/sign-in/leak-url.html")),
+    ("sign-in/leaves", include_str!("../fixtures/sign-in/leaves.html")),
+    ("sign-in/moves", include_str!("../fixtures/sign-in/moves.html")),
+    ("sign-in/nested", include_str!("../fixtures/sign-in/nested.html")),
+    ("sign-in/newpass", include_str!("../fixtures/sign-in/newpass.html")),
+    ("sign-in/nobutton", include_str!("../fixtures/sign-in/nobutton.html")),
+    ("sign-in/noform", include_str!("../fixtures/sign-in/noform.html")),
+    ("sign-in/one", include_str!("../fixtures/sign-in/one.html")),
+    ("sign-in/opensframe", include_str!("../fixtures/sign-in/opensframe.html")),
+    ("sign-in/otherform", include_str!("../fixtures/sign-in/otherform.html")),
+    ("sign-in/outside", include_str!("../fixtures/sign-in/outside.html")),
+    ("sign-in/overframe", include_str!("../fixtures/sign-in/overframe.html")),
+    ("sign-in/passkey", include_str!("../fixtures/sign-in/passkey.html")),
+    ("sign-in/passkey-ask", include_str!("../fixtures/sign-in/passkey-ask.html")),
+    ("sign-in/passkey-onload", include_str!("../fixtures/sign-in/passkey-onload.html")),
+    ("sign-in/passstep", include_str!("../fixtures/sign-in/passstep.html")),
+    ("sign-in/passthenkey", include_str!("../fixtures/sign-in/passthenkey.html")),
+    ("sign-in/passthencode", include_str!("../fixtures/sign-in/passthencode.html")),
+    ("sign-in/pay", include_str!("../fixtures/sign-in/pay.html")),
+    ("sign-in/plainhttp", include_str!("../fixtures/sign-in/plainhttp.html")),
+    ("sign-in/react", include_str!("../fixtures/sign-in/react.html")),
+    ("sign-in/readonly", include_str!("../fixtures/sign-in/readonly.html")),
+    ("sign-in/rerender", include_str!("../fixtures/sign-in/rerender.html")),
+    ("sign-in/securitykey", include_str!("../fixtures/sign-in/securitykey.html")),
+    ("sign-in/shadow", include_str!("../fixtures/sign-in/shadow.html")),
+    ("sign-in/signup", include_str!("../fixtures/sign-in/signup.html")),
+    ("sign-in/subscribe", include_str!("../fixtures/sign-in/subscribe.html")),
+    ("sign-in/tamper", include_str!("../fixtures/sign-in/tamper.html")),
+    ("sign-in/twobuttons", include_str!("../fixtures/sign-in/twobuttons.html")),
+    ("sign-in/twopass", include_str!("../fixtures/sign-in/twopass.html")),
+    ("sign-in/unresolved", include_str!("../fixtures/sign-in/unresolved.html")),
+    ("sign-in/userstep", include_str!("../fixtures/sign-in/userstep.html")),
+    ("sign-in/wrong", include_str!("../fixtures/sign-in/wrong.html")),
+    ("snapshot/busy", include_str!("../fixtures/snapshot/busy.html")),
+    ("snapshot/deep", include_str!("../fixtures/snapshot/deep.html")),
+    ("snapshot/inner", include_str!("../fixtures/snapshot/inner.html")),
+    ("snapshot/long-text", include_str!("../fixtures/snapshot/long-text.html")),
+    ("snapshot/links", include_str!("../fixtures/snapshot/links.html")),
+    ("snapshot/many", include_str!("../fixtures/snapshot/many.html")),
+    ("verify/autoclear", include_str!("../fixtures/verify/autoclear.html")),
+    ("verify/box", include_str!("../fixtures/verify/box.html")),
+    ("verify/captcha-word-title", include_str!("../fixtures/verify/captcha-word-title.html")),
+    ("verify/challenge-only", include_str!("../fixtures/verify/challenge-only.html")),
+    ("verify/hold", include_str!("../fixtures/verify/hold.html")),
+    ("verify/never", include_str!("../fixtures/verify/never.html")),
+    ("verify/shop", include_str!("../fixtures/verify/shop.html")),
+    ("verify/slider", include_str!("../fixtures/verify/slider.html")),
+    ("verify/wall", include_str!("../fixtures/verify/wall.html")),
+    ("verify/widget", include_str!("../fixtures/verify/widget.html")),
+];
+
+/// The keys of every fixture page, for an index or a test that walks them all.
+pub fn fixture_paths() -> impl Iterator<Item = &'static str> {
+    PAGES.iter().map(|(key, _)| *key)
+}
+
+/// The raw source of a page (before templating), by key such as `sign-in/one`.
+pub fn fixture_source(key: &str) -> Option<&'static str> {
+    PAGES.iter().find(|(k, _)| *k == key).map(|(_, source)| *source)
+}
+
+/// The `fixtures/` folder in this crate's source tree.
+pub fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+}
+
+/// An unpacked MV3 extension that plays a password manager: on `http://127.0.0.1/*`
+/// pages it appends two closed-shadow hosts, each an iframe of its own
+/// `overlay/menu.html`, when an input is focused or clicked; the frame is what makes
+/// Chrome detach a debugger. Load it into a disposable test profile only.
+/// Page query switches: `?sticky` keeps the menu through blur, `?reinit` makes fresh
+/// elements on every focus, `?autoclose=<ms>` removes the menu after that long.
+pub fn foreign_extension_dir() -> PathBuf {
+    fixtures_dir().join("foreign-extension")
+}

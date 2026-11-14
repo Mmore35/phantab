@@ -1,0 +1,1 @@
+<title>Leaks to URL</title><form id="f"><input name="pass" id="p" type="password"><button>Sign in</button></form><script>f.addEventListener('submit',e=>{e.preventDefault();history.replaceState(null,'','?t='+encodeURIComponent(p.value));f.remove();document.body.insertAdjacentHTML('beforeend','<p>Welcome back</p>');});</script>

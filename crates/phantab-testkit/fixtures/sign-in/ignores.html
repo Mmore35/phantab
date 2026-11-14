@@ -1,0 +1,1 @@
+<title>Ignores</title><form id="f"><input name="pass" id="p" type="password"><button>Sign in</button></form><script>let real=false;p.addEventListener('input',e=>{real=e.isTrusted;});f.addEventListener('submit',e=>{e.preventDefault();fetch('/post/script',{method:'POST',body:new URLSearchParams({pass:document.querySelector('[type=password]').value})});});</script>

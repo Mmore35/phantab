@@ -1,0 +1,30 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# SR-55: vulnerabilities always fail (version 2 has no switch for them); so do yanked, unmaintained
+# and unsound crates. An `ignore` entry needs a reason and a review date, e.g.
+# { id = "RUSTSEC-0000-0000", reason = "not reachable: <why>; review 2027-01-01" }.
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = []
+
+[licenses]
+version = 2
+allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path dependencies carry no version; every crate is publish = false.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Only crates.io; no git dependencies.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

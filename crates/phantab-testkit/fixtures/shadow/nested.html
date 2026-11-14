@@ -1,0 +1,8 @@
+<title>Nested shadow fixture</title><p>Light words</p><div id="outer"></div><div id="closed"></div><script>
+const outer=document.querySelector('#outer').attachShadow({mode:'open'});
+outer.innerHTML='<p>Outer shadow words</p><button id="outer-button" onclick="this.textContent=\'hit\'">outer</button><div id="inner"></div>';
+const inner=outer.querySelector('#inner').attachShadow({mode:'open'});
+inner.innerHTML='<style>.css-text{}</style><p>Inner shadow words</p><input id="inner-input" placeholder="Inner field" value="never-read"><button id="inner-button" onclick="this.textContent=\'hit\'">inner</button>';
+const closed=document.querySelector('#closed').attachShadow({mode:'closed'});
+closed.innerHTML='<p>Closed shadow words</p><button id="closed-button">closed</button>';
+</script>

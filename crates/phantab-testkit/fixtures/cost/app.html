@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taskboard</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; font-size: 14px; }
+#layout { display: grid; grid-template-columns: 1fr 300px; gap: 12px; padding: 12px; }
+#feed { width: 300px; height: 700px; border: 1px solid #ccc; }
+#list { height: 600px; overflow-y: auto; border: 1px solid #ddd; position: relative; }
+#spacer { position: relative; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+</style>
+</head>
+<body>
+<tb-nav></tb-nav>
+<div id="layout">
+  <main id="view"></main>
+  <iframe id="feed" title="Activity" src="{{TWIN}}/cost/feed"></iframe>
+</div>
+<script>
+const slug = s => s.toLowerCase().replace(/\W+/g, '-');
+customElements.define('tb-nav', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    root.innerHTML = '<style>nav{background:#3b2f6b;padding:8px 12px}button{background:none;border:0;color:#fff;margin-right:14px;font-size:14px;cursor:pointer}</style><nav>'
+      + ['Home', 'Projects', 'Inbox', 'Calendar', 'Reports', 'Team', 'Settings'].map(n => `<button type="button" data-to="#/${slug(n)}">${n}</button>`).join('') + '</nav>';
+    root.addEventListener('click', e => { const to = e.target.dataset && e.target.dataset.to; if (to) go(to); });
+  }
+});
+customElements.define('tb-card', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({ mode: 'open' });
+    const name = this.getAttribute('name');
+    root.innerHTML = `<style>div{border:1px solid #ccc;border-radius:6px;padding:8px}</style><div><h3>${name}</h3><p>${this.getAttribute('blurb')}</p><p>${this.getAttribute('count')} tasks · ${this.getAttribute('lead')}</p><button type="button">Open ${name}</button> <button type="button">Archive</button></div>`;
+    root.querySelector('button').onclick = () => { go(`#/project/${slug(name)}`); };
+  }
+});
+customElements.define('tb-task', class extends HTMLElement {
+  set task(t) {
+    const root = this.shadowRoot || this.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>div{display:flex;gap:10px;align-items:center;height:30px;border-bottom:1px solid #eee;padding:0 8px}.t{flex:1}</style><div><input type="checkbox" aria-label="Mark ${t.title} done"${t.done ? ' checked disabled' : ''}><span class="t">${t.id} · ${t.title}${t.done ? ' (done)' : ''}</span><span>${t.who}</span><span>due ${t.due}</span></div>`;
+    root.querySelector('input').onchange = async e => {
+      if (!e.target.checked) return;
+      t.done = true;
+      this.task = t;
+      fetch('/post/cost-task', { method: 'POST', body: new URLSearchParams({ project: 'orion', task: t.id, done: 'true' }) });
+    };
+  }
+});
+const projects = ['Orion', 'Atlas', 'Borealis', 'Cobalt', 'Dune', 'Ember', 'Fjord', 'Gale', 'Harbor', 'Indigo', 'Juniper', 'Kestrel', 'Lumen', 'Meridian', 'Nimbus', 'Onyx', 'Polaris', 'Quartz', 'Rook', 'Sable', 'Tundra', 'Umber', 'Vesper', 'Willow'];
+const people = ['Ana Ruiz', 'Ben Osei', 'Chloe Martin', 'Dev Patel', 'Eva Lindqvist', 'Femi Adeyemi', 'Grace Liu', 'Hugo Brandt', 'Isla Murray', 'Jonas Weber', 'Kira Sato', 'Leo Costa', 'Priya Nair', 'Sam Okoro'];
+const verbs = ['Migrate', 'Review', 'Refactor', 'Document', 'Test', 'Fix', 'Design', 'Deploy', 'Audit', 'Benchmark', 'Archive', 'Rewrite'];
+const nouns = ['billing reports', 'search index', 'login flow', 'invoice emails', 'export jobs', 'payment retries', 'user settings', 'audit log', 'billing webhooks', 'sync worker', 'report builder', 'tax rules', 'onboarding tour', 'data retention'];
+let seed = 99;
+const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+const tasks = Array.from({ length: 4800 }, (_, i) => ({
+  id: `ORI-${1000 + i}`, title: `${verbs[Math.floor(rnd() * verbs.length)]} ${nouns[Math.floor(rnd() * nouns.length)]}`,
+  who: people[Math.floor(rnd() * people.length)], due: `2026-${String(1 + Math.floor(rnd() * 12)).padStart(2, '0')}-${String(1 + Math.floor(rnd() * 28)).padStart(2, '0')}`, done: rnd() < 0.3,
+}));
+Object.assign(tasks[2127], { title: 'Migrate billing exports', who: 'Priya Nandakumar', due: '2026-12-04', done: false });
+Object.assign(tasks[2128], { title: 'Review billing exports', who: 'Priya Nair', due: '2026-12-11', done: false });
+const ROW = 31;
+const views = {
+  home: () => '<h1>Good evening</h1><p>You have 12 tasks due this week and 3 unread mentions.</p><ul>' + projects.slice(0, 6).map(p => `<li><a href="#/project/${slug(p)}">${p}</a> — recently viewed</li>`).join('') + '</ul>',
+  projects: () => '<h1>Projects</h1><div class="cards">' + projects.map((p, i) => `<tb-card name="${p}" blurb="Quarterly roadmap and delivery work for the ${p} programme." count="${p === 'Orion' ? 4800 : 40 + i * 13}" lead="${people[i % people.length]}"></tb-card>`).join('') + '</div>',
+  project: name => {
+    if (name !== 'orion') return `<h1>${name}</h1><p>This project has no open tasks you can see.</p>`;
+    return '<h1>Orion</h1><p>4,800 tasks. Tick a task to mark it done.</p><label for="task-filter">Filter tasks</label> <input id="task-filter" type="search" placeholder="Filter by title or ID"> <span id="count"></span><div id="list"><div id="spacer"></div></div>';
+  },
+};
+let shownTasks = tasks;
+const paint = () => {
+  const list = document.getElementById('list');
+  if (!list) return;
+  const spacer = document.getElementById('spacer');
+  spacer.style.height = `${shownTasks.length * ROW}px`;
+  const from = Math.max(0, Math.floor(list.scrollTop / ROW) - 3), to = Math.min(shownTasks.length, from + Math.ceil(600 / ROW) + 6);
+  spacer.replaceChildren(...shownTasks.slice(from, to).map((t, k) => {
+    const row = document.createElement('tb-task');
+    row.style.cssText = `position:absolute;left:0;right:0;top:${(from + k) * ROW}px`;
+    row.task = t;
+    return row;
+  }));
+  document.getElementById('count').textContent = `${shownTasks.length} shown`;
+};
+const route = () => {
+  const [, page = 'home', arg] = location.hash.split('/');
+  const make = views[page] || (() => `<h1>${page}</h1><p>Nothing here yet.</p>`);
+  document.getElementById('view').innerHTML = make(arg);
+  const filter = document.getElementById('task-filter');
+  if (filter) {
+    shownTasks = tasks;
+    filter.oninput = () => { const q = filter.value.trim().toLowerCase(); shownTasks = tasks.filter(t => t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)); document.getElementById('list').scrollTop = 0; paint(); };
+    document.getElementById('list').onscroll = paint;
+    paint();
+  }
+};
+// Route inside the click, as SPA routers do: location.hash would render in a later task (hashchange),
+// so a snapshot taken right after click_xy could still see the old view.
+function go(to) { history.pushState(null, '', to); route(); }
+window.onhashchange = route;
+route();
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<title>Controls fixture</title>
+<form id="f" onsubmit="event.preventDefault();document.querySelector('#result').textContent='submitted '+document.querySelector('#text').value">
+<label>Text <input id="text" name="text" placeholder="Type here"></label>
+<label>Filled <input id="filled" name="filled" value="never-read"></label>
+<label>Email <input id="email" name="email" type="email" aria-label="Email address"></label>
+<label>Choice <select id="choice" name="choice"><option value="">Pick one</option><option value="one">One</option><option value="two">Two</option></select></label>
+<label>Notes <textarea id="notes" name="notes">never-read</textarea></label>
+<label><input id="agree" type="checkbox" name="agree"> Agree</label>
+<label><input id="radio-a" type="radio" name="pick" value="a"> A</label>
+<div id="rich" contenteditable="true" style="min-height:2em;border:1px solid #888">Editable words</div>
+<input id="disabled-input" disabled value="off">
+<button id="disabled" type="button" disabled>Disabled</button>
+<button id="aria-disabled" type="button" aria-disabled="true">Aria disabled</button>
+<button id="hidden" type="button" style="visibility:hidden">Hidden</button>
+<input id="not-displayed" style="display:none">
+<input id="hidden-type" type="hidden" name="token" value="never-read">
+<button id="zero" type="button" style="width:0;height:0;padding:0;border:0;overflow:hidden"></button>
+<div id="role-button" role="button" tabindex="0" onclick="document.querySelector('#result').textContent='role button'">Role button</div>
+<a id="link" href="#linked">A link</a>
+<button id="submit">Submit</button>
+</form>
+<p id="result">unchanged</p>
+<button id="far" type="button" style="position:absolute;top:50000px">Far</button>

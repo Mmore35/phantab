@@ -1,0 +1,130 @@
+# phantab's release: a pushed v* tag builds the pinned release files on a
+# Windows and a macOS runner, each through the same scripts a build machine runs by hand
+# (scripts/release.sh, then scripts/bundle-windows.sh or scripts/bundle-macos.sh, whose bundle tests run
+# too), and one Linux job puts both halves into the tag's DRAFT release (`release.sh upload`). Publishing
+# the draft stays the owner's step, by hand.
+#
+# A pull request that changes the release scripts, or a manual run, does the same builds as --build-only
+# test builds and keeps them as workflow artifacts; it never makes a release.
+#
+# Every action is named by its full commit, with the release it is in a comment (THREAT-MODEL SR-56): a
+# tag such as @v4 can be moved to other code, and these jobs build what users install. To take a newer
+# release, change the commit and the comment together; `tests/install.rs` refuses anything else.
+#
+# What a release holds, per platform: the bare binary, extension.zip, and the bundle zip a user installs
+# from (phantab-windows-x64-bundle.zip, phantab-macos-arm64-bundle.zip), each with a .sha256.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/**"
+      - "docs/WORK-LAPTOP.md"
+      - "docs/INSTALL-MAC.md"
+      - "rust-toolchain.toml"
+      - "Cargo.lock"
+      - "extension/package-lock.json"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: windows-x64
+          - os: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # rust-toolchain.toml pins the version. rustup no longer installs it on first use, so ask.
+      - name: rust toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      # Windows is GNU (x86_64-pc-windows-gnu), like the owner's PC. Its raw-dylib imports need dlltool,
+      # which the owner's PC gets from WinLibs (scripts/dev-env.sh); here MSYS2's MinGW-w64 provides it.
+      # release.sh's import check still refuses a binary that needs any non-system DLL.
+      - name: windows-gnu target
+        if: runner.os == 'Windows'
+        run: rustup target add x86_64-pc-windows-gnu
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        if: runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          release: false
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+      - name: MinGW-w64 on PATH
+        if: runner.os == 'Windows'
+        run: |
+          echo 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+          /c/msys64/mingw64/bin/dlltool.exe --version | head -n 1
+          /c/msys64/mingw64/bin/gcc.exe --version | head -n 1
+      # SR-55 and SR-56: release.sh refuses a release without them.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny,cargo-audit
+      - name: which build
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            echo "BUILD_ONLY=" >> "$GITHUB_ENV"
+          else
+            # A test build: no tag exists, and upload refuses its output.
+            echo "TAG=v0.0.0-ci" >> "$GITHUB_ENV"
+            echo "BUILD_ONLY=--build-only" >> "$GITHUB_ENV"
+          fi
+      - name: release.sh
+        run: scripts/release.sh $BUILD_ONLY --extension "$TAG"
+      - name: bundle (and its install test)
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then scripts/bundle-windows.sh "$TAG"; else scripts/bundle-macos.sh "$TAG"; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phantab-${{ matrix.platform }}
+          path: dist/${{ env.TAG }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: halves
+      # Both runners zip the extension; the bytes must be the same, so one copy goes up.
+      - name: one dist folder
+        run: |
+          w=halves/phantab-windows-x64 m=halves/phantab-macos-arm64
+          cmp "$w/extension.zip.sha256" "$m/extension.zip.sha256" ||
+            { echo "the two runners' extension.zip differ: the zip is not deterministic"; exit 1; }
+          mkdir -p "dist/$GITHUB_REF_NAME"
+          cp "$w"/* "$m"/* "dist/$GITHUB_REF_NAME/"
+          ls -l "dist/$GITHUB_REF_NAME"
+      - name: release.sh upload (a draft only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/release.sh upload "$GITHUB_REF_NAME"

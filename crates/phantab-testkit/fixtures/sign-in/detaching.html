@@ -1,0 +1,1 @@
+<title>Detaching</title><form id="f"><input name="pass" id="p" type="password"><button>Sign in</button></form><script>f.addEventListener('submit',e=>{e.preventDefault();fetch('/hook/detach-me',{method:'POST'}).then(()=>{location.href='/sign-in/landed';});});</script>

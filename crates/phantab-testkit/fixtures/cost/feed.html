@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Activity</title>
+<style>body { font-family: system-ui, sans-serif; font-size: 12px; margin: 8px; } li { margin: 4px 0; }</style>
+</head>
+<body>
+<h2>Activity</h2>
+<button type="button">Mark all read</button>
+<ul id="items"></ul>
+<script>
+const who = ['Ana Ruiz', 'Ben Osei', 'Chloe Martin', 'Dev Patel', 'Eva Lindqvist', 'Grace Liu', 'Kira Sato', 'Sam Okoro'];
+const what = ['commented on', 'moved', 'assigned', 'closed', 'reopened', 'attached a file to', 'changed the due date of', 'mentioned you in'];
+document.getElementById('items').innerHTML = Array.from({ length: 80 }, (_, i) =>
+  `<li><strong>${who[i % who.length]}</strong> ${what[(i * 3) % what.length]} <a href="#task-${1000 + (i * 37) % 4800}">ORI-${1000 + (i * 37) % 4800}</a> · ${1 + (i % 59)} min ago</li>`).join('');
+</script>
+</body>
+</html>

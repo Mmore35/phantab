@@ -1,0 +1,90 @@
+[package]
+name = "phantab-window"
+description = "Hide, find and show the browser's own windows: Windows (Win32) and macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+# secret_store and console (SR-62, SR-63): plaintext buffers are wiped. The 1.x phantab already uses.
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Wdk_System_Threading",
+  "Win32_Foundation",
+  # secure_dir (THREAT-MODEL SR-10): the runtime dir's owner and protected DACL.
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  # secret_store (SR-62): DPAPI for the Bitwarden CLI session key at rest.
+  "Win32_Security_Cryptography",
+  # secure_dir (R15): CreateDirectoryW with that DACL, so a new runtime folder is never open. streams
+  # (SR-74): GetFileInformationByHandleEx(FileStreamInfo), GetFinalPathNameByHandleW and
+  # GetFileInformationByHandle, the named NTFS streams of the installed extension, the path each handle
+  # the check opened is at, how many names (hard links) a recorded file has, its reparse tag
+  # (GetFileInformationByHandleEx(FileAttributeTagInfo)), and the runtime folder's file system
+  # (GetVolumeInformationByHandleW).
+  "Win32_Storage_FileSystem",
+  # console (SR-63): read a master password at the owner's console with echo off.
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  # file_identity (SR-64): a pinned bw file's USN, for the pin's hash cache.
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  # streams (SR-74, review r8 R8-7): GetModuleHandleW and GetProcAddress, to look up
+  # RtlSetThreadPlaceholderCompatibilityMode in ntdll (Windows 10 1709 and later) rather than import it,
+  # so the extension check's thread sees every cloud placeholder as one (exposed), never disguised as a
+  # plain file, and so this call no longer stops phantab starting on a Windows without it.
+  # restrict_dll_search (SR-58): DLLs loaded at run time come from System32 only.
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# 0.6 is the line built on the same windows-link/-result/-strings as windows 0.62 (and tokio's windows-sys);
+# 0.100 pulls a second copy of each.
+windows-registry = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+# secure_dir and process (SR-10, SR-59): geteuid, O_NOFOLLOW, RLIMIT_CORE. The 0.2 tokio already brings.
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# secret_store (SR-62): the login Keychain for the Bitwarden CLI session key at rest.
+security-framework = { version = "3", default-features = false }
+# secret_store and secret_mac (sec-creds-2, -8): a Keychain read into a buffer that is wiped, and the
+# CFData a store hands over without a copy of its own. The versions security-framework already uses.
+security-framework-sys = { version = "2", default-features = false }
+core-foundation = "0.10"
+
+[features]
+# Test builds only, turned on by phantab's `test-seams` and by this crate's own dev-dependency below. A
+# release build cannot turn it on.
+# - The macOS Keychain calls use a scratch keychain a test made (`secret_store::test_keychain`), never the
+#   owner's login keychain.
+# - `seams` in win32.rs: the window lane's view of the keeper and of its own Chrome's windows.
+# - streams::test_seams (SR-74 tests) put a reparse tag on a test file with DeviceIoControl, from
+#   Win32_System_IO. file_identity turns that on for every build too; naming it here keeps the seams
+#   building if that ever changes.
+test-seams = ["windows/Win32_System_IO"]
+
+[dev-dependencies]
+# This crate's integration tests and doctests link it without `cfg(test)`: with `test-seams` they too
+# never open the login keychain, and the window lane (tests/window_lane.rs) gets the keeper's seams. Its own
+# tests use the streams seams too, so `cargo test -p phantab-window` builds them. (A dev-dependency, so never
+# in a release build.)
+phantab-window = { path = ".", features = ["test-seams"] }
+futures-util = "0.3"
+# The version phantab-cdp uses, so the lock holds one copy.
+tokio-tungstenite = "0.27"

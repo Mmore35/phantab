@@ -1,0 +1,21 @@
+<!doctype html><title>Order history</title><body style="font:16px sans-serif"><main id=m><h1>Order history</h1><input id=keep placeholder="progress field"><button id=more onclick="wall()">More orders</button><p id=p></p></main><div id=w hidden><h1>Checking your browser</h1></div>
+<script>
+const first = document.title;
+function wall() {
+  document.title = 'Just a moment...';
+  m.hidden = true;
+  w.hidden = false;
+  const f = document.createElement('iframe');
+  f.src = "/captcha-frame/challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2?fixture=verify/box";
+  f.style = 'width:300px;height:65px;border:0';
+  w.append(f);
+}
+addEventListener('message', e => {
+  if (typeof e.data !== 'string' || !e.data.startsWith('verify-passed')) return;
+  document.title = first;
+  w.hidden = true;
+  w.querySelector('iframe')?.remove();
+  m.hidden = false;
+  p.textContent = 'passed via ' + e.data;
+});
+</script></body>

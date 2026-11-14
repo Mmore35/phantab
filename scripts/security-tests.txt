@@ -1,0 +1,96 @@
+# The security lane: the tests that feed phantab a hostile input and need a refusal.
+# scripts/security-check.sh runs them and fails when one is missing, skipped, ignored or not ok.
+# docs/TESTING.md § Security lane says what each group stands for.
+#
+# One test per line:   <when> <target> <test name>
+#   when     all      runs on every machine
+#            unix     macOS only today (the test is not built on Windows, or is ignored there)
+#            chrome   needs real Chrome: run with --chrome
+#   target   lib      phantab's unit tests; the name is the full path (engine::tests::...)
+#            ext:<f>  extension/test/<f>.test.mjs; the name is the test's title
+#            <file>   crates/phantab/tests/<file>.rs
+#
+# Add a test here when it proves a hostile input is refused: a web origin, a forged peer, a changed
+# file, a page that lies. A renamed test must be renamed here too, or the lane fails.
+
+# A web page, or another local program, calls the local service (SR-1 to SR-9, SR-70 to SR-72).
+all daemon service_rejects_untrusted_callers_and_starts_without_a_browser
+all daemon routes_headers_and_request_checks
+all daemon untrusted_hosts_near_miss_tokens_and_the_hello
+all daemon early_rejections_always_deliver_the_whole_reply
+all daemon an_unknown_viewer_key_reads_no_body_and_a_stalled_body_times_out
+all daemon the_remote_listener_reads_no_body_for_an_unknown_viewer_key
+
+# Another user or program on the machine reads or swaps phantab's files (SR-5, SR-10, SR-11, SR-48).
+all daemon the_token_never_reaches_an_output
+all daemon the_runtime_dir_and_endpoint_are_owner_only
+all daemon the_installed_binary_folder_is_made_owner_only_at_start
+all daemon a_linked_runtime_dir_refuses_to_start
+unix daemon the_endpoint_is_owner_only
+
+# A program posing as the service, or as our extension, asks the native host for the token (SR-13, SR-14).
+all cli_host a_listener_that_cannot_prove_the_token_never_receives_it
+all cli_host the_host_sends_the_token_only_on_the_connection_that_proved_it
+all cli_host the_native_host_serves_only_our_extension
+all cli_host a_clients_environment_stays_with_the_client
+all cli_host a_panic_prints_its_location_never_its_message
+all cli_host a_client_id_over_150_characters_is_refused_before_any_call
+
+# A forged, changed or misbehaving extension reaches the bridge (SR-17, SR-19, SR-20, SR-74, SR-76).
+all bridge oversized_requests_are_refused_before_reaching_chrome
+all bridge send_relays_only_listed_cdp_methods
+all bridge a_same_id_extension_from_another_folder_is_refused
+all bridge a_rewritten_profile_is_checked_again_even_with_its_size_and_time_put_back
+all bridge a_changed_file_in_the_installed_extension_is_refused
+all bridge a_changed_copy_is_refused_whichever_profile_the_worker_claims
+all bridge a_peer_that_never_says_hello_is_dropped_at_5_s
+all bridge each_allowed_profile_has_its_own_link_and_only_that_link_answers_its_ops
+all bridge protocol_mismatch_and_a_second_live_profile_are_refused_and_a_restarted_worker_replaces_its_link
+all lib engine::tests::a_changed_extension_file_refuses_the_browser_at_once
+
+# The extension itself: what it may be asked, and by whom (SR-18, SR-20, SR-34).
+all ext:manifest the manifest keeps the bridge permissions and is generic
+all ext:manifest nothing outside the extension can message it
+all ext:manifest the built folder holds only our compiled files, importing only each other
+all ext:manifest the CDP allow-list is exact names and bans the dangerous domains
+all ext:ops an unknown op, or one only on the prototype, is an error
+all ext:ops send refuses every CDP method outside the allow-list, before chrome.debugger sees it
+all ext:ops send relays an isolated world asked for without universal access
+all ext:frames markup that shadows a form's or the document's own properties does not end or steer the scan
+
+# One agent session reaches another's page, or a page steers a sensitive step (SR-25 to SR-27, SR-77).
+all lib engine::tests::calls_check_the_owner_and_a_handed_page_refuses_writes_but_not_reads
+all lib engine::tests::another_sessions_orphan_shows_only_its_page_id_mode_and_origin
+all lib engine::tests::another_client_never_gets_a_kept_window
+all lib engine::tests::the_sensitive_set_waits_for_owner_confirmed
+all lib engine::guardrails::tests::the_sensitive_check_asks_page_objects_for_nothing_markup_can_shadow
+chrome engine_chrome markup_that_shadows_dom_properties_cannot_silence_the_sensitive_check
+# A page puts its own words where phantab's message names another extension (SR-32).
+all lib engine::tests::a_detach_message_never_names_a_page_chosen_host_and_cuts_names_and_scan_errors
+
+# A page, or a planted program, gets between the owner's passwords and the sign-in form (SR-38 to SR-47, SR-62 to SR-67).
+all signin_provider a_bare_program_name_is_never_looked_up_on_path
+all signin_provider the_provider_sees_only_the_allowed_environment
+all signin_provider only_the_first_line_counts_and_output_is_capped
+all signin_provider provider_answers_reach_the_agent_as_literal_labels
+all signin_bitwarden a_form_that_posts_elsewhere_needs_its_own_entry
+all signin_bitwarden a_session_goes_only_to_the_bw_it_was_made_with
+all signin_bitwarden the_binary_never_opens_the_owners_session_store
+all signin_bitwarden ask_first_sites_stop_before_the_vault
+unix signin_bitwarden the_bitwarden_verbs_turn_core_dumps_off_first
+all signin_fake_page a_report_that_disagrees_with_the_frame_tree_gets_nothing
+all signin_fake_page a_frame_that_moves_while_the_provider_is_asked_gets_nothing
+all signin_fake_page a_code_shown_back_in_the_page_is_redacted_and_the_sign_in_goes_on
+all lib signin::secret::tests::an_echo_redacts_each_form_found_by_its_digest_alone
+all lib engine::tests::after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes
+chrome signin_echo an_echo_is_redacted_from_every_answer_and_the_sign_in_goes_on
+chrome signin_echo a_fresh_attach_to_an_echoing_tab_is_still_redacted_and_refuses_screenshots
+
+# A changed binary, a test build or a moved action reaches an install or a release (SR-48 to SR-53, SR-56, SR-73).
+all lib engine::profiles::tests::the_owners_chrome_is_started_under_the_spawn_guard
+all install a_test_seams_build_refuses_to_install_itself
+all install the_release_test_build_gate_refuses_a_test_build
+all install missing_or_foreign_extension_is_refused
+all install drift_names_a_changed_binary_manifest_and_registration
+all install install_locks_the_binary_folder_keeps_modes_and_replaces_the_extension_whole
+all install workflows_name_every_action_by_its_commit

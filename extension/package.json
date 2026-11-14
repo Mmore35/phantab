@@ -1,0 +1,21 @@
+{
+  "name": "phantab-extension",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "phantab bridge: the Chrome MV3 extension that relays the local phantab service to chrome.debugger in your Chrome profile.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p . && node -e \"require('fs').copyFileSync('manifest.json','dist/manifest.json')\"",
+    "build:test": "npm run build && node scripts/build-test.mjs",
+    "check": "tsc -p . --noEmit",
+    "test": "npm run build && node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@types/chrome": "0.3.7",
+    "typescript": "7.0.2"
+  }
+}

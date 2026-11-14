@@ -1,0 +1,1 @@
+t=>Object.getOwnPropertyDescriptor(Document.prototype,'title').get.call(document)===t||'not ready'

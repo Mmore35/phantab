@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/phantab-cdp", "crates/phantab-window", "crates/phantab", "crates/phantab-testkit"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/Mmore35/phantab"
+publish = false
+
+# Standards (CONTRIBUTING.md § Standards): each crate opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "deny"            # window modules allow it locally, each block with a // SAFETY: comment
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+# No `overflow-checks = true` here, on purpose (decided 2026-11-05, security sweep PR #8). It costs
+# almost nothing (Windows release exe +0.2%, no slower build), but with panic = "abort" any overflow
+# kills the whole service, every agent's pages with it, and numbers a web page controls reach integer
+# arithmetic (read_page summed per-frame counts a frame's script returned: two frames reporting ~4.7e18
+# each aborted the service). Turn it on only after an audit of every sum or product a page, the bridge
+# or a client can reach shows each one bounded or saturating. Until then release builds wrap, and those
+# sums saturate on their own (engine/read.rs). Debug builds and tests run with the checks.

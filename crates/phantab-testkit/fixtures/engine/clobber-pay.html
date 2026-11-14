@@ -1,0 +1,19 @@
+<title>Clobbered checkout</title>
+<!-- DOM clobbering: markup alone shadows the document's and the form's own properties, so a script
+     that reads `document.querySelector` or `form.querySelectorAll` gets an element, not the method. -->
+<img name="querySelector" alt=""><img name="elementFromPoint" alt=""><img name="activeElement" alt="">
+<p><button id="pay">Pay now</button> <button id="plain">Show details</button></p>
+<form id="card" action="/post/ok" method="post">
+<input name="querySelector" type="hidden"><input name="querySelectorAll" type="hidden">
+<input name="closest" type="hidden"><input name="getAttribute" type="hidden"><input name="matches" type="hidden">
+<input id="number" autocomplete="cc-number">
+<button id="next" type="submit">Continue</button>
+</form>
+<p id="said">nothing pressed</p>
+<script>
+(() => {
+  const said = Document.prototype.getElementById.call(document, 'said');
+  addEventListener('click', (e) => { if (e.target.id !== 'number') said.textContent = 'pressed ' + e.target.id; });
+  addEventListener('submit', (e) => { e.preventDefault(); said.textContent = 'sent the card form'; });
+})();
+</script>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Field guide to the Cascade Rail branch lines · Rail Heritage Wiki</title>
+<style>
+body { font-family: Georgia, serif; margin: 0; display: grid; grid-template-columns: 220px 1fr; }
+#side { background: #f3f3f0; padding: 12px; font-family: system-ui, sans-serif; font-size: 13px; }
+#side a { display: block; margin: 3px 0; }
+article { padding: 16px 32px; max-width: 760px; line-height: 1.55; }
+.infobox { float: right; width: 240px; border: 1px solid #aaa; margin: 0 0 12px 12px; font-size: 13px; padding: 8px; }
+#toc { border: 1px solid #ccc; padding: 8px 16px; display: inline-block; font-size: 14px; }
+#refs { font-size: 13px; }
+</style>
+</head>
+<body>
+<nav id="side"></nav>
+<article>
+  <h1>Field guide to the Cascade Rail branch lines</h1>
+  <p class="byline">Compiled by the Cascade Rail Heritage Society. Technical editor: Rosa Ilunga. Maps: Tomas Berglund. Last revised 2 March 2026.</p>
+  <div class="infobox" id="infobox"></div>
+  <p id="lede"></p>
+  <div id="toc"><strong>Contents</strong><ol id="toc-list"></ol></div>
+  <div id="sections"></div>
+  <h2 id="references">References</h2>
+  <ol id="refs"></ol>
+</article>
+<script>
+const spurs = [
+  ['Ashby', 1889, 1931, 12.4, 'timber'], ['Bramwell', 1891, 1949, 21.7, 'dairy'], ['Corvallis Junction', 1893, 1962, 44.1, 'mixed freight'],
+  ['Deer Creek', 1895, 1938, 9.8, 'gravel'], ['Elk Prairie', 1897, 1954, 27.3, 'grain'], ['Fennimore', 1898, 1941, 15.0, 'timber'],
+  ['Glenrock', 1900, 1966, 52.9, 'passenger'], ['Hollister Bay', 1901, 1959, 33.2, 'fish'], ['Ironwood', 1903, 1935, 7.1, 'ore'],
+  ['Juniper Flats', 1904, 1958, 19.9, 'cattle'], ['Tillamook', 1906, 1957, 38.6, 'cheese and timber'], ['Kessler', 1906, 1944, 11.2, 'timber'],
+  ['Larch Mountain', 1908, 1952, 24.5, 'logging'], ['Millbrook', 1909, 1960, 30.8, 'paper'], ['Northgate', 1911, 1971, 61.3, 'passenger'],
+  ['Oakridge', 1912, 1948, 17.6, 'lumber'], ['Pinecrest', 1913, 1956, 22.0, 'tourist'], ['Quarry Hill', 1914, 1939, 5.4, 'stone'],
+  ['Riverside', 1915, 1963, 36.9, 'fruit'], ['Silverton', 1917, 1953, 28.7, 'mining'], ['Tamarack', 1918, 1945, 13.3, 'timber'],
+  ['Umatilla Cut-off', 1920, 1968, 47.5, 'grain'], ['Vale', 1921, 1950, 18.1, 'cattle'], ['Willow Creek', 1922, 1957, 26.4, 'dairy'],
+  ['Yamhill', 1924, 1961, 31.0, 'hops'], ['Zigzag', 1925, 1942, 8.9, 'logging'], ['Beaver Falls', 1926, 1955, 20.6, 'paper'],
+  ['Crescent Lake', 1928, 1964, 41.8, 'tourist'], ['Dunmore', 1929, 1947, 10.5, 'coal'], ['Eagle Point', 1931, 1969, 39.2, 'fruit'],
+];
+const rnd = (() => { let s = 7; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })();
+const engines = ['a 2-6-2 Prairie', 'a Shay geared locomotive', 'a 4-6-0 Ten-Wheeler', 'a McKeen motor car', 'a 2-8-0 Consolidation', 'a GE 44-ton switcher'];
+const towns = ['Harlow', 'Pike Rapids', 'Westbury', 'Moss Landing', 'Calder', 'Brightwater', 'Stanton', 'Ferris'];
+const side = ['Main page', 'Lines', 'Stations', 'Locomotives', 'Rolling stock', 'Timetables', 'Maps', 'Photographs', 'People', 'Companies', 'Bridges', 'Tunnels', 'Accidents', 'Preservation', 'Model railways', 'Recent changes', 'Random article', 'Help', 'Donate', 'Contact', 'Upload file', 'Special pages', 'Permanent link', 'Cite this page', 'Print', 'Download PDF', 'Talk', 'History', 'Edit', 'Watch'];
+document.getElementById('side').innerHTML = '<strong>Rail Heritage Wiki</strong>' + side.map(s => `<a href="#${s.toLowerCase().replace(/\W+/g, '-')}">${s}</a>`).join('');
+document.getElementById('infobox').innerHTML = '<strong>Cascade Rail</strong><br>Founded 1887<br>Branch lines: 30<br>Peak route length: 2,140 km (1929)<br>Last branch closed: 1971<br>Gauge: 1,435 mm<br>Headquarters: Portland';
+document.getElementById('lede').textContent = 'Cascade Rail built thirty branch lines, locally called spurs, between 1889 and 1931 to bring timber, grain, milk and passengers from the valleys to its main line. This guide gives each spur its own section: when it opened, what it carried, how long it was, and when and why it closed. Lengths are given in kilometres, measured along the track from the junction switch to the last buffer stop, as surveyed by the company in 1929. Where a spur was cut back before it closed, the length given is the 1929 length.';
+document.getElementById('toc-list').innerHTML = spurs.map(([n]) => `<li><a href="#${n.toLowerCase().replace(/\W+/g, '-')}">The ${n} spur</a></li>`).join('');
+const para = (n, open, close, km, cargo, i) => {
+  const town = towns[i % towns.length], engine = engines[i % engines.length];
+  const trains = 2 + Math.floor(rnd() * 9), peak = 1915 + Math.floor(rnd() * 20), tons = 20 + Math.floor(rnd() * 400);
+  const why = close < 1945 ? 'road trucks took its traffic during the Depression' : close < 1960 ? 'the last mill it served shut down' : 'a state highway replaced it';
+  return [
+    `The ${n} spur left the main line at ${town} and opened in ${open}. Its main traffic was ${cargo}, and at its busiest, around ${peak}, it saw ${trains} trains a day in each direction. The line was worked for most of its life by ${engine}, which the crews kept at a one-stall shed at the far end.`,
+    `Surveyed at ${km} km in 1929, it climbed steadily from the junction and crossed several timber trestles. Freight averaged ${tons} tonnes a week in the 1920s. A mixed train carried passengers until the company ended passenger service on the branches in the early 1930s, after which the spur was freight only.`,
+    `The ${n} spur closed in ${close}, when ${why}. The rails were lifted within two years, and most of the formation is now farm tracks or forest roads. A short stretch near the junction survives as a siding, and the society holds the original station sign.`,
+  ];
+};
+document.getElementById('sections').innerHTML = spurs.map((s, i) => {
+  const [n] = s;
+  const ps = para(...s, i);
+  return `<h2 id="${n.toLowerCase().replace(/\W+/g, '-')}">The ${n} spur</h2>` + ps.map(p => `<p>${p}</p>`).join('') + `<p><a href="#map-${i}">Map of the ${n} spur</a> · <a href="#photos-${i}">Photographs</a> · <a href="#timetable-${i}">${n} timetables</a></p>`;
+}).join('');
+document.getElementById('refs').innerHTML = Array.from({ length: 60 }, (_, i) => `<li><a href="#ref-${i + 1}">Cascade Rail Company, Annual report ${1890 + i}</a>, p. ${10 + (i * 7) % 90}.</li>`).join('');
+</script>
+</body>
+</html>

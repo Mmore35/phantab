@@ -1,0 +1,14 @@
+phantab
+Copyright 2026 The phantab authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The phantab-cdp crate (crates/phantab-cdp) implements a subset of Puppeteer
+(https://github.com/puppeteer/puppeteer), puppeteer-core 25.11.0, and includes code ported from it,
+among it:
+
+- crates/phantab-cdp/src/keyboard_layout.rs, from src/common/USKeyboardLayout.ts
+- crates/phantab-cdp/src/input.rs, from src/cdp/Input.ts
+- crates/phantab-cdp/src/dom.rs, from the ElementHandle and Locator logic
+
+Puppeteer is Copyright 2017 Google Inc. and is licensed under the Apache License, Version 2.0.

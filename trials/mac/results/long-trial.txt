@@ -1,0 +1,10 @@
+power assertions: (none from test Chrome)
+{"minute":0,"perTenSeconds":[{"focus":false,"ticks":10},{"focus":true,"ticks":100}]}
+{"minute":1,"perTenSeconds":[{"focus":false,"ticks":10},{"focus":true,"ticks":100}]}
+{"minute":2,"perTenSeconds":[{"focus":false,"ticks":10},{"focus":true,"ticks":100}]}
+{"minute":3,"perTenSeconds":[{"focus":false,"ticks":10},{"focus":true,"ticks":100}]}
+{"minute":4,"perTenSeconds":[{"focus":false,"ticks":10},{"focus":true,"ticks":100}]}
+{"minute":5,"perTenSeconds":[{"focus":false,"ticks":0},{"focus":true,"ticks":100}]}
+{"minute":6,"perTenSeconds":[{"focus":false,"ticks":0},{"focus":true,"ticks":100}]}
+{"minute":7,"perTenSeconds":[{"focus":false,"ticks":0},{"focus":true,"ticks":100}]}
+power assertions: (none from test Chrome)

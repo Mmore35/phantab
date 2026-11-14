@@ -1,0 +1,118 @@
+[package]
+name = "phantab"
+description = "Lets AI agents use your own signed-in Chrome, in windows you never see."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "phantab"
+path = "src/main.rs"
+
+[dependencies]
+phantab-cdp = { path = "../phantab-cdp" }
+phantab-window = { path = "../phantab-window" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+# Service shell (runtime, service, bridge, host, mcp, cli).
+# ConnTimer (service/mod.rs, THREAT-MODEL R14) relies on hyper's HTTP/1 server timing only the header
+# read, checked against the locked 1.12; re-check it, and its tests, when the lock moves hyper.
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+async-trait = "0.1"
+rmcp = { version = "3.9", default-features = false, features = ["server", "transport-io"] }
+getrandom = "0.3"
+sha2 = "0.11"
+base64 = "0.22"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+# install: parses Codex config.toml to check an edit changed nothing else (the edit itself is text).
+toml = "0.9"
+# signin: the provider seal (THREAT-MODEL SR-43), RustCrypto, the digest 0.11 line that sha2 0.11 is on.
+x25519-dalek = { version = "3", features = ["static_secrets", "zeroize"] }
+hkdf = "0.13"
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
+zeroize = { version = "1", features = ["std"] }
+subtle = "2"
+# signin: the provider runs in a job object (Windows) or its own process group (unix), so a timeout
+# kills the whole tree (SR-44). It keeps the `unsafe` out of this crate.
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "job-object", "kill-on-drop", "process-group", "creation-flags"] }
+# signin: WHATWG URL parsing, the same hostname and href as Node's `new URL`.
+url = "2"
+# signin/bitwarden (SR-67): base-domain matching needs the registrable domain (eTLD+1). psl compiles the
+# Public Suffix List, private section included (as Bitwarden's tldts with allowPrivateDomains), into the
+# binary: no network, no list file. MIT OR Apache-2.0.
+psl = "2"
+# signin: Promise.all over frames that borrow the page (join_all needs no 'static, unlike a JoinSet).
+futures-util = "0.3"
+# service hello (THREAT-MODEL SR-13): a client checks HMAC-SHA256(token, ...) before sending the token.
+# 0.13 is the copy hkdf already brings.
+hmac = "0.13"
+# extension_files (SR-74): two source names one file on NTFS or APFS refuse an install, compared in NFC.
+# The 2.x url already brings through idna (one copy in the lock), compiled data only, as idna uses it.
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
+# extension_files (SR-74): a planted name is shown with each character that shows nothing or changes the
+# text around it escaped, picked by Unicode property. The 2.x idna_adapter already brings, with its compiled data (one copy of each in the lock).
+icu_properties = { version = "2", default-features = false, features = ["compiled_data"] }
+
+[target.'cfg(unix)'.dependencies]
+# extension_files (SR-74): O_NOFOLLOW and O_NONBLOCK, whose values differ between macOS and Linux.
+# The same 0.2 as phantab-window's (one copy in the lock); constants only, no unsafe here.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# install: the native host's HKCU registration. 0.6 matches phantab-window's (one copy in the lock).
+windows-registry = "0.6"
+# signin: CREATE_NO_WINDOW for the provider (process-wrap's CreationFlags takes this type). Same 0.62 as
+# phantab-window and process-wrap, so no new copy.
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Integration tests build this crate with the test seams on (sign-in times, loopback); a dev-dependency
+# feature never reaches a normal or release build (resolver 2+).
+phantab = { path = ".", features = ["test-seams"] }
+phantab-testkit = { path = "../phantab-testkit" }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+# Paused time: the service's own tests measure its real 30 s and 120 s header waits without waiting them.
+tokio = { version = "1", features = ["test-util"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# tests/install.rs: reads and cleans up its scratch HKCU keys.
+windows-registry = "0.6"
+
+# Cargo refuses one crate under two names, so serde_json's features come in through ours.
+# preserve_order keeps keys in insertion order the way JSON.stringify does (the MCP tool list is compared
+# byte for byte with its golden file); raw_value lets CDP event params pass through the bridge unparsed.
+[features]
+default = ["serde_json/preserve_order", "serde_json/raw_value"]
+# Test builds only (THREAT-MODEL SR-30): sign-in time overrides, loopback http, and the
+# debug-logging bypass the sentinel test needs, and on macOS a scratch keychain in place of the login
+# keychain (PHANTAB_TEST_KEYCHAIN). Enabled by the self dev-dependency above. To build the binary with it,
+# `cargo build -p phantab --features test-seams`: `--features phantab/test-seams` names the self
+# dev-dependency's feature, so outside a test build it turns nothing on.
+test-seams = ["phantab-window/test-seams"]
+
+# The fake sign-in provider, driven by a control file.
+[[bin]]
+name = "phantab-fake-provider"
+path = "tests/bin/fake_provider.rs"
+required-features = ["test-seams"]
+test = false
+
+# The fake Bitwarden CLI the built-in Bitwarden source's tests drive (docs/BITWARDEN.md § Testing).
+[[bin]]
+name = "phantab-fake-bw"
+path = "tests/bin/fake_bw.rs"
+required-features = ["test-seams"]
+test = false

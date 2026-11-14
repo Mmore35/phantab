@@ -1,0 +1,39 @@
+[package]
+name = "phantab-cdp"
+description = "A small Chrome DevTools Protocol client: one page over any transport (extension relay, debugging pipe or WebSocket)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+async-trait = "0.1"
+futures-util = "0.3"
+tokio-tungstenite = "0.27"
+base64 = "0.22"
+parking_lot = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+# Marking Chrome's debugging-pipe handles inheritable is a Win32 call, and unsafe lives only in
+# phantab-window's OS modules (SR-58).
+phantab-window = { path = "../phantab-window" }
+
+[dev-dependencies]
+# Integration tests build this crate with the test seams on; a dev-dependency feature never reaches a
+# normal or release build (resolver 2+).
+phantab-cdp = { path = ".", features = ["test-seams"] }
+
+[features]
+# Test builds only: `Page::strict_fallbacks`, the click checks that fell back to the box rule by
+# reason (`Unsettled`), which the real-Chrome lane reads to tell which check answered, and why. Enabled
+# by the self dev-dependency above.
+test-seams = []

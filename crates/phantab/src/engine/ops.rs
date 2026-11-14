@@ -1,0 +1,1045 @@
+//! The engine's calls: `get`, `pages`, `adopt`, `open`, `tabs`, `attach`, `snapshot`, `lock`,
+//! `screenshot`, `wait`, `act`, `show`, `resume`, `close`, `release`, `viewer` and `dispose`.
+
+use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
+
+use phantab_cdp::{BoundingBox, Browser, CdpError, LaunchOptions, Page, PageOptions};
+use serde_json::{Map, Value, json};
+use tokio::time::Instant;
+
+use super::read::{Abort, capture, on_abort, poll_until, read_page};
+use super::record::{Fields, Rec};
+use super::recover::Failed;
+use super::{Engine, PAGE_TEXT_LIMIT, cut};
+use crate::bridge::{Profile, TabId};
+use crate::engine_api::{EngineError, EngineResult};
+use crate::page_js::{ACTIONABLE, CLICK, PRESENT};
+use crate::signin::{Phase, SignInRecord};
+use crate::util::{js_string, random_hex, same_secret, truthy};
+
+const UNKNOWN_PAGE: &str = "Unknown page or page belongs to another agent session.";
+const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(30);
+/// SR-8: viewer actions per token per second.
+pub(crate) const VIEWER_ACTIONS_PER_SECOND: usize = 20;
+/// Pointer moves per second, counted apart from the actions: a drag across a slider sends a stream of
+/// them, and 30 a second keeps it smooth (the plan's POC 3).
+pub(crate) const VIEWER_MOVES_PER_SECOND: usize = 30;
+/// Room around a check in the zoomed view, in CSS pixels, so its edges and labels show.
+const ZOOM_PAD: f64 = 40.0;
+/// How far the zoom may enlarge a check; past this a phone shows JPEG blur, not detail.
+const ZOOM_MAX: f64 = 3.0;
+/// The width a zoomed view aims for: a phone held upright.
+const ZOOM_WIDTH: f64 = 480.0;
+
+/// Spends one of `limit` a second from `times`, or refuses. "Too many …" is the wording the service
+/// maps to 429 (SR-8).
+fn spend(times: &mut std::collections::VecDeque<Instant>, limit: usize, what: &str) -> EngineResult<()> {
+    let now = Instant::now();
+    while times.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) {
+        times.pop_front();
+    }
+    if times.len() >= limit {
+        return Err(EngineError(format!("Too many {what}: at most {limit} a second.")));
+    }
+    times.push_back(now);
+    Ok(())
+}
+
+/// The zoomed view around a check's box: padded, kept inside the viewport, scaled up to fit a phone.
+pub(crate) fn zoom_clip(b: BoundingBox, vw: f64, vh: f64) -> (BoundingBox, f64) {
+    let x = (b.x - ZOOM_PAD).max(0.0);
+    let y = (b.y - ZOOM_PAD).max(0.0);
+    let right = (b.x + b.width + ZOOM_PAD).min(vw.max(x + 1.0));
+    let bottom = (b.y + b.height + ZOOM_PAD).min(vh.max(y + 1.0));
+    let clip = BoundingBox { x, y, width: (right - x).max(1.0), height: (bottom - y).max(1.0) };
+    let scale = (ZOOM_WIDTH / clip.width).clamp(1.0, ZOOM_MAX);
+    (clip, scale)
+}
+
+/// One live-view frame. During a check it is zoomed onto the check's frame (unless the owner asked for
+/// the whole page), so a phone shows it big enough to use. `clip` says what the image covers, in the
+/// page's viewport coordinates, so the viewer can turn a tap on the image into a page point.
+async fn viewer_frame(page: &Page, checking: bool, passkey: bool, args: &Value) -> EngineResult {
+    let whole = args.get("whole").is_some_and(truthy);
+    let target = if checking && !passkey && !whole { super::verify::challenge_box(page).await } else { None };
+    let view = page.visual_viewport().await?;
+    let (image, clip, scale) = if let Some(b) = target {
+        let (clip, scale) = zoom_clip(b, view.width, view.height);
+        (page.screenshot_jpeg_clip(75, clip, scale).await?, clip, scale)
+    } else {
+        let clip = BoundingBox { x: 0.0, y: 0.0, width: view.width, height: view.height };
+        (capture(page, 75).await?, clip, 1.0)
+    };
+    Ok(json!({
+        "image": image,
+        "url": super::report_url(&page.url()),
+        "checking": checking,
+        // A passkey hand-off: the page says so, and asks for the pop-up, not a check.
+        "passkey": passkey,
+        "zoomed": target.is_some(),
+        "clip": { "x": clip.x, "y": clip.y, "width": clip.width, "height": clip.height, "scale": scale },
+    }))
+}
+
+fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
+    args.get(key).filter(|v| !v.is_null())
+}
+
+fn arg_str(args: &Value, key: &str) -> Option<String> {
+    arg(args, key).map(|v| js_string(Some(v)))
+}
+
+/// JavaScript's `typeof` of a JSON value (absent is `undefined`).
+fn type_of(v: Option<&Value>) -> &'static str {
+    match v {
+        None => "undefined",
+        Some(Value::Bool(_)) => "boolean",
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(Value::Null | Value::Array(_) | Value::Object(_)) => "object",
+    }
+}
+
+fn is_website(url: &str) -> bool {
+    url.starts_with("http:") || url.starts_with("https:")
+}
+
+/// `unconfirmed(e, what)`: a slow page can outlast the protocol timeout on an input event and still apply
+/// it, and a resend then types twice. phantab: a covered click is left as it is: nothing was sent, and
+/// its text names what covers the element, which the page chose (an `id` can read "timed out").
+fn unconfirmed(e: EngineError, what: &str) -> EngineError {
+    if !e.0.starts_with(phantab_cdp::COVERED_PREFIX) && e.0.to_lowercase().contains("timed out") {
+        EngineError(format!(
+            "{what}: the page did not confirm in time, but it may still have landed. Screenshot before repeating it."
+        ))
+    } else {
+        e
+    }
+}
+
+/// Runs `f` unless `signal` aborts first (a locator's `{signal}`).
+async fn abortable<T>(signal: &Abort, f: impl Future<Output = Result<T, CdpError>>) -> EngineResult<T> {
+    tokio::select! {
+        r = f => r.map_err(EngineError::from),
+        () = on_abort(Some(signal)) => Err(EngineError("The operation was aborted.".to_owned())),
+    }
+}
+
+fn origin(url: &str) -> EngineResult<String> {
+    let u = url::Url::parse(url).map_err(|_| EngineError("Invalid URL".to_owned()))?;
+    Ok(u.origin().ascii_serialization())
+}
+
+impl Engine {
+    pub(crate) fn validate_url(url: Option<&Value>) -> EngineResult<String> {
+        let u = url::Url::parse(&js_string(url)).map_err(|_| EngineError("Invalid URL".to_owned()))?;
+        if !["http", "https"].contains(&u.scheme()) {
+            return Err(EngineError("Only HTTP(S) website URLs are accepted.".to_owned()));
+        }
+        Ok(u.to_string())
+    }
+
+    /// `get(id, owner, write)`.
+    pub(crate) fn get(&self, id: &str, owner: &str, write: bool) -> EngineResult<Arc<Rec>> {
+        let r = self
+            .find(id)
+            .filter(|r| r.lock().owner == owner)
+            .ok_or_else(|| EngineError(UNKNOWN_PAGE.to_owned()))?;
+        // A filled password must not be left for a screenshot after a site's Show-password toggle, or a
+        // later action.
+        let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
+        crate::signin::check_call(&held)?;
+        if write && let Some(refusal) = self.verification_refusal(&r) {
+            return Err(refusal);
+        }
+        let mut s = r.lock();
+        if write && s.paused {
+            return Err(EngineError(
+                "Page is handed to the owner. Wait for handback, then resume.".to_owned(),
+            ));
+        }
+        s.touched = Instant::now();
+        drop(s);
+        Ok(r)
+    }
+
+    /// `pages(owner)`. Another session's orphaned handoff shows only its pageId, mode and origin (SR-29).
+    pub(crate) fn pages(&self, owner: &str) -> Value {
+        let records = self.st().records.clone();
+        let list = records
+            .iter()
+            .filter_map(|r| {
+                let (mine, orphaned) = {
+                    let s = r.lock();
+                    (s.owner == owner, s.orphaned)
+                };
+                if !mine && !orphaned {
+                    return None;
+                }
+                let mut d = Self::describe(r);
+                if !mine {
+                    // SR-29: pageId, mode and the origin (kept under `url`), nothing else: no path,
+                    // query, fragment, title or detach text, which can carry what the page said.
+                    let url = d.get("url").and_then(Value::as_str).unwrap_or("");
+                    let origin = url::Url::parse(url)
+                        .map_or_else(|_| String::new(), |u| u.origin().ascii_serialization());
+                    d.retain(|k, _| k == "pageId" || k == "mode");
+                    d.insert("url".into(), Value::String(origin));
+                }
+                d.insert("orphaned".into(), Value::Bool(orphaned));
+                Some(Value::Object(d))
+            })
+            .collect();
+        Value::Array(list)
+    }
+
+    /// `adopt(id, owner, confirmed)`. Only `guardrails: full` asks for the owner's confirmation first
+    /// (`docs/GUARDRAILS.md`).
+    pub(crate) fn adopt(&self, id: &str, owner: &str, confirmed: bool) -> EngineResult<Arc<Rec>> {
+        let confirmed = confirmed || !self.guardrails().full();
+        let r = self.find(id);
+        let Some(r) = r.filter(|r| r.lock().orphaned && confirmed) else {
+            return Err(EngineError(
+                "Recover only an orphaned handoff after explicit owner confirmation.".to_owned(),
+            ));
+        };
+        {
+            let mut s = r.lock();
+            owner.clone_into(&mut s.owner);
+            s.orphaned = false;
+        }
+        Ok(r)
+    }
+
+    /// `open`'s url and mode, checked in its order. [`Self::ready_for`] reads them too.
+    pub(crate) fn open_args(args: &Value) -> EngineResult<(String, String)> {
+        let url = Self::validate_url(arg(args, "url"))?;
+        let mode = arg_str(args, "mode").unwrap_or_else(|| "shared-hidden".to_owned());
+        // SR-33: any other string is refused, not stored as the mode with a workspace opened; that text
+        // would show in other sessions' `pages`.
+        if !matches!(mode.as_str(), "shared-hidden" | "visible" | "isolated-headless") {
+            return Err(EngineError("mode is shared-hidden, visible or isolated-headless.".to_owned()));
+        }
+        Ok((url, mode))
+    }
+
+    /// `open(owner, {url, mode, profile})`.
+    pub(crate) async fn open(&self, owner: &str, args: &Value) -> EngineResult {
+        let (url, mode) = Self::open_args(args)?;
+        let target = self.open_target(args, &mode)?;
+        if mode == "isolated-headless" {
+            let executable = self.chrome_executable().ok_or_else(|| {
+                EngineError(
+                    "isolated-headless needs chromeExecutable in config.json; phantab has no bundled Chrome."
+                        .to_owned(),
+                )
+            })?;
+            let b = Arc::new(
+                Browser::launch(LaunchOptions {
+                    executable,
+                    headless: true,
+                    user_data_dir: None,
+                    args: Vec::new(),
+                })
+                .await?,
+            );
+            // Nobody can see a headless page's dialog, so it would block the page until it closed. Its
+            // passkey requests are counted, as an agent page's are.
+            let options =
+                PageOptions { answer_dialogs: true, watch_passkeys: true, ..PageOptions::default() };
+            let page = match b.new_page_with(options).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = b.close().await;
+                    return Err(e.into());
+                }
+            };
+            if let Err(e) = page.goto(&url, NAVIGATE_TIMEOUT).await {
+                let _ = b.close().await;
+                return Err(e.into());
+            }
+            let r = self.record(page, owner, Fields { mode, isolated: Some(b), ..Fields::default() })?;
+            return Ok(Value::Object(self.looked(&r, Self::describe(&r)).await));
+        }
+        let profile = target.profile.clone();
+        self.require_browser(&profile).await?;
+        let fields = if mode == "visible" {
+            let created = self.bridge().op_in(&profile, "createTab", json!({ "url": url })).await?;
+            let tab = created
+                .get("tabId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| EngineError("The bridge answered without a tabId.".to_owned()))?;
+            let p = self.page_for(&profile, tab, false).await?;
+            (
+                p.page,
+                Fields {
+                    profile: target.profile,
+                    profile_name: target.name,
+                    mode,
+                    tab_id: Some(tab),
+                    window_id: created.get("windowId").cloned(),
+                    link: Some(p.link),
+                    ..Fields::default()
+                },
+            )
+        } else {
+            let w = match self.reuse_spare(&profile, owner, &url).await {
+                Some(w) => w,
+                None => self.create_workspace(&profile, &url).await?,
+            };
+            (
+                w.linked.page,
+                Fields {
+                    profile: target.profile,
+                    profile_name: target.name,
+                    mode,
+                    tab_id: Some(w.tab_id),
+                    window_id: w.window_id,
+                    workspace: true,
+                    native: w.native,
+                    link: Some(w.linked.link),
+                    ..Fields::default()
+                },
+            )
+        };
+        let r = self.record(fields.0, owner, fields.1)?;
+        Ok(Value::Object(self.looked(&r, Self::describe(&r)).await))
+    }
+
+    fn is_viewer(&self, url: &str) -> bool {
+        url.starts_with(&format!("http://127.0.0.1:{}/view", self.setup.port))
+            || self.setup.remote_base.as_ref().is_some_and(|b| url.starts_with(&format!("{b}/view")))
+    }
+
+    fn assigned(&self, profile: &Profile, tab: TabId) -> bool {
+        // A kept window is no one's to adopt; asked first, as the records' check holds the state lock.
+        self.is_spare(profile, tab)
+            || self.st().records.iter().any(|r| {
+                let s = r.lock();
+                r.profile == *profile && (s.tab_id == Some(tab) || s.viewer_tab == Some(tab))
+            })
+    }
+
+    /// `tabs({profile})`: the profile's website tabs no agent holds.
+    pub(crate) async fn tabs(&self, args: &Value) -> EngineResult {
+        let profile = self.target(args)?.profile;
+        self.require_browser(&profile).await?;
+        let tabs = self.bridge().op_in(&profile, "tabs", json!({})).await?;
+        let list = tabs.as_array().map(Vec::as_slice).unwrap_or_default();
+        let out = list
+            .iter()
+            .filter(|t| {
+                let url = t.get("url").and_then(Value::as_str).unwrap_or("");
+                let tab = t.get("tabId").and_then(Value::as_i64);
+                is_website(url) && !self.is_viewer(url) && !tab.is_some_and(|id| self.assigned(&profile, id))
+            })
+            .map(|t| {
+                let mut m = Map::new();
+                m.insert("tabId".into(), Value::String(js_string(t.get("tabId"))));
+                // Absent stays absent, as JSON.stringify drops undefined. Both are the page's own words: cut
+                // as a snapshot cuts its title, and as every result cuts a page's URL (SR-34).
+                for key in ["title", "url"] {
+                    let v = match t.get(key) {
+                        Some(Value::String(v)) if key == "url" => Value::String(super::report_url(v)),
+                        Some(Value::String(v)) => {
+                            Value::String(super::read::utf16_prefix(v, PAGE_TEXT_LIMIT))
+                        }
+                        Some(v) => v.clone(),
+                        None => continue,
+                    };
+                    m.insert(key.into(), v);
+                }
+                Value::Object(m)
+            })
+            .collect();
+        Ok(Value::Array(out))
+    }
+
+    /// `attach(owner, {tabId, profile})`: `Number(tabId)` must be an integer.
+    pub(crate) async fn attach(&self, owner: &str, args: &Value) -> EngineResult {
+        let target = self.target(args)?;
+        let profile = target.profile.clone();
+        self.require_browser(&profile).await?;
+        let id = match arg(args, "tabId") {
+            Some(Value::Number(n)) => {
+                n.as_i64().or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(js_int))
+            }
+            Some(Value::String(s)) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    Some(0)
+                } else {
+                    s.parse::<f64>().ok().filter(|f| f.fract() == 0.0).map(js_int)
+                }
+            }
+            Some(Value::Bool(b)) => Some(i64::from(*b)),
+            _ => None,
+        };
+        let Some(id) = id else { return Err(EngineError("Unknown tab id. List tabs again.".to_owned())) };
+        if self.assigned(&profile, id) {
+            return Err(EngineError("Tab is already assigned to an agent.".to_owned()));
+        }
+        let t = match self.bridge().op_in(&profile, "tab", json!({ "tabId": id })).await {
+            Ok(t) if truthy(&t) => t,
+            _ => return Err(EngineError("Tab no longer exists. List tabs again.".to_owned())),
+        };
+        let url = t.get("url").and_then(Value::as_str).unwrap_or("");
+        if !is_website(url) || self.is_viewer(url) {
+            return Err(EngineError("Select a normal website tab in the configured profile.".to_owned()));
+        }
+        let p = self.page_for(&profile, id, false).await?;
+        let r = self.record(
+            p.page,
+            owner,
+            Fields {
+                profile: target.profile,
+                profile_name: target.name,
+                owned: Some(false),
+                mode: "existing-tab".to_owned(),
+                tab_id: Some(id),
+                window_id: t.get("windowId").cloned(),
+                link: Some(p.link),
+                ..Fields::default()
+            },
+        )?;
+        Ok(Value::Object(Self::describe(&r)))
+    }
+
+    // The queue keys page calls by the same function, so the page it holds for a call is the page the
+    // call gets.
+    fn page_id(args: &Value) -> String {
+        crate::engine_api::page_id(args)
+    }
+
+    /// `snapshot(owner, {pageId})`.
+    pub(crate) async fn snapshot(&self, owner: &str, args: &Value) -> EngineResult {
+        let r = self.get(&Self::page_id(args), owner, false)?;
+        let data =
+            self.cdp(&r, None, |page, _| async move { read_page(&page).await.map_err(Failed::from) }).await?;
+        let mut out = Self::describe_reporting(&r);
+        out.extend(data);
+        Ok(Value::Object(self.looked(&r, out).await))
+    }
+
+    /// `lock(r, url)`: the site lease a write takes. An isolated page shares no site with anyone. A lease is
+    /// a site in one Chrome profile: two profiles are two logins, so each can change the same site at once.
+    pub(crate) fn lock_site(&self, r: &Arc<Rec>, url: Option<&str>) -> EngineResult<()> {
+        let (isolated, owner, current) = {
+            let s = r.lock();
+            (s.isolated.is_some(), s.owner.clone(), s.page.url())
+        };
+        if isolated {
+            return Ok(());
+        }
+        let origin = (r.profile.clone(), origin(url.unwrap_or(&current))?);
+        let mut st = self.st();
+        let holders: Vec<String> =
+            st.origins.iter().find(|(o, _)| *o == origin).map(|(_, ids)| ids.clone()).unwrap_or_default();
+        let held = holders.iter().find_map(|id| {
+            if id == &r.id {
+                return None;
+            }
+            st.records.iter().find(|x| &x.id == id).filter(|other| {
+                let o = other.lock();
+                o.owner != owner || o.paused
+            })
+        });
+        if let Some(holder) = held.cloned() {
+            drop(st);
+            // A check on the site says so, and where its link is, rather than the generic refusal. Only to
+            // the page's own session: the text carries its pageId and link (SR-29, SR-71).
+            let same_owner = holder.lock().owner == owner;
+            if same_owner && let Some(refusal) = self.verification_refusal(&holder) {
+                return Err(refusal);
+            }
+            return Err(EngineError(
+                "Another agent or human handoff holds this site for changes. Wait for its release or handback.".to_owned(),
+            ));
+        }
+        match st.origins.iter_mut().find(|(o, _)| *o == origin) {
+            Some((_, ids)) => {
+                if !ids.contains(&r.id) {
+                    ids.push(r.id.clone());
+                }
+            }
+            None => st.origins.push((origin, vec![r.id.clone()])),
+        }
+        Ok(())
+    }
+
+    /// `screenshot(owner, {pageId})`.
+    pub(crate) async fn screenshot(&self, owner: &str, args: &Value) -> EngineResult {
+        let r = self.get(&Self::page_id(args), owner, false)?;
+        // An image of a page that showed a password or code back cannot be redacted.
+        if self.echo_marked(&r) {
+            return Err(EngineError(super::echo::SCREENSHOT_REFUSED.to_owned()));
+        }
+        let data = self
+            .cdp(&r, None, |page, _| async move {
+                capture(&page, 80).await.map_err(|e| {
+                    if e.to_string().contains("timed out") {
+                        EngineError(
+                            "Screenshot: the page did not paint in time, usually while it is loading. Retry in a few seconds."
+                                .to_owned(),
+                        )
+                    } else {
+                        e.into()
+                    }
+                })
+            })
+            .await?;
+        Ok(json!({ "data": data, "mimeType": "image/jpeg" }))
+    }
+
+    /// `wait(owner, {pageId, selector, text, seconds})`.
+    pub(crate) async fn wait(&self, owner: &str, args: &Value) -> EngineResult {
+        let id = Self::page_id(args);
+        let r = self.get(&id, owner, false)?;
+        if arg(args, "verification").is_some_and(truthy) {
+            let within = arg(args, "seconds")
+                .and_then(Value::as_f64)
+                .filter(|s| *s > 0.0)
+                .map_or(super::verify::WAIT_LIMIT, |s| Duration::from_secs_f64(s.min(60.0)));
+            return Ok(self.wait_check(&r, within).await);
+        }
+        let selector = arg(args, "selector").filter(|v| truthy(v)).cloned();
+        let text = arg(args, "text").filter(|v| truthy(v)).cloned();
+        let seconds = arg(args, "seconds").and_then(Value::as_f64).filter(|s| *s > 0.0);
+        if selector.is_none() && text.is_none() {
+            let Some(seconds) = seconds else {
+                return Err(EngineError(
+                    "Supply a selector, visible text or seconds to wait for.".to_owned(),
+                ));
+            };
+            tokio::time::sleep(Duration::from_secs_f64(seconds.min(60.0))).await;
+            let r = self.get(&id, owner, false)?;
+            return Ok(Value::Object(Self::describe(&r)));
+        }
+        let label = [&selector, &text]
+            .into_iter()
+            .flatten()
+            .map(|v| js_string(Some(v)))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let check_args = [selector.unwrap_or(Value::Null), text.unwrap_or(Value::Null)];
+        let waited = self
+            .cdp(&r, None, |page, signal| {
+                let label = label.clone();
+                let check_args = check_args.clone();
+                async move {
+                    poll_until(&page, &label, PRESENT, &check_args, Duration::from_secs(15), Some(&signal))
+                        .await
+                }
+            })
+            .await;
+        if let Err(e) = waited {
+            return Err(self.explain(&r, e).await);
+        }
+        Ok(Value::Object(self.looked(&r, Self::describe_reporting(&r)).await))
+    }
+
+    /// `act(owner, {pageId, action, selector, text, url, key, x, y, deltaY})`.
+    pub(crate) async fn act(&self, owner: &str, args: &Value) -> EngineResult {
+        let r = self.get(&Self::page_id(args), owner, true)?;
+        self.lock_site(&r, None)?;
+        let action = arg_str(args, "action").unwrap_or_else(|| "undefined".to_owned());
+        let what =
+            if action == "press" { format!("press {}", js_string(arg(args, "key"))) } else { action.clone() };
+        let workspace = r.lock().workspace;
+        if let Err(e) = self.confirm_first(&r, args, &action).await {
+            return Err(self.explain(&r, e).await);
+        }
+        let acted = self
+            .cdp(&r, Some(&action), |p, signal| {
+                let (action, what) = (action.clone(), what.clone());
+                let r = Arc::clone(&r);
+                async move {
+                    let said = |e: EngineError| unconfirmed(e, &what);
+                    let selector = js_string(arg(args, "selector"));
+                    if ["click", "fill", "select"].contains(&action.as_str()) {
+                        let sel = Value::String(selector.clone());
+                        poll_until(&p, &selector, ACTIONABLE, &[sel], Duration::from_secs(10), Some(&signal))
+                            .await?;
+                    }
+                    match action.as_str() {
+                        "navigate" => {
+                            let url = Self::validate_url(arg(args, "url")).map_err(Failed::Settled)?;
+                            self.lock_site(&r, Some(&url)).map_err(Failed::Settled)?;
+                            p.goto(&url, NAVIGATE_TIMEOUT).await?;
+                        }
+                        // A hidden workspace delivers no animation frames, so it clicks the
+                        // element itself. The locator click's own waits end on timers there (the sign-in's
+                        // press uses it), but slowly, as a background tab's timers run about once a second.
+                        "click" if workspace => {
+                            p.eval_on_selector(&selector, CLICK).await.map_err(|e| said(e.into()))?;
+                        }
+                        "click" => {
+                            abortable(&signal, p.click_selector(&selector)).await.map_err(said).map(drop)?;
+                        }
+                        "fill" => {
+                            let Some(Value::String(text)) = arg(args, "text") else {
+                                return Err(Failed::Settled(EngineError("Supply text to fill.".to_owned())));
+                            };
+                            abortable(&signal, p.fill(&selector, text)).await.map_err(said)?;
+                        }
+                        "select" => {
+                            let value = arg(args, "text");
+                            let Some(Value::String(v)) = value else {
+                                return Err(Failed::Settled(EngineError(format!(
+                                    "Values must be strings. Found value \"{}\" of type \"{}\"",
+                                    cut(&js_string(value), PAGE_TEXT_LIMIT),
+                                    type_of(value)
+                                ))));
+                            };
+                            p.select(&selector, std::slice::from_ref(v)).await.map_err(|e| said(e.into()))?;
+                        }
+                        // A timed-out key-down never gets its key-up, and the next press of that key would then go
+                        // out as a repeat.
+                        "press" => {
+                            let key = js_string(arg(args, "key"));
+                            if let Err(e) = p.key_down(&key).await {
+                                let (page, key) = (p.clone(), key.clone());
+                                super::relay::fire(async move {
+                                    let _ = page.key_up(&key).await;
+                                });
+                                return Err(said(e.into()).into());
+                            }
+                            p.key_up(&key).await.map_err(|e| said(e.into()))?;
+                        }
+                        "scroll" => {
+                            let dy = arg(args, "deltaY").and_then(Value::as_f64).unwrap_or(600.0);
+                            p.mouse_wheel(dy).await.map_err(|e| said(e.into()))?;
+                        }
+                        // If only the release times out, the button stays recorded as pressed and every later click
+                        // refuses.
+                        "click_xy" => {
+                            let x = arg(args, "x").and_then(Value::as_f64).unwrap_or(f64::NAN);
+                            let y = arg(args, "y").and_then(Value::as_f64).unwrap_or(f64::NAN);
+                            if let Err(e) = p.mouse_click(x, y).await {
+                                let page = p.clone();
+                                super::relay::fire(async move {
+                                    let _ = page.mouse_reset().await;
+                                });
+                                return Err(said(e.into()).into());
+                            }
+                        }
+                        _ => return Err(Failed::Settled(EngineError("Unsupported action".to_owned()))),
+                    }
+                    Ok::<(), Failed>(())
+                }
+            })
+            .await;
+        if let Err(e) = acted {
+            return Err(self.explain(&r, e).await);
+        }
+        Ok(Value::Object(self.looked(&r, Self::describe_reporting(&r)).await))
+    }
+
+    fn handoff(r: &Rec, handoff: &str, exact: bool) -> Value {
+        let mut d = Self::describe(r);
+        d.insert("handoff".into(), Value::String(handoff.to_owned()));
+        if exact {
+            d.insert("exactPage".into(), Value::Bool(true));
+        }
+        Value::Object(d)
+    }
+
+    /// `show(owner, {pageId})`.
+    pub(crate) async fn show(&self, owner: &str, args: &Value) -> EngineResult {
+        let r = self.get(&Self::page_id(args), owner, false)?;
+        if arg(args, "verification").is_some_and(truthy) {
+            return self.show_check(&r).await;
+        }
+        // Paused already, so shown already, unless a hand-back's failed keep left its window hidden: that one
+        // is shown again, as the owner asked. The record already holds its site, being paused. A live check
+        // Phantab started and has not popped up yet is paused with its window hidden on purpose (its grace):
+        // it answers as shown, as before, and makes no window call, since a check that ends there gives the
+        // page back unhidden. Both under one guard: a check ends by unpausing before it reports its outcome,
+        // so "paused, and the check that paused it has ended" is never seen.
+        let (again, grace) = {
+            let s = r.lock();
+            (s.paused, s.verification.as_ref().is_some_and(|v| v.current().live() && !v.shown))
+        };
+        if again && (grace || !self.reads_hidden(&r).await) {
+            let mut out = Self::handoff(&r, "already-shown", false);
+            if let (Value::Object(m), Some(v)) = (&mut out, self.verification_field(&r)) {
+                m.insert("verification".into(), v);
+            }
+            return Ok(out);
+        }
+        if !again {
+            self.lock_site(&r, None)?;
+        }
+        let (workspace, handback) = {
+            let mut s = r.lock();
+            s.paused = true;
+            let handback = std::mem::take(&mut s.handback);
+            (s.workspace, handback)
+        };
+        match self.show_inner(&r, workspace).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let window_id = {
+                    let mut s = r.lock();
+                    // A record shown again goes back to where it was: still paused, not the agent's.
+                    if again {
+                        s.handback = handback;
+                    } else {
+                        s.paused = false;
+                    }
+                    s.window_id.clone()
+                };
+                if workspace && (!again || self.reads_hidden(&r).await) {
+                    let _ = self
+                        .bridge()
+                        .op_in(&r.profile, "markShown", json!({ "windowId": window_id, "shown": false }))
+                        .await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) async fn show_inner(&self, r: &Arc<Rec>, workspace: bool) -> EngineResult {
+        let (tab, window_id, mode) = {
+            let s = r.lock();
+            (s.tab_id, s.window_id.clone(), s.mode.clone())
+        };
+        if workspace {
+            // A re-attach still running would put the fixed size back after the clear below.
+            Self::settle_recovery(r).await;
+            r.lock().shown_once = true;
+            // Marked shown first, so a bridge drop mid-takeover leaves the owner's window open.
+            self.bridge()
+                .op_in(&r.profile, "markShown", json!({ "windowId": window_id, "shown": true }))
+                .await?;
+            // Left on, Chrome paints the fixed viewport as a box in the corner of the owner's window, gray
+            // around it. Not a reload, so unsaved input stays. Chrome already cleared a detached page's.
+            // Started before the reveal so the owner never sees the box; a busy page's slow answer doesn't
+            // hold the window back.
+            let (page, detached) = {
+                let s = r.lock();
+                (s.page.clone(), s.detached.is_some())
+            };
+            let mut fit = Box::pin(async move {
+                if !detached {
+                    let _ = page.set_viewport(None).await;
+                }
+            });
+            let fitted = matches!(futures_util::poll!(fit.as_mut()), Poll::Ready(()));
+            self.visibility(r, true).await?;
+            self.bridge().op_in(&r.profile, "focus", json!({ "tabId": tab })).await?;
+            if !fitted {
+                fit.await;
+            }
+            return Ok(Self::handoff(r, "actual-tab", true));
+        }
+        if mode == "existing-tab" || mode == "visible" {
+            self.bridge().op_in(&r.profile, "focus", json!({ "tabId": tab })).await?;
+            return Ok(Self::handoff(r, "actual-tab", false));
+        }
+        let existing = r.lock().viewer_token.clone();
+        let token = if let Some(t) = existing {
+            t
+        } else {
+            let t = random_hex(24).map_err(|e| EngineError(e.to_string()))?;
+            r.lock().viewer_token = Some(t.clone());
+            self.st().viewers.push(super::Viewer { token: t.clone(), page: r.id.clone(), remote: false });
+            t
+        };
+        let viewer_url = format!("http://127.0.0.1:{}/view#{token}", self.setup.port);
+        // The token stays local and is never returned through MCP or command-line arguments.
+        self.require_browser(&r.profile).await?;
+        let viewer_tab = r.lock().viewer_tab;
+        let focused = match viewer_tab {
+            Some(t) => self.bridge().op_in(&r.profile, "focus", json!({ "tabId": t })).await.is_ok(),
+            None => false,
+        };
+        if !focused {
+            let created = self.bridge().op_in(&r.profile, "createTab", json!({ "url": viewer_url })).await?;
+            r.lock().viewer_tab = created.get("tabId").and_then(Value::as_i64);
+        }
+        Ok(Self::handoff(r, "interactive-live-view", true))
+    }
+
+    /// `resume(owner, {pageId, ownerConfirmed})`.
+    pub(crate) async fn resume(&self, owner: &str, args: &Value) -> EngineResult {
+        let id = Self::page_id(args);
+        let confirmed = arg(args, "ownerConfirmed").is_some_and(truthy);
+        let orphaned = self.find(&id).is_some_and(|r| r.lock().orphaned);
+        let r = if orphaned { self.adopt(&id, owner, confirmed)? } else { self.get(&id, owner, false)? };
+        // A check Phantab is handing to the owner ends by itself; the agent waits for it, it does not
+        // resume it (SR-69).
+        if let Some(refusal) = self.verification_refusal(&r) {
+            return Err(refusal);
+        }
+        let (paused, handback) = {
+            let mut s = r.lock();
+            if confirmed && s.isolated.is_none() {
+                s.handback = true;
+            }
+            (s.paused, s.handback)
+        };
+        // Without `guardrails: full` the agent's own word that the owner is done is enough
+        // (`docs/GUARDRAILS.md`).
+        if paused && !handback && self.guardrails().full() {
+            return Err(EngineError(
+                "Wait for owner handback: Return to agent in the isolated live view, or ownerConfirmed after explicit handback for shared tabs."
+                    .to_owned(),
+            ));
+        }
+        self.hand_back(&r, false).await?;
+        // A check that came up while the owner already held the page ends with his handback.
+        self.drop_check(&r);
+        Ok(Value::Object(Self::describe(&r)))
+    }
+
+    /// The handback half of `resume`, shared with the end of a verification check: hides a workspace
+    /// window again, ends the live view, unpauses. `close_viewer` also closes the local viewer tab, which
+    /// a verification opened and so takes away again; `resume` leaves it.
+    pub(crate) async fn hand_back(&self, r: &Arc<Rec>, close_viewer: bool) -> EngineResult<()> {
+        let (workspace, window_id) = {
+            let s = r.lock();
+            (s.workspace, s.window_id.clone())
+        };
+        if workspace {
+            if let Err(e) = self.visibility(r, false).await {
+                // A keep that failed still hides the window (`visibility`). The extension then hears it is
+                // hidden, so it mutes it, answers its dialogs for the agent and may close it, as for every
+                // hidden agent window. The record stays paused: the agent hears the error and waits for a
+                // resume that works, and `show` shows the window again. A window still shown keeps its mark.
+                if self.reads_hidden(r).await {
+                    let _ = self
+                        .bridge()
+                        .op_in(&r.profile, "markShown", json!({ "windowId": window_id, "shown": false }))
+                        .await;
+                }
+                return Err(e);
+            }
+            self.bridge()
+                .op_in(&r.profile, "markShown", json!({ "windowId": window_id, "shown": false }))
+                .await?;
+        }
+        let (token, tab, detached, page, viewer_tab) = {
+            let mut s = r.lock();
+            s.paused = false;
+            s.handback = false;
+            let viewer_tab = if close_viewer { s.viewer_tab.take() } else { None };
+            (s.viewer_token.take(), s.tab_id, s.detached.is_some(), s.page.clone(), viewer_tab)
+        };
+        if let Some(token) = token {
+            self.st().viewers.retain(|v| v.token != token);
+        }
+        if let Some(t) = viewer_tab {
+            let _ = self.bridge().op_in(&r.profile, "closeTab", json!({ "tabId": t })).await;
+        }
+        // A page still detached gets both from recover at its next call. A re-attach during the takeover
+        // ended the screencast. The handback has already happened, so a page too busy to answer, or a
+        // detach not yet reported, is not its failure.
+        if workspace && !detached {
+            let _ = self.bridge().op_in(&r.profile, "keepRendering", json!({ "tabId": tab })).await;
+            let _ = Self::prepare(&page).await;
+        }
+        Ok(())
+    }
+
+    /// `close(owner, {pageId})`. Closing an agent's own tab takes the field with it; an owner's tab stays
+    /// open, so it waits for the blank.
+    pub(crate) async fn close(&self, owner: &str, args: &Value) -> EngineResult {
+        let id = Self::page_id(args);
+        self.close_page(owner, &id).await
+    }
+
+    async fn close_page(&self, owner: &str, id: &str) -> EngineResult {
+        if let Some(r) = self.find(id).filter(|r| r.lock().owner == owner) {
+            self.end_with_page(&r);
+        }
+        let held = self.find(id).filter(|h| {
+            let s = h.lock();
+            s.owner == owner && s.owned && s.sign_in == Some(Phase::Unblanked) && !s.paused
+        });
+        let r = match held {
+            Some(r) => r,
+            None => self.get(id, owner, true)?,
+        };
+        let (viewer_tab, isolated, owns_tab) = {
+            let s = r.lock();
+            (s.viewer_tab, s.isolated.clone(), s.owned)
+        };
+        if let Some(t) = viewer_tab {
+            let _ = self.bridge().op_in(&r.profile, "closeTab", json!({ "tabId": t })).await;
+        }
+        if let Some(b) = isolated {
+            b.close().await?;
+        } else if owns_tab && self.keep_spare(&r).await {
+            // Kept for this client's next open; it closes by itself if none comes (`window::Spare`).
+        } else if owns_tab {
+            self.close_tab(&r).await?;
+        }
+        self.forget(id);
+        Ok(json!({ "released": true, "closedOwnedTab": owns_tab }))
+    }
+
+    /// `release(owner)`: a page mid-handoff or mid-sign-in is orphaned instead of closed.
+    pub(crate) async fn release_all(&self, owner: &str) -> EngineResult {
+        let records = self.st().records.clone();
+        for r in records {
+            let mine = r.lock().owner == owner;
+            if !mine {
+                continue;
+            }
+            // Nobody is left to carry on after a check Phantab started, so its page closes like any other.
+            self.end_with_page(&r);
+            let busy = {
+                let s = r.lock();
+                s.paused || s.sign_in.is_some()
+            };
+            if busy {
+                r.lock().orphaned = true;
+            } else {
+                self.close_page(owner, &r.id).await?;
+            }
+        }
+        // A client that releases opens nothing more.
+        self.release_spare(owner).await;
+        Ok(json!({ "released": true }))
+    }
+
+    /// The page whose hand-off `token` views, among the tokens of the listener it came in on (`remote`).
+    /// Every key is compared, in constant time, with no early exit (SR-8).
+    pub(crate) fn viewer_page(&self, token: &str, remote: bool) -> Option<String> {
+        let st = self.st();
+        let mut found = None;
+        for v in &st.viewers {
+            if same_secret(v.token.as_bytes(), token.as_bytes()) && v.remote == remote {
+                found = Some(v.page.clone());
+            }
+        }
+        found
+    }
+
+    /// `viewer(token, action, args)`. The token is compared in constant time (SR-8), and only against
+    /// the tokens of the listener it came in on.
+    pub(crate) async fn viewer_call(
+        &self,
+        token: &str,
+        action: Option<&str>,
+        args: &Value,
+        remote: bool,
+    ) -> EngineResult {
+        let ended = || EngineError("This handoff has ended.".to_owned());
+        let id = self.viewer_page(token, remote);
+        let r = id.and_then(|id| self.find(&id)).filter(|r| r.lock().paused).ok_or_else(ended)?;
+        let page: Page = r.page();
+        let (checking, passkey) = {
+            let s = r.lock();
+            let live = s.verification.as_ref().filter(|v| v.current().live());
+            (live.is_some(), live.is_some_and(|v| v.kind == super::record::CheckKind::Passkey))
+        };
+        match action {
+            Some("frame") => return viewer_frame(&page, checking, passkey, args).await,
+            Some("handback") => {
+                r.lock().handback = true;
+                return Ok(json!({ "ready": true }));
+            }
+            Some("done") => return self.owner_done(&r).await,
+            Some("decline") => return Ok(Self::owner_declined(&r)),
+            _ => {}
+        }
+        {
+            let mut s = r.lock();
+            if s.handback {
+                return Err(EngineError("Control has been returned to the agent.".to_owned()));
+            }
+            let pointer_move = action == Some("pointer") && args.get("type") == Some(&json!("move"));
+            if pointer_move {
+                spend(&mut s.viewer_moves, VIEWER_MOVES_PER_SECOND, "pointer moves")?;
+            } else if matches!(action, Some("click" | "type" | "press" | "scroll" | "pointer")) {
+                spend(&mut s.viewer_actions, VIEWER_ACTIONS_PER_SECOND, "viewer actions")?;
+            }
+        }
+        let num = |k: &str| args.get(k).and_then(Value::as_f64).unwrap_or(f64::NAN);
+        match action {
+            Some("click") => page.mouse_click(num("x"), num("y")).await?,
+            Some("type") => page.type_text(&js_string(args.get("text"))).await?,
+            Some("press") => page.key_press(&js_string(args.get("key"))).await?,
+            Some("scroll") => page.mouse_wheel(num("deltaY")).await?,
+            // A press-and-hold or a slider is the owner's own pointer, relayed as he moves it.
+            // Where it is held is kept, so a release that never arrives can be sent when the check ends.
+            Some("pointer") => {
+                let (x, y) = (num("x"), num("y"));
+                match args.get("type").and_then(Value::as_str) {
+                    Some("down") => {
+                        page.mouse_down(x, y).await?;
+                        r.lock().pointer_held = Some((x, y));
+                    }
+                    Some("move") => {
+                        page.mouse_move(x, y).await?;
+                        if let Some(held) = r.lock().pointer_held.as_mut() {
+                            *held = (x, y);
+                        }
+                    }
+                    Some("up") => {
+                        r.lock().pointer_held = None;
+                        page.mouse_up(x, y).await?;
+                    }
+                    _ => return Err(EngineError("pointer type is down, move or up.".to_owned())),
+                }
+            }
+            _ => return Err(EngineError("Unsupported viewer action".to_owned())),
+        }
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Ends a live check Phantab started on a page that is about to close or be released.
+    fn end_with_page(&self, r: &Arc<Rec>) {
+        let ours = r.lock().verification.as_ref().is_some_and(|v| v.current().live() && !v.prior_paused);
+        if ours {
+            self.drop_check(r);
+        }
+    }
+
+    /// `dispose()`: refuses while the owner holds a page.
+    pub(crate) async fn dispose_all(&self) -> EngineResult<()> {
+        let records = self.st().records.clone();
+        if records.iter().any(|r| r.lock().paused) {
+            return Err(EngineError(
+                "Owner takeover is active; return control before stopping the service.".to_owned(),
+            ));
+        }
+        for r in records {
+            let (isolated, owned) = {
+                let s = r.lock();
+                (s.isolated.clone(), s.owned)
+            };
+            if let Some(b) = isolated {
+                b.close().await?;
+            } else if owned {
+                self.close_tab(&r).await?;
+            }
+            self.forget(&r.id);
+        }
+        Ok(())
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, reason = "a tab id far outside i64 is not a tab id anyway")]
+fn js_int(f: f64) -> i64 {
+    f as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_covered_click_is_not_called_unconfirmed() {
+        let timeout = EngineError("Waiting timed out after 10000ms".to_owned());
+        assert!(unconfirmed(timeout, "click").0.starts_with("click: the page did not confirm in time"));
+        // The page chose the covering element's id; nothing was sent, so the error stays as it is.
+        let covered = format!("{}<div#timed out>, so the click was not sent.", phantab_cdp::COVERED_PREFIX);
+        assert_eq!(unconfirmed(EngineError(covered.clone()), "click").0, covered);
+    }
+}

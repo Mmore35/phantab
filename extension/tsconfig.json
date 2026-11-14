@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    // Chrome 125 (minimum_chrome_version) runs ES2022 natively, so tsc adds no helpers. That
+    // matters: the functions passed to chrome.scripting.executeScript are serialised on their
+    // own, and a helper they called would not exist in the page.
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    // The worker is a module ("type": "module" in manifest.json), and `declare global` needs one.
+    "moduleDetection": "force",
+    // DOM, not WebWorker: the in-page functions run in frames, and their types come from here.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["chrome"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "newLine": "lf"
+  },
+  "include": ["src/*.ts"]
+}

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Create your account · Northwind Outfitters</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
+header, footer { background: #1d3b2a; color: #fff; padding: 8px 16px; }
+header a, footer a { color: #fff; margin-right: 12px; font-size: 14px; }
+main { padding: 24px 16px; max-width: 640px; }
+label { display: block; margin: 12px 0 4px; }
+input[type=text], input[type=email], input[type=password], input[type=tel] { width: 100%; padding: 8px; box-sizing: border-box; }
+.row { display: flex; gap: 8px; }
+.hint { font-size: 13px; color: #555; }
+.error { color: #b00020; font-size: 14px; }
+.hidden { display: none; }
+#done { border: 2px solid #1d3b2a; padding: 16px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header><strong>Northwind Outfitters</strong> <nav id="topnav"></nav></header>
+<main>
+  <section id="form-view">
+    <h1>Create your account</h1>
+    <p>Already a member? <a href="/cost/signin">Sign in</a></p>
+    <form id="signup" novalidate>
+      <div class="row">
+        <div><label for="first">First name</label><input type="text" id="first" name="first" autocomplete="given-name"></div>
+        <div><label for="last">Last name</label><input type="text" id="last" name="last" autocomplete="family-name"></div>
+      </div>
+      <label for="email">Email address</label>
+      <input type="email" id="email" name="email" autocomplete="email">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="new-password">
+      <p class="hint">At least 10 characters, with a number and a symbol.</p>
+      <label for="confirm">Confirm password</label>
+      <input type="password" id="confirm" name="confirm" autocomplete="new-password">
+      <fieldset>
+        <legend>Date of birth</legend>
+        <select id="dob-month" name="dobMonth" aria-label="Month"></select>
+        <select id="dob-day" name="dobDay" aria-label="Day"></select>
+        <select id="dob-year" name="dobYear" aria-label="Year"></select>
+      </fieldset>
+      <label for="country">Country or region</label>
+      <select id="country" name="country"></select>
+      <label for="phone">Mobile phone (for delivery updates)</label>
+      <input type="tel" id="phone" name="phone" autocomplete="tel">
+      <label><input type="checkbox" id="terms" name="terms"> I agree to the <a href="#terms">Terms of use</a> and the <a href="#privacy">Privacy notice</a></label>
+      <label><input type="checkbox" id="marketing" name="marketing" checked> Send me offers, gear guides and event invitations by email</label>
+      <ul class="error" id="errors"></ul>
+      <button type="submit" id="create">Create account</button>
+    </form>
+  </section>
+  <section id="done" class="hidden">
+    <h1>Welcome to Northwind</h1>
+    <p id="done-text"></p>
+    <p>Your member number is <strong id="member"></strong>. Keep it for in-store purchases.</p>
+    <a href="/cost/signin">Go to sign in</a>
+  </section>
+</main>
+<footer id="footer"></footer>
+<script>
+const $ = id => document.getElementById(id);
+const nav = ['Men', 'Women', 'Kids', 'Packs', 'Footwear', 'Camp & Hike', 'Climb', 'Snow', 'Sale', 'Stores', 'Help'];
+$('topnav').innerHTML = nav.map(n => `<a href="#${n.toLowerCase().replace(/\W+/g, '-')}">${n}</a>`).join('');
+$('footer').innerHTML = ['Shipping', 'Returns', 'Size charts', 'Warranty', 'Contact us', 'About', 'Careers', 'Privacy', 'Terms of use', 'Cookie policy'].map(l => `<a href="#${l.toLowerCase().replace(/\W+/g, '-')}">${l}</a>`).join('') + '<p>© 2026 Northwind Outfitters</p>';
+const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+$('dob-month').innerHTML = '<option value="">Month</option>' + months.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
+$('dob-day').innerHTML = '<option value="">Day</option>' + Array.from({ length: 31 }, (_, i) => `<option>${i + 1}</option>`).join('');
+$('dob-year').innerHTML = '<option value="">Year</option>' + Array.from({ length: 90 }, (_, i) => `<option>${2010 - i}</option>`).join('');
+const countries = ['Argentina', 'Australia', 'Austria', 'Belgium', 'Brazil', 'Canada', 'Chile', 'Colombia', 'Czechia', 'Denmark', 'Estonia', 'Finland', 'France', 'Germany', 'Greece', 'Hungary', 'Iceland', 'India', 'Ireland', 'Israel', 'Italy', 'Japan', 'Kenya', 'Latvia', 'Lithuania', 'Luxembourg', 'Mexico', 'Netherlands', 'New Zealand', 'Nigeria', 'Norway', 'Peru', 'Poland', 'Portugal', 'Romania', 'Singapore', 'Slovakia', 'Slovenia', 'South Africa', 'South Korea', 'Spain', 'Sweden', 'Switzerland', 'Thailand', 'Turkey', 'Ukraine', 'United Kingdom', 'United States', 'Uruguay', 'Vietnam'];
+$('country').innerHTML = '<option value="">Select…</option>' + countries.map(c => `<option>${c}</option>`).join('');
+$('signup').onsubmit = async e => {
+  e.preventDefault();
+  const v = id => $(id).value.trim();
+  const errors = [];
+  if (!v('first') || !v('last')) errors.push('Enter your first and last name.');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v('email'))) errors.push('Enter a valid email address.');
+  const p = $('password').value;
+  if (p.length < 10 || !/\d/.test(p) || !/[^A-Za-z0-9]/.test(p)) errors.push('Your password needs at least 10 characters, a number and a symbol.');
+  if (p !== $('confirm').value) errors.push('The two passwords do not match.');
+  if (!v('dob-month') || !v('dob-day') || !v('dob-year')) errors.push('Enter your date of birth.');
+  if (!v('country')) errors.push('Choose your country or region.');
+  if (!$('terms').checked) errors.push('You must agree to the Terms of use to create an account.');
+  $('errors').innerHTML = errors.map(x => `<li>${x}</li>`).join('');
+  if (errors.length) return;
+  const body = new URLSearchParams({
+    first: v('first'), last: v('last'), email: v('email'), password: p,
+    dob: `${v('dob-year')}-${v('dob-month')}-${v('dob-day')}`, country: v('country'), phone: v('phone'),
+    terms: $('terms').checked ? 'on' : 'off', marketing: $('marketing').checked ? 'on' : 'off',
+  });
+  await fetch('/post/cost-signup', { method: 'POST', body });
+  $('form-view').classList.add('hidden');
+  $('done-text').textContent = `Thanks, ${v('first')}. We sent a confirmation email to ${v('email')}.`;
+  $('member').textContent = 'NW-58213';
+  $('done').classList.remove('hidden');
+};
+</script>
+</body>
+</html>

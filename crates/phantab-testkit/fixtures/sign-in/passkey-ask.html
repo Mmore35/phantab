@@ -1,0 +1,14 @@
+<title>Sign in</title>
+<script>
+// A stand-in for a password manager's passkey pop-up. It never calls the browser's own WebAuthn, so no
+// OS dialog can open on the machine running the tests (docs/TESTING.md § 4 rule 9). answerPasskey() is
+// the owner confirming it; then the page signs in.
+navigator.credentials.get = (o) => new Promise((resolve) => {
+  window.answerPasskey = () => resolve({ id: 'fake', type: 'public-key' });
+});
+function ask() {
+  navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32) } })
+    .then(() => { location.href = '/sign-in/landed'; });
+}
+</script>
+<form method="post" action="/post/passkey-ask" onsubmit="event.preventDefault(); ask();"><input name="email" type="email" autocomplete="username"><button>Next</button></form>

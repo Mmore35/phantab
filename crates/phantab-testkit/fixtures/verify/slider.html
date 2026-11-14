@@ -1,0 +1,15 @@
+<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Security check</title>
+<body style="font:16px sans-serif;margin:0"><h1>Slide to the right</h1>
+<div id=track style="position:relative;width:300px;height:44px;background:#ddd;touch-action:none"><div id=k style="position:absolute;left:0;top:0;width:44px;height:44px;background:#e60"></div></div>
+<p id=log></p>
+<script>
+const k = document.getElementById('k'); let drag = false, moves = 0, x0 = 0; const seen = [];
+k.addEventListener('pointerdown', e => { drag = true; x0 = e.clientX; seen.push('down:' + e.isTrusted); });
+addEventListener('pointermove', e => { if (!drag) return; moves++; k.style.left = Math.max(0, Math.min(256, e.clientX - x0)) + 'px'; });
+addEventListener('pointerup', e => {
+  if (!drag) return; drag = false; seen.push('up:' + e.isTrusted);
+  const left = parseInt(k.style.left) || 0;
+  document.getElementById('log').textContent = 'left ' + left + ' moves ' + moves + ' ' + seen.join(' ');
+  if (left >= 250 && moves >= 3) setTimeout(() => location.href = '/verify/shop', 300); else k.style.left = '0px';
+});
+</script></body>

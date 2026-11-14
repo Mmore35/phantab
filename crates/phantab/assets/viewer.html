@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser handoff</title>
+<style>
+body{margin:0;background:#17191d;color:#eee;font:16px system-ui}
+header{position:sticky;top:0;z-index:1;padding:10px;background:#24272d;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,input{font:inherit;padding:10px 12px;border-radius:6px;border:1px solid #555;background:#33373f;color:#eee}
+button.main{background:#2e7d32;border-color:#2e7d32}
+#url{flex:1 1 100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#aaa;order:9}
+#notice{padding:10px}
+#keys{display:flex;flex-wrap:wrap;gap:8px;padding:0 10px 10px}
+#entry{flex:1;min-width:0}
+#screen{display:block;max-width:100%;margin:0 auto;cursor:default;touch-action:none;user-select:none;-webkit-user-select:none}
+[hidden]{display:none!important}
+</style></head>
+<body><header><strong id="title">Live browser page</strong><span id="url"></span>
+<button id="done" class="main" hidden>Done</button><button id="later" hidden>Not now</button><button id="zoom" hidden>Whole page</button><button id="back">Return to agent</button></header>
+<div id="notice">You control the original page. The agent is paused. Tap or click the page, then type below or use your keyboard.</div>
+<div id="keys"><input id="entry" placeholder="Text to type into the focused field" autocomplete="off"><button id="type">Type</button><button id="enter">Enter</button><button id="tab">Tab</button></div>
+<img id="screen" tabindex="0" alt="Live view of the working page">
+<script>
+// The token is in the fragment, which no server or proxy log sees; it leaves the address bar at once.
+const token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
+let ended=false,busy=false,whole=false,checking=false,passkey=false,clip=null,down=false,lastMove=0;
+const $=s=>document.querySelector(s),screen=$('#screen'),notice=$('#notice');
+function end(text){ended=true;notice.textContent=text;for(const id of ['#done','#later','#zoom','#back','#keys','#screen'])$(id).hidden=true;}
+async function rpc(action,args={}){const r=await fetch('/viewer',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({action,args})});const v=await r.json();if(v.error)throw Error(v.error);return v.result;}
+function show(v){
+  screen.src='data:image/jpeg;base64,'+v.image;clip=v.clip;$('#url').textContent=v.url;
+  if(v.checking!==checking||!!v.passkey!==passkey){checking=v.checking;passkey=!!v.passkey;
+    $('#title').textContent=passkey?'Use your passkey':checking?'Confirm you’re human':'Live browser page';
+    $('#done').hidden=$('#later').hidden=!checking;$('#back').hidden=checking;
+    notice.textContent=passkey?'The site wants your passkey. Confirm it in the pop-up on your computer (Bitwarden, Windows Hello or Touch ID), then press Done. Away from it? Pick another way to sign in on the page below. The agent waits.':checking?'A site wants to check that a person is here. Do its check below, then press Done. The agent waits.':'You control the original page. The agent is paused. Tap or click the page, then type below or use your keyboard.';}
+  $('#zoom').hidden=!checking||(!v.zoomed&&!whole);$('#zoom').textContent=whole?'Zoom in':'Whole page';
+}
+async function frame(){if(ended||busy)return;busy=true;try{show(await rpc('frame',{whole}));}catch(e){end(e.message==='This handoff has ended.'?(checking?'All done. The agent has the page back; you can close this.':'Nothing is waiting for you.'):e.message);}finally{busy=false;}}
+// In order, one at a time: a press, its moves and its release must reach the page as the owner made them.
+let chain=Promise.resolve(),pending=0;
+function act(a,p){if(ended)return;pending++;chain=chain.then(()=>rpc(a,p)).catch(e=>{if(!ended)notice.textContent=e.message;}).finally(()=>pending--);}
+// A point on the image, as a point on the page: the frame says which part of the page it shows.
+function at(e){const b=screen.getBoundingClientRect(),c=clip||{x:0,y:0,width:screen.naturalWidth,height:screen.naturalHeight};return{x:c.x+(e.clientX-b.left)*c.width/b.width,y:c.y+(e.clientY-b.top)*c.height/b.height};}
+// The owner's own pointer, relayed as it moves: a press-and-hold or a slider gets his timing and path.
+screen.onpointerdown=e=>{e.preventDefault();screen.setPointerCapture(e.pointerId);down=true;act('pointer',{type:'down',...at(e)});screen.focus();};
+screen.onpointermove=e=>{if(!down)return;const now=performance.now();if(now-lastMove<40||pending>1)return;lastMove=now;act('pointer',{type:'move',...at(e)});};
+screen.onpointerup=screen.onpointercancel=e=>{if(!down)return;down=false;act('pointer',{type:'up',...at(e)});};
+screen.onwheel=e=>{e.preventDefault();act('scroll',{deltaY:e.deltaY});};
+screen.onkeydown=e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;e.preventDefault();if(e.key.length===1)act('type',{text:e.key});else act('press',{key:e.key});};
+$('#type').onclick=()=>{const el=$('#entry');act('type',{text:el.value});el.value='';};
+$('#enter').onclick=()=>act('press',{key:'Enter'});
+$('#tab').onclick=()=>act('press',{key:'Tab'});
+$('#zoom').onclick=()=>{whole=!whole;frame();};
+$('#done').onclick=async()=>{try{await rpc('done');end('Thanks. The agent has the page back; you can close this.');}catch(e){notice.textContent=e.message;}};
+$('#later').onclick=async()=>{try{await rpc('decline');end('OK. The agent will carry on without it; you can close this.');}catch(e){notice.textContent=e.message;}};
+$('#back').onclick=async()=>{try{await rpc('handback');end('Returned to the agent. You can close this view.');}catch(e){notice.textContent=e.message;}};
+if(!token)end('Nothing is waiting for you.');else{setInterval(frame,300);frame();}
+</script></body></html>
