@@ -243,7 +243,10 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     // the full 10 s.
     let t = Instant::now();
     let absent = lane.act("c", &c, json!({ "action": "click", "selector": "#nowhere" })).await.unwrap_err();
-    assert!(absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"), "{absent}");
+    assert!(
+        absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"),
+        "{absent}"
+    );
     assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
     let bad = lane.act("c", &c, json!({ "action": "click", "selector": "a >> nth=0" })).await.unwrap_err();
     assert!(bad.contains("not a valid selector"), "{bad}");
