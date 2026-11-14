@@ -236,12 +236,18 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     // A select also takes the label a person sees, and one that matches no option fails, naming them; a
     // snapshot shows the option a select shows and which boxes are ticked.
     lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "One" })).await.unwrap();
-    let wrong = lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "Three" })).await;
+    let wrong =
+        lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "Three" })).await;
     let wrong = wrong.unwrap_err();
-    assert!(wrong.starts_with("#choice: no option has the value or label \"Three\"") && wrong.contains("\"Two\" (value \"two\")"), "{wrong}");
+    assert!(
+        wrong.starts_with("#choice: no option has the value or label \"Three\"")
+            && wrong.contains("\"Two\" (value \"two\")"),
+        "{wrong}"
+    );
     lane.act("c", &c, json!({ "action": "click", "selector": "#agree" })).await.unwrap();
     let snap = lane.snap("c", &c).await;
-    let control = |id: &str| snap["elements"].as_array().unwrap().iter().find(|e| e["id"] == json!(id)).cloned();
+    let control =
+        |id: &str| snap["elements"].as_array().unwrap().iter().find(|e| e["id"] == json!(id)).cloned();
     assert_eq!(control("choice").unwrap()["selected"], json!("One"), "{snap}");
     assert_eq!(control("agree").unwrap()["checked"], json!(true), "{snap}");
     assert!(control("radio-a").unwrap().get("checked").is_none(), "{snap}");
@@ -256,7 +262,10 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     // the full 10 s.
     let t = Instant::now();
     let absent = lane.act("c", &c, json!({ "action": "click", "selector": "#nowhere" })).await.unwrap_err();
-    assert!(absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"), "{absent}");
+    assert!(
+        absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"),
+        "{absent}"
+    );
     assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
     let bad = lane.act("c", &c, json!({ "action": "click", "selector": "a >> nth=0" })).await.unwrap_err();
     assert!(bad.contains("not a valid selector"), "{bad}");

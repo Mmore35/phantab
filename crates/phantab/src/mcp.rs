@@ -717,7 +717,11 @@ impl Server {
             // The snapshot asked for comes after a failure too: in climb
             // 2026-11-13-phantab-2x-faster-than-competition's shop runs, an agent whose step failed read
             // the page in its very next call, a turn of its own.
-            return failure(&if snapshot { self.and_snapshot(said, page, false, "the failure").await } else { said });
+            return failure(&if snapshot {
+                self.and_snapshot(said, page, false, "the failure").await
+            } else {
+                said
+            });
         }
         let bare = |l: &String| matches!(serde_json::from_str::<Value>(l), Ok(Value::Object(m)) if m.len() == 1 && m.contains_key("pageId"));
         let all_bare = lines.iter().all(bare);
