@@ -78,22 +78,22 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "snapshot",
-            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. Controls marked fN (frame N of the FRAMES line) or shadow take click_xy and press, because selectors reach the main document only. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. Typed values in input fields are not read, but a ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything.",
+            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. Controls marked fN (frame N of the FRAMES line) or shadow take click_xy and press, because selectors reach the main document only. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. Typed values in input fields are not read, but a ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything. Leave pageId out for the page your last call named.",
             json!({ "pageId": s(), "full": { "type": "boolean" } }),
-            &["pageId"],
+            &[],
         ),
-        ("screenshot", "Capture the assigned page for visual inspection.", page(), &["pageId"]),
+        ("screenshot", "Capture the assigned page for visual inspection. Leave pageId out for the page your last call named.", page(), &[]),
         (
             "wait",
-            "Wait for a CSS selector or visible text in the assigned page without stealing focus; or, with only seconds (up to 60), just pause. With verification true, wait instead for the page's verification check to reach the owner or end (up to seconds, at most 60): its verification.state says how, and its next says what to do; while the owner has it, verification.wake is a command to start in the background before you end your turn, which exits once the check ends.",
+            "Wait for a CSS selector or visible text in the assigned page without stealing focus; or, with only seconds (up to 60), just pause. With verification true, wait instead for the page's verification check to reach the owner or end (up to seconds, at most 60): its verification.state says how, and its next says what to do; while the owner has it, verification.wake is a command to start in the background before you end your turn, which exits once the check ends. Leave pageId out for the page your last call named.",
             json!({ "pageId": s(), "selector": s(), "text": s(), "seconds": { "type": "number" }, "verification": { "type": "boolean" } }),
-            &["pageId"],
+            &[],
         ),
         (
             "act",
-            "Interact with your assigned page. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step. then lists more actions to do after this one, in order, each with this tool's fields but pageId; the first that fails stops the rest and says which. With snapshot true, the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it, so a run of steps and its check is one call.",
+            "Interact with your assigned page. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step. then lists more actions to do after this one, in order, each with this tool's fields but pageId; the first that fails stops the rest and says which. With snapshot true, the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it, so a run of steps and its check is one call. Leave pageId out for the page your last call named.",
             act,
-            &["pageId", "action"],
+            &["action"],
         ),
         (
             "show",
@@ -184,6 +184,13 @@ struct Server {
     seen: Arc<Mutex<Seen>>,
 }
 
+/// The methods whose `pageId` may be left out for the page the agent's last call named or opened. In
+/// climb 2026-11-13-phantab-2x-faster-than-competition's agent runs, wall time followed the agent's
+/// output tokens, about 9 ms each, and each argument it wrote cost about 20 of them beyond its value:
+/// nearly every call named the one page it had open. `close`, `show`, `resume` and `sign_in` still
+/// name theirs, so none of them reaches a page by default.
+const DEFAULT_PAGE: &[&str] = &["snapshot", "screenshot", "wait", "act"];
+
 /// How many characters of a page id an agent is shown. Every call names its page, and a whole v4 UUID
 /// is about 20 tokens of the agent's own output each time, the dearest tokens it writes (climb
 /// 2026-11-10-phantab-2x-cheaper step 5). 8 hex digits tell an agent's pages apart; a page whose
@@ -217,6 +224,9 @@ struct Seen {
     fields: HashMap<String, serde_json::Map<String, Value>>,
     /// The last snapshot shown of each page, so a repeat can show only what changed.
     snapshots: HashMap<String, Shown>,
+    /// The service's id of the page the agent's last call named or opened, for a call that leaves
+    /// `pageId` out ([`DEFAULT_PAGE`]).
+    last: Option<String>,
 }
 
 impl Seen {
@@ -275,6 +285,9 @@ impl Seen {
     fn forget(&mut self, page: &str) {
         self.fields.remove(page);
         self.snapshots.remove(page);
+        if self.last.as_deref() == Some(page) {
+            self.last = None;
+        }
     }
 }
 
@@ -769,6 +782,15 @@ impl Server {
             let whole = self.whole_id(&given).await;
             a.insert("pageId".into(), Value::String(whole.clone()));
             page = Some(whole);
+        } else if DEFAULT_PAGE.contains(&method) {
+            let Some(last) = self.seen().last.clone() else {
+                return failure("No page yet to default to: open one with browser_open, or name one with pageId.");
+            };
+            arguments.get_or_insert_with(serde_json::Map::new).insert("pageId".into(), Value::String(last.clone()));
+            page = Some(last);
+        }
+        if page.is_some() {
+            self.seen().last.clone_from(&page);
         }
         if let (Some((then, snapshot)), Some(a)) = (plan, arguments.as_ref()) {
             return self.act(a.clone(), then, snapshot, page).await;
@@ -787,6 +809,9 @@ impl Server {
                     json!({ "type": "text", "text": self.answer(method, value, page, everything) })
                 } else {
                     let opened = value.get("pageId").and_then(Value::as_str).map(str::to_owned);
+                    if opened.is_some() && method != "close" {
+                        self.seen().last.clone_from(&opened);
+                    }
                     let mut text = self.answer(method, value, page.clone(), everything);
                     if read_opened && opened.is_some() {
                         text = self.and_snapshot(text, opened, false, "it").await;

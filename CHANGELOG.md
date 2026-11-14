@@ -20,6 +20,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   32,192: click_xy reaches it, a selector does not)`.
 - A `browser_act` with `snapshot` true now ends a failed step with the page's snapshot too, so an agent
   whose step failed need not read the page in a call of its own.
+- `browser_act`, `browser_snapshot`, `browser_screenshot` and `browser_wait` may leave `pageId` out for
+  the page the agent's last call named or opened. In an agent benchmark, wall time followed the agent's
+  output tokens, and nearly every call named the one page it had open.
 
 ### Fixed
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one

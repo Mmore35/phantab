@@ -576,10 +576,18 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         assert_eq!(missed["isError"], json!(true), "{missed}");
         let said = missed["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with("#nowhere: not found after ") && said.contains("\nCONTROLS"), "{said}");
-        let shot = call("browser_screenshot", json!({ "pageId": page }));
+        // A call that leaves pageId out reaches the page the last one named.
+        let shot = call("browser_screenshot", json!({}));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
+        let read = call("browser_snapshot", json!({ "full": true }));
+        let said = read["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")), "{said}");
         let closed = call("browser_close", json!({ "pageId": page }));
         assert_eq!(closed["isError"], Value::Null, "{closed}");
+        // Once that page is closed, there is none to default to.
+        let none = call("browser_act", json!({ "action": "click", "selector": "#go" }));
+        assert_eq!(none["isError"], json!(true), "{none}");
+        assert!(none["content"][0]["text"].as_str().unwrap_or_default().starts_with("No page yet to default to"), "{none}");
         drop(stdin);
         let _ = child.wait();
         (text_of, page)
