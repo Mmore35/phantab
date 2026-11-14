@@ -37,6 +37,18 @@ pub(crate) fn user_data_dir() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Whether `dir` is Chrome's own user-data dir ([`user_data_dir`]), as Chrome compares it (case aside on
+/// Windows). A Chrome started with no `--user-data-dir` runs on that one.
+pub(crate) fn is_default_user_data_dir(dir: &Path) -> bool {
+    user_data_dir().is_some_and(|d| {
+        if cfg!(windows) {
+            d.as_os_str().to_string_lossy().to_lowercase() == dir.as_os_str().to_string_lossy().to_lowercase()
+        } else {
+            d == dir
+        }
+    })
+}
+
 /// The profile folders in `user_data_dir` (those with a `Preferences` file), sorted.
 pub(crate) fn profiles(user_data_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(user_data_dir) else { return Vec::new() };

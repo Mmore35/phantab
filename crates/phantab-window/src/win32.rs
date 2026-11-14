@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, HWND, LPARAM, RECT, UNICODE_STRING, WAIT_OBJECT_0, WPARAM,
+    CloseHandle, HANDLE, HWND, LPARAM, RECT, UNICODE_STRING, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -35,12 +35,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_APP, WM_NULL, WM_QUIT,
 };
 use windows::core::{BOOL, PWSTR};
-use windows_registry::{CURRENT_USER, Type};
 
-use crate::matching::{ScreenRect, check_token, hkcu_subkey, rect_matches, rewrite_run_value, running_state};
+use crate::matching::{ScreenRect, check_token, rect_matches};
 use crate::{
-    ArmFlags, ArmGuard, ArmLink, DEFAULT_RUN_KEY, HideStrategy, NativeHandle, QuietState, Result, Snapshot,
-    WindowControl, WindowError, WindowSpec,
+    ArmFlags, ArmGuard, ArmLink, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Result,
+    Snapshot, WindowControl, WindowError, WindowSpec,
 };
 
 const CHROME_EXE: &str = "chrome.exe";
@@ -152,10 +151,14 @@ impl WindowControl for Win32 {
         })
     }
 
-    async fn quiet(&self, mode_on: bool, chrome_path: &str, run_key: Option<&str>) -> Result<QuietState> {
-        let chrome_path = chrome_path.to_owned();
-        let run_key = run_key.unwrap_or(DEFAULT_RUN_KEY).to_owned();
-        off_workers("quiet debugging", move || quiet(mode_on, &chrome_path, &run_key)).await
+    async fn quiet(&self, request: &QuietRequest) -> Result<QuietState> {
+        let request = request.clone();
+        off_workers("quiet debugging", move || crate::quiet_win32::quiet(&request)).await
+    }
+
+    async fn quit_browser(&self, browser: &Browser) -> Result<Option<u32>> {
+        let browser = browser.clone();
+        off_workers("quit the browser", move || crate::quiet_win32::quit_browser(&browser)).await
     }
 }
 
@@ -879,7 +882,7 @@ fn window_pid(h: isize) -> u32 {
 // ---- processes --------------------------------------------------------------------------------------------
 
 /// A process or snapshot handle, closed on drop.
-struct Owned(HANDLE);
+pub(crate) struct Owned(pub(crate) HANDLE);
 
 impl Drop for Owned {
     fn drop(&mut self) {
@@ -894,7 +897,7 @@ fn open_process(pid: u32) -> Option<Owned> {
     unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok().map(Owned)
 }
 
-fn image_path(process: &Owned) -> Option<String> {
+pub(crate) fn image_path(process: &Owned) -> Option<String> {
     let mut buf = vec![0u16; 4096];
     let mut len = u32::try_from(buf.len()).unwrap_or(0);
     // SAFETY: `buf` holds `len` writable u16s and `len` is a valid in/out u32, as the call requires.
@@ -918,7 +921,7 @@ fn is_chrome_pid(pid: u32) -> bool {
 }
 
 /// Every chrome.exe process id, from a `ToolHelp` snapshot (names only; no process is opened).
-fn chrome_pids() -> Result<Vec<u32>> {
+pub(crate) fn chrome_pids() -> Result<Vec<u32>> {
     // SAFETY: plain call; the snapshot handle is owned by `Owned`.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
         .map(Owned)
@@ -944,7 +947,7 @@ fn chrome_pids() -> Result<Vec<u32>> {
 
 /// A process's command line through `ProcessCommandLineInformation` (Windows 8.1+). It needs only limited
 /// query access, unlike reading the PEB from the process's memory, which needs VM read.
-fn command_line(process: &Owned) -> Option<String> {
+pub(crate) fn command_line(process: &Owned) -> Option<String> {
     let mut needed = 0u32;
     // SAFETY: a zero-length query with a null buffer only reports the size needed into `needed`.
     let _ = unsafe {
@@ -985,62 +988,6 @@ fn command_line(process: &Owned) -> Option<String> {
     // SAFETY: the string lies inside `buf` (checked just above), is u16-aligned, and `buf` outlives the slice.
     let text = unsafe { std::slice::from_raw_parts(start, len) };
     Some(String::from_utf16_lossy(text))
-}
-
-/// Command lines of the chrome.exe processes whose image is `chrome_path`. Processes this user cannot query
-/// are skipped, as if they had no command line.
-fn browser_command_lines(chrome_path: &str) -> Result<Vec<String>> {
-    let want = chrome_path.to_lowercase();
-    Ok(chrome_pids()?
-        .into_iter()
-        .filter_map(open_process)
-        .filter(|p| image_path(p).is_some_and(|path| path.to_lowercase() == want))
-        .filter_map(|p| command_line(&p))
-        .collect())
-}
-
-// ---- quiet ------------------------------------------------------------------------------------------------
-//
-// Chrome reads --silent-debugger-extension-api only from the command line that starts its browser process:
-// here, its sign-in (Run) entry. The registry goes through windows-registry, the windows-rs safe wrapper.
-
-fn quiet(mode_on: bool, chrome_path: &str, run_key: &str) -> Result<QuietState> {
-    if chrome_path.is_empty() {
-        return Err(WindowError::InvalidArgument("Quiet debugging needs the configured Chrome path".into()));
-    }
-    let subkey = hkcu_subkey(run_key)?;
-    let registry = |context: &'static str| {
-        move |e: windows::core::Error| WindowError::Os { context, message: e.message() }
-    };
-    let mut run_value = None;
-    match CURRENT_USER.options().read().write().open(subkey) {
-        Ok(key) => {
-            // Collected first so the writes below do not shift the enumeration.
-            let values: Vec<_> = key.values().map_err(registry("read the Run key"))?.collect();
-            for (name, value) in values {
-                let ty = value.ty();
-                if !matches!(ty, Type::String | Type::ExpandString) {
-                    continue;
-                }
-                let Ok(text) = String::try_from(value) else { continue };
-                let Some(new) = rewrite_run_value(&text, chrome_path, mode_on) else { continue };
-                if new != text {
-                    // Kept as the type it was: an expandable entry stays expandable.
-                    let written = if ty == Type::ExpandString {
-                        key.set_expand_string(&name, &new)
-                    } else {
-                        key.set_string(&name, &new)
-                    };
-                    written.map_err(registry("write the Run key"))?;
-                }
-                run_value = Some(mode_on);
-            }
-        }
-        Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() => {}
-        Err(e) => return Err(registry("open the Run key")(e)),
-    }
-    let lines = browser_command_lines(chrome_path)?;
-    Ok(QuietState { run_value, running: running_state(lines.iter().map(String::as_str)) })
 }
 
 /// Clears `HANDLE_FLAG_INHERIT` on this process's stdin, stdout and stderr, so a child started later

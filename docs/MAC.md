@@ -189,6 +189,22 @@ The problem on macOS is **getting it onto Chrome's command line**:
 - So, partially: a login-time flag is possible, but it cannot be made sticky the way the Windows Run-key
   edit is. The trial did not create a LaunchAgent: that would change the owner's machine settings.
 
+**Built (phantab-window `mac.rs`)**, on the owner's install answer or `--quiet-debugging on`:
+- `quiet` on writes `~/Library/LaunchAgents/dev.phantab.chrome.plist` (label `dev.phantab.chrome`,
+  `RunAtLoad`, `/usr/bin/open -a <the configured Chrome bundle> --args --silent-debugger-extension-api`,
+  plus `--user-data-dir=` when it is not Chrome's default), through a `.partial` file renamed into
+  place. Off removes it. A file at that path without our label is never changed or removed.
+- It does not load the agent into launchd now (that would open Chrome); it takes effect at the next
+  login. Install tells the owner to turn Chrome's own "open at login" off.
+- `running` comes from `ps -o args=` on the browser process on the configured user-data dir.
+- `phantab chrome restart-quiet` quits that one pid with `SIGTERM` (Chrome's normal quit, which saves
+  the session), waits for it to exit, and starts Chrome again with the flag and
+  `--restore-last-session`.
+
+**Mac-unverified** (unit-tested on any OS, never yet run on a Mac): launchd running the agent at
+login, `open --args` reaching a Chrome that is not yet running, `SIGTERM` saving a session that
+`--restore-last-session` restores, the `ps` check against a real Chrome, and the install output.
+
 ## Q5: toolchain and access
 
 - **Rust** through rustup, at the version in `rust-toolchain.toml`, host `aarch64-apple-darwin`.

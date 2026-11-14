@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use crate::{
-    ArmGuard, HideStrategy, NativeHandle, QuietState, Result, Snapshot, WindowControl, WindowError,
-    WindowSpec,
+    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Result, Snapshot, WindowControl,
+    WindowError, WindowSpec,
 };
 
 /// Fails every call with [`WindowError::Unsupported`], naming the platform.
@@ -47,7 +47,10 @@ impl WindowControl for Unsupported {
     async fn snapshot(&self) -> Result<Snapshot> {
         self.fail()
     }
-    async fn quiet(&self, _mode_on: bool, _chrome_path: &str, _run_key: Option<&str>) -> Result<QuietState> {
+    async fn quiet(&self, _request: &QuietRequest) -> Result<QuietState> {
+        self.fail()
+    }
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
         self.fail()
     }
 }
@@ -64,6 +67,7 @@ mod tests {
         assert!(matches!(err, WindowError::Unsupported("linux")));
         assert_eq!(err.to_string(), "OS window control is not supported on linux");
         assert!(w.arm_hide(&WindowSpec::workspace("PHANTAB-1")).await.is_err());
-        assert!(w.quiet(true, "x", None).await.is_err());
+        assert!(w.quiet(&QuietRequest::default()).await.is_err());
+        assert!(w.quit_browser(&Browser::default()).await.is_err());
     }
 }

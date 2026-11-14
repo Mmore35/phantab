@@ -1079,7 +1079,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake = Fake::start(&"09".repeat(32), Behaviour::Keeps).await;
         let path = fake.advertise(dir.path());
-        let service = ["status", "release", "disconnect", "heartbeat", "shutdown", "check_wait"];
+        let service =
+            ["status", "release", "disconnect", "heartbeat", "shutdown", "check_wait", "restart_quiet"];
         let all = service
             .into_iter()
             .chain(crate::engine_api::EngineMethod::ALL.map(crate::engine_api::EngineMethod::name));

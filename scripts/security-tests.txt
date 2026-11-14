@@ -94,3 +94,7 @@ all install missing_or_foreign_extension_is_refused
 all install drift_names_a_changed_binary_manifest_and_registration
 all install install_locks_the_binary_folder_keeps_modes_and_replaces_the_extension_whole
 all install workflows_name_every_action_by_its_commit
+
+# An agent, or any shell without the owner at it, restarts the owner's Chrome (SR-49).
+all cli_host chrome_restart_quiet_is_the_owners_at_a_terminal
+all lib engine::tests::quiet::restart_quiet_needs_quiet_debugging_on_and_no_agent_pages

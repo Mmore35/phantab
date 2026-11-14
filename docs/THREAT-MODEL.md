@@ -153,7 +153,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T55 | A rewritten config loses its permissions (an owner-only `~/.claude.json` becomes world-readable). | SR-50 | L1 |
 | T56 | Stale extension files stay loaded after an update. | SR-51 | L1 |
 | T57 | Paths or provider commands inject into a generated script or config. | SR-52 | L1 |
-| T58 | The Run-key edit touches values that are not Chrome's. | SR-49 | L1 |
+| T58 | The quiet edit touches Run values, shortcuts or a LaunchAgent that are not Chrome's or phantab's, or changes more than the flag. | SR-49 | L1 |
 | T59 | A same-user process repoints the native host registration or the service binary. | SR-48, SR-53; rest is residual R1 | L1, L3 |
 
 ### B9: update path and supply chain
@@ -919,10 +919,19 @@ Each requirement is a release blocker, and each is tested in the lanes named.
 - **SR-48** The binary that the service, MCP server and native host run from sits in a folder that
   only the owner (and SYSTEM/administrators) can write, checked like SR-10 at install and at service
   start. The native host manifest `path` is that binary, absolute. *L1.*
-- **SR-49** Quiet debugging edits only HKCU Run values whose command starts with the quoted
-  configured Chrome path, adds or removes only `--silent-debugger-extension-api`, and is on only by
-  explicit `install --quiet-debugging on`. Install output states the trade-off: every debugger
-  extension then attaches silently. *L1: round-trip on a scratch Run key, other values untouched.*
+- **SR-49** Quiet debugging adds or removes only `--silent-debugger-extension-api`, and only where
+  the configured Chrome starts: HKCU Run values whose command starts with the quoted configured Chrome
+  path, and on Windows `.lnk` shortcuts that target that path (on, only those on the configured
+  user-data dir); on macOS only the `dev.phantab.chrome` LaunchAgent, never a plist without that label.
+  It is on only by the owner's answer at an install terminal (the question states the trade-off: every
+  debugger extension then attaches silently) or explicit `install --quiet-debugging on`; an install
+  with neither changes nothing. `off`, and uninstall, take it away again. Restarting Chrome to pick the
+  flag up is the owner's: `phantab chrome restart-quiet` runs only at a terminal on a typed y (no
+  `--yes`, no MCP tool, no automatic restart), refuses while agent pages are open, and quits only the
+  browser process on the configured user-data dir, by pid (the Restart Manager's shutdown on Windows,
+  `SIGTERM` on macOS), never by image name and never forced. *L1: round-trips on a scratch Run key, a
+  scratch shortcut folder and a scratch LaunchAgents dir, other values, shortcuts and plists
+  untouched; the CLI refusals; L5: the quit of the lane's own Chrome only.*
 - **SR-50** Client configs are written atomically with the expected-bytes check, keep their original
   mode and owner (macOS) or explicit DACL (Windows), refuse when unrelated config would change, and
   uninstall keeps later edits. *L1: a `0600` config stays `0600`; concurrent edit refused.*

@@ -1859,6 +1859,7 @@ async fn a_window_holding_a_tab_its_page_opened_closes_with_the_page() {
 }
 
 mod queue;
+mod quiet;
 
 /// SR-76, L3: two profiles' links side by side. Each call goes over the link of the profile it names (by
 /// Chrome's name or its folder), a tab ID means a tab in one profile only, `status` reports each profile,

@@ -69,8 +69,28 @@ first (`CONTRIBUTING.md`).
 
 Other install flags: `--add-profile` / `--remove-profile` (below), `--runtime <dir>`,
 `--server-name <name>` (the MCP entry's name, default `phantab`), `--sign-in-provider <json array>`,
-`--quiet-debugging on|off` (Windows), `--extension-dir <dir>` and `--uninstall`. `phantab install --help`
+`--quiet-debugging on|off`, `--extension-dir <dir>` and `--uninstall`. `phantab install --help`
 lists them all.
+
+### Chrome's debugging bar
+Chrome shows a "started debugging this browser" bar while the bridge drives a tab. Install at a
+terminal asks once, **Hide Chrome's debugging bar?** (Enter is yes), and keeps your answer;
+`--quiet-debugging on|off` answers it without asking. The trade-off: with the bar hidden, every
+extension that uses Chrome's debugger attaches silently, not only phantab's bridge.
+
+Quiet debugging adds Chrome's `--silent-debugger-extension-api` switch wherever Chrome is started from,
+and nothing else:
+- **Windows**: Chrome's sign-in entry in your Run key, and the Chrome shortcuts in the Start menus,
+  the taskbar's pinned items and your Desktops (each check again at every bridge connect). A shortcut
+  phantab may not write is named, and left as it was. `off` takes the switch away again.
+- **macOS**: a LaunchAgent, `~/Library/LaunchAgents/dev.phantab.chrome.plist`, that opens Chrome with
+  the switch at login. Turn Chrome's own "open at login" off, or Chrome opens without it.
+
+The switch only counts when Chrome starts, so a Chrome already open keeps the bar. `phantab status`
+says so, and `phantab chrome restart-quiet`, run by you in a terminal, closes that Chrome the way a
+system restart does (its tabs saved) and opens it again with the switch and your tabs. It asks first,
+acts only on the Chrome phantab is set up for, and refuses while agent pages are open. phantab never
+restarts Chrome on its own.
 
 ## Connect your agent
 The installer adds an entry named `phantab` to the client configs you name, so the tools appear as

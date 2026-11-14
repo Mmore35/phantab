@@ -24,8 +24,8 @@
 .PARAMETER ServerName
   The MCP entry's name. Default phantab.
 .PARAMETER QuietDebugging
-  Also hide Chrome's "started debugging this browser" bar (edits Chrome's own HKCU Run-key entry; takes
-  effect at the next Windows sign-in).
+  Hide Chrome's "started debugging this browser" bar without asking: adds the flag to Chrome's own HKCU
+  Run-key entry and the shortcuts that start it. Without it, phantab install asks once at a terminal.
 .PARAMETER CheckOnly
   Run only steps 1 and 2: the unsigned-program test. Installs nothing.
 .PARAMETER SkipCheck
@@ -387,12 +387,9 @@ $flags = @('install', '--runtime', $runtime)
 if (-not $keep) { $flags += @('--user-data-dir', $userData, '--profile', $ChromeProfile) }
 $flags += @('--server-name', $ServerName) + $clients
 if ($NativeHostKey) { $flags += @('--native-host-key', $NativeHostKey) }
+if ($QuietDebugging) { $flags += @('--quiet-debugging', 'on') }
 & $bundled @flags
 if ($LASTEXITCODE -ne 0) { Stop-Install "phantab install exited $LASTEXITCODE (its message is above)." }
-if ($QuietDebugging) {
-    & $installed install --runtime $runtime --quiet-debugging on
-    if ($LASTEXITCODE -ne 0) { Stop-Install "phantab --quiet-debugging exited $LASTEXITCODE (above)." }
-}
 $why = Test-Runs 'the installed phantab.exe, started the way Chrome starts it' $installed 'install --help' $okHelp -ViaCmd:(-not $direct)
 if ($why) { Stop-Install "phantab is installed, but Chrome will not be able to start it. $why" }
 

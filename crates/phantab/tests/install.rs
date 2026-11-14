@@ -314,7 +314,63 @@ fn quiet_debugging_round_trip_on_a_scratch_key() {
     assert_eq!(world.keys.run_value("Browser"), browser);
     assert_eq!(world.keys.run_value("Other"), other);
     assert!(!world.runtime.join("quiet-debugging.on").exists());
+    assert!(world.runtime.join("quiet-debugging.off").exists(), "off is an answer too");
     assert!(!world.runtime.join("registration-v2.json").exists(), "quiet mode registers nothing");
+}
+
+const QUESTION: &str = "Hide Chrome's debugging bar?";
+
+impl Fixture {
+    /// [`Fixture::run`] at a terminal where the owner types `typed`.
+    fn run_typing(&self, words: &[String], typed: &str) -> String {
+        let mut out = Vec::new();
+        let code =
+            phantab::install::run_at_terminal(words, false, &self.exe, &mut out, &mut typed.as_bytes())
+                .unwrap();
+        assert_eq!(code, 0, "{words:?}");
+        String::from_utf8(out).unwrap()
+    }
+
+    fn answer(&self) -> (bool, bool) {
+        (self.runtime.join("quiet-debugging.on").exists(), self.runtime.join("quiet-debugging.off").exists())
+    }
+}
+
+/// An install at a terminal asks once, Enter being yes; later installs keep the answer and never ask.
+#[test]
+fn an_install_at_a_terminal_asks_about_quiet_debugging_once() {
+    let world = Fixture::new("ask-yes").with_runtime("1");
+    let said = world.run_typing(&world.argv(&[]), "\n");
+    assert!(said.contains(QUESTION), "{said}");
+    assert!(said.contains("every extension that uses Chrome's debugger attaches silently"), "{said}");
+    assert!(said.contains("Quiet debugging on"), "{said}");
+    assert_eq!(world.answer(), (true, false));
+    let again = world.run_typing(&world.argv(&[]), "n\n");
+    assert!(!again.contains(QUESTION), "{again}");
+    assert!(again.contains("Quiet debugging on"), "on is applied again: {again}");
+    assert_eq!(world.answer(), (true, false));
+    let flag = world.run(&world.argv(&["--quiet-debugging", "off"])).unwrap();
+    assert!(flag.contains("Quiet debugging off"), "{flag}");
+    assert_eq!(world.answer(), (false, true));
+    world.run_as(&world.argv(&[]), true).unwrap();
+    assert_eq!(world.answer(), (false, false), "uninstall forgets the answer");
+}
+
+/// No is kept too: later installs neither ask nor change anything. Without a terminal nothing is asked.
+#[test]
+fn a_no_is_kept_and_without_a_terminal_nothing_is_asked() {
+    let world = Fixture::new("ask-no").with_runtime("1");
+    let quiet = world.run(&world.argv(&[])).unwrap();
+    assert!(!quiet.contains(QUESTION), "{quiet}");
+    assert!(quiet.contains("run phantab install --quiet-debugging on"), "{quiet}");
+    assert_eq!(world.answer(), (false, false));
+    let said = world.run_typing(&world.argv(&[]), "no\n");
+    assert!(said.contains(QUESTION), "{said}");
+    assert!(said.contains("Quiet debugging off"), "{said}");
+    assert_eq!(world.answer(), (false, true));
+    let again = world.run_typing(&world.argv(&[]), "\n");
+    assert!(!again.contains(QUESTION) && !again.contains("Quiet debugging"), "{again}");
+    assert_eq!(world.answer(), (false, true));
 }
 
 #[cfg(windows)]

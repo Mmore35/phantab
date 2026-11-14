@@ -14,7 +14,7 @@ Lane names: `docs/ARCHITECTURE.md` § Test lanes. Security requirements (`SR-n`)
 | 2 | CDP | `phantab-cdp` against a real headless Chrome on the fixture server, including the `127.0.0.1` vs `localhost` out-of-process frames | `crates/phantab-cdp/tests/chrome.rs` | `PHANTAB_TEST_CHROME` | any |
 | 3 | engine | the whole service (HTTP, MCP, CLI, host, bridge, engine) against a fake extension; with Chrome, a CDP-backed fake extension that answers bridge ops from a real headless Chrome | `crates/phantab/tests/*.rs` | nothing; `PHANTAB_TEST_CHROME` for the Chrome-backed cases | any |
 | 4 | real-extension | the built TS extension (`npm run build:test`) loaded into Chrome for Testing or branded Chrome with `Extensions.loadUnpacked`, talking to the service through a test native host | `crates/phantab/tests/` (cases gated on Chrome) | `PHANTAB_TEST_CHROME` | Windows, macOS |
-| 5 | window | real headful Chrome windows: hide at first show, find, show, hide; the quiet Run-key edit on a scratch key | `crates/phantab-window/tests/window_lane.rs` | `PHANTAB_TEST_CHROME`, a desktop session | Windows only: on macOS it passes without running (Mac window findings: `docs/MAC.md`) |
+| 5 | window | real headful Chrome windows: hide at first show, find, show, hide; the quiet Run-key edit on a scratch key and an empty scratch shortcut folder; the clean quit of the lane's own Chrome by its user-data dir | `crates/phantab-window/tests/window_lane.rs` | `PHANTAB_TEST_CHROME`, a desktop session | Windows only: on macOS it passes without running (Mac window findings: `docs/MAC.md`) |
 | 6 | golden files | phantab's wire formats and known-answer vectors (the MCP tool list, the sign-in seal) against golden files checked into the repository (§ 7) | `crates/phantab/tests/mcp.rs`; unit tests in `page_js`, `signin/page.rs`, `signin/seal.rs` | nothing | any |
 
 A Chrome-backed test is a normal `#[test]`, never `#[ignore]`. Without `PHANTAB_TEST_CHROME` it prints
@@ -299,6 +299,7 @@ exists.
 | One agent session reaches another's page; a page's markup hides a sensitive step from the check; a page puts its own words where a message names another extension | `lib`, `engine_chrome` (real Chrome) |
 | A page, or a planted program, gets between the owner's passwords and the sign-in form; a site shows the value back on the page | `signin_provider`, `signin_bitwarden`, `signin_fake_page`, `lib`, `signin_echo` (real Chrome) |
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
+| An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
   list and checks each name is still in the source, without building. `--chrome` also runs the lines
@@ -330,7 +331,10 @@ Every test, in every lane:
      the test's own profile; nothing in `~/Library`.
 4. **Scratch registry.** Installer and window tests use `HKCU\Software\phantab-test-<pid>\<test>`, and
    pass it as the Run key or host key. The `<pid>` key is deleted when the last test under it ends.
-   No test reads or writes the real Run key.
+   No test reads or writes the real Run key. Quiet debugging's shortcuts and LaunchAgent go the same
+   way: tests pass a scratch folder (`--shortcut-dir`, `--launch-agents-dir` in a `TempDir`), and a
+   `test-seams` build given none rewrites no shortcut and writes no LaunchAgent. No test quits a Chrome
+   it did not start.
 5. **Never the owner's client configs.** Installer tests write Claude and Codex configs in a `TempDir`
    and pass their paths. No test reads `~/.claude.json`, `~/.claude/` or `~/.codex/`.
 6. **No secrets in output.** The fake provider's values are the fixture constants
@@ -524,7 +528,8 @@ Test files, by the short names used above:
   leak-dom, leak-hash and leak-clobber pages. The sign-in goes on, every answer is redacted, screenshots
   of the tab are refused, the account is not stopped, and a fresh attach to a tab of your own is still
   redacted.
-- Lane 5: `window::window_lane` (hide at first show, find, show, hide; quiet on a scratch Run key). On
+- Lane 5: `window::window_lane` (hide at first show, find, show, hide; quiet on a scratch Run key; the
+  Restart Manager quit of its own browser, which must exit by itself, and nothing then runs on its dir). On
   a kept window, through the `test-seams` view of the keeper and a show log of its own Chrome's
   windows: a popup (`window.open` with features), a new tab and an `alert()` from its page leave it
   hidden (any show undone within 2 s); every window they show is the browser process's, printed with

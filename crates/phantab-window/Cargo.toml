@@ -37,6 +37,9 @@ windows = { version = "0.62", features = [
   "Win32_Storage_FileSystem",
   # console (SR-63): read a master password at the owner's console with echo off.
   "Win32_System_Console",
+  # quiet_win32: IPersistFile and STGM, to load and save a shortcut. The COM calls themselves come from
+  # ole32.dll loaded at first use (SR-58), not from an import.
+  "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   # file_identity (SR-64): a pinned bw file's USN, for the pin's hash cache.
   "Win32_System_IO",
@@ -50,6 +53,9 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
+  # quiet_win32: IShellLinkW and the ShellLink class, a shortcut's target and arguments (vtable calls; no
+  # import from shell32).
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 # 0.6 is the line built on the same windows-link/-result/-strings as windows 0.62 (and tokio's windows-sys);

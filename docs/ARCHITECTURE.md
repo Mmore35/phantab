@@ -148,7 +148,8 @@ transport.
 
 ## Window control (`phantab-window`)
 The `WindowControl` trait: `arm_hide(spec) -> Guard` (`guard.settle() -> Option<Handle>`), `find(token)`,
-`hide(h)`, `show(h, maximize)`, `snapshot()`, `quiet(mode, chrome_path)`. Implementations:
+`hide(h)`, `show(h, maximize)`, `snapshot()`, `quiet(&QuietRequest) -> QuietState`,
+`quit_browser(&Browser)`. Implementations:
 - **Windows**: Win32 through the `windows` crate, with these parts:
   - The `EVENT_OBJECT_SHOW` WinEvent hook runs on its own thread with a message pump, under per-monitor
     DPI awareness.
@@ -166,9 +167,32 @@ The `WindowControl` trait: `arm_hide(spec) -> Guard` (`guard.settle() -> Option<
     unwatched is hidden first. A release waits for a keeper hide of that window under way. The thread
     ends when none is kept. The engine hides the window whatever its keep answers; a hand-back that fails
     with its window hidden marks it hidden, and `show` shows such a window again.
-  - `quiet` is the HKCU Run-key edit and a check of the running browser's command line.
-- **macOS**: decided by the Mac feasibility trial (`docs/MAC.md`).
+  - `quiet` adds or removes `--silent-debugger-extension-api`, and only that, on the HKCU Run values
+    and the `.lnk` shortcuts (both Start menus, Quick Launch with its `User Pinned` folders, each
+    Desktop) that start the configured Chrome; on, it changes only those on the configured user-data
+    dir. A shortcut it cannot write is reported, not retried. It then reads the running browser's
+    command line: `running` is whether the browser on that user-data dir has the flag.
+  - `quit_browser` is the Restart Manager's shutdown of that one browser process, registered by pid and
+    start time: Chrome is asked to end as at a system restart, saves its session and exits itself.
+    Nothing is forced.
+- **macOS** (`mac.rs`, compiled everywhere, so its logic is tested on any OS): `quiet` writes or
+  removes the `dev.phantab.chrome` LaunchAgent (`RunAtLoad`, `open -a <Chrome> --args <flag>`), never a
+  plist without that label, and reads the running browser's arguments with `ps`. `quit_browser` is a
+  `SIGTERM` to that one pid, then a wait for it to exit (`docs/MAC.md` Q4).
 - **Noop**: for headless test lanes.
+
+### Quiet debugging in the engine
+- The answer is install's: `quiet-debugging.on` or `quiet-debugging.off` in the runtime dir. Install
+  asks at a terminal (default yes) unless `--quiet-debugging on|off` gives it; with neither, nothing
+  changes and install says how to turn it on.
+- While on, the engine applies `quiet` again at every bridge connect, so a new Chrome shortcut or an
+  updated Run entry gets the flag, and keeps the answer for `status` (`quietDebugging`, with a plain
+  `note` while the running Chrome lacks the flag).
+- `restart_quiet` (CLI `phantab chrome restart-quiet`, at a terminal on a typed y only; no MCP tool
+  reaches it) needs quiet on, `chromeExecutable`, and no agent pages. When the browser on the configured
+  user-data dir runs without the flag, it calls `quit_browser`, starts that Chrome again with
+  `--user-data-dir` (unless Chrome's default), the flag and `--restore-last-session`, and waits for the
+  bridge to reconnect.
 
 ## Test lanes (`docs/TESTING.md`)
 1. Unit tests in every crate. They run offline on any OS.

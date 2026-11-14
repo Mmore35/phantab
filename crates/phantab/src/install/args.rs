@@ -21,8 +21,10 @@ Other:
   --runtime <dir>                   runtime dir (default: PHANTAB_RUNTIME, else the per-user default)
   --server-name <name>              the MCP entry's name in both clients (default: phantab)
   --sign-in-provider <json array>   the command browser_sign_in runs for a saved login; [] removes it
-  --quiet-debugging on|off          on removes Chrome's debugging bar, off brings it back (Windows; takes
-                                    effect at the next Windows sign-in); does nothing else
+  --quiet-debugging on|off          on hides Chrome's debugging bar, off brings it back; every extension
+                                    that uses Chrome's debugger then attaches silently. Answers the
+                                    question an install at a terminal asks once; with no client flag it
+                                    changes only that
   --extension-dir <dir>             the built extension (default: extension/ beside the binary, else in
                                     a debug build the source tree's extension/dist)
   --uninstall                       uninstall instead
@@ -41,6 +43,10 @@ pub(crate) struct Args {
     pub quiet_debugging: Option<bool>,
     /// Tests only: a scratch key instead of the real Run key (`--run-key`, not in the usage text).
     pub run_key: Option<String>,
+    /// Tests only: scratch folders instead of the real shortcut folders (`--shortcut-dir`, repeatable).
+    pub shortcut_dirs: Option<Vec<PathBuf>>,
+    /// Tests only: a scratch folder instead of `~/Library/LaunchAgents` (`--launch-agents-dir`).
+    pub launch_agents_dir: Option<PathBuf>,
     pub server_name: Option<String>,
     pub extension_dir: Option<PathBuf>,
     pub add_profiles: Vec<String>,
@@ -48,6 +54,21 @@ pub(crate) struct Args {
     /// Tests only (Windows): the HKCU key that registers the native host, instead of Chrome's.
     pub native_host_key: Option<String>,
     pub help: bool,
+}
+
+impl Args {
+    /// Where the quiet-debugging edits go: the real places, unless a test named scratch ones.
+    pub(crate) fn quiet_places(&self) -> super::quiet::Places {
+        super::quiet::Places {
+            run_key: self.run_key.clone(),
+            shortcut_dirs: self.shortcut_dirs.as_ref().map(|dirs| {
+                dirs.iter()
+                    .map(|path| phantab_window::ShortcutDir { path: path.clone(), recurse: true })
+                    .collect()
+            }),
+            launch_agents_dir: self.launch_agents_dir.clone(),
+        }
+    }
 }
 
 /// Parses `words` (everything after `install` / `uninstall`). `Err` is a usage message.
@@ -88,6 +109,8 @@ pub(crate) fn parse(words: &[String]) -> Result<Args, String> {
                 });
             }
             "run-key" => args.run_key = Some(value(name)?),
+            "shortcut-dir" => args.shortcut_dirs.get_or_insert_with(Vec::new).push(value(name)?.into()),
+            "launch-agents-dir" => args.launch_agents_dir = Some(value(name)?.into()),
             "server-name" => args.server_name = Some(value(name)?),
             "extension-dir" => args.extension_dir = Some(value(name)?.into()),
             "add-profile" => args.add_profiles.push(value(name)?),

@@ -2,7 +2,8 @@
 //!
 //! The engine opens each agent page in a real browser window that the OS hides at its first appearance, so
 //! it keeps rendering and can later be shown intact. This crate is that OS half: arm a hide before the window
-//! exists, find it by the token in its title, show and hide it, and the quiet-debugging Run-key edit.
+//! exists, find it by the token in its title, show and hide it, and quiet debugging (the Run-key, shortcut
+//! and `LaunchAgent` edits, and the clean quit of the browser for a restart with the flag).
 // SR-58: every `unsafe` block, here only, says why it is sound; clippy fails the build otherwise.
 #![deny(clippy::undocumented_unsafe_blocks)]
 
@@ -25,6 +26,8 @@ mod file_win32;
 mod mac;
 mod matching;
 pub mod process;
+#[cfg(windows)]
+mod quiet_win32;
 #[cfg(target_os = "macos")]
 mod secret_mac;
 pub mod secret_store;
@@ -51,7 +54,9 @@ pub use win32::seams;
 pub use fake::{Call, Noop, Recording};
 pub use mac::MacWindowControl;
 pub use matching::{
-    QUIET_FLAG, ScreenRect, browser_args_lines, check_token, rect_matches, rewrite_run_value, running_state,
+    LAUNCH_AGENT_LABEL, QUIET_FLAG, ScreenRect, app_bundle, browser_args_lines, check_token, expand_env,
+    is_browser_process, is_our_launch_agent, launch_agent_plist, on_user_data_dir, ps_processes,
+    rect_matches, rewrite_run_value, rewrite_shortcut_args, running_state, user_data_dir_of, windows_args,
 };
 pub use unsupported::Unsupported;
 
@@ -108,13 +113,67 @@ pub struct Snapshot {
     pub chrome_windows: Vec<NativeHandle>,
 }
 
-/// What `quiet` found. `run_value`: the mode now written to the browser's Run entry, `None` when no entry
-/// starts with the Chrome path. `running`: whether the running browser has the flag, `None` when none runs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// What `quiet` found.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct QuietState {
+    /// Windows: the mode now written to the browser's Run entry, `None` when no entry starts with the
+    /// Chrome path. Always `None` on macOS.
     pub run_value: Option<bool>,
+    /// Whether the running browser (the one on the configured user-data dir) has the flag, `None` when
+    /// none runs.
     pub running: Option<bool>,
+    /// Windows: the shortcuts that start the browser, now in the asked mode.
+    pub shortcuts: usize,
+    /// Windows: shortcuts that start the browser but could not be rewritten (all users' ones without
+    /// admin rights, say), by path. They still start Chrome as they did.
+    pub unwritable: Vec<String>,
+    /// macOS: whether phantab's `LaunchAgent` is in place now. `None` on Windows.
+    pub launch_agent: Option<bool>,
+}
+
+/// The browser `quiet` and `quit_browser` act on: the configured Chrome, on the configured user-data dir.
+/// Chrome processes on any other user-data dir are another browser and are never counted or touched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Browser {
+    /// The configured Chrome executable.
+    pub chrome_path: String,
+    /// The configured user-data dir (empty when not known).
+    pub user_data_dir: String,
+    /// `user_data_dir` is Chrome's default, so a browser started with no `--user-data-dir` is on it.
+    pub default_dir: bool,
+}
+
+/// A folder whose `.lnk` shortcuts `quiet` rewrites (Windows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutDir {
+    pub path: std::path::PathBuf,
+    /// Into its subfolders too (the Start menu's), or only the folder itself (a Desktop).
+    pub recurse: bool,
+}
+
+/// What `quiet` is asked to do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QuietRequest {
+    /// Add the flag (`true`) or take it away.
+    pub mode_on: bool,
+    pub browser: Browser,
+    /// Windows: the HKCU key holding Chrome's sign-in entry; `None` is [`DEFAULT_RUN_KEY`].
+    pub run_key: Option<String>,
+    /// Windows: the folders whose shortcuts are rewritten. `None` is the real ones: both Start menus,
+    /// Quick Launch (with the pinned taskbar and Start items under it) and the Desktops, `OneDrive`'s and the
+    /// Public one included. A test build never uses the real ones: there `None` rewrites no shortcut.
+    pub shortcut_dirs: Option<Vec<ShortcutDir>>,
+    /// macOS: the folder for phantab's `LaunchAgent`. `None` is `~/Library/LaunchAgents`; a test build
+    /// never uses that: there `None` writes no `LaunchAgent`.
+    pub launch_agents_dir: Option<std::path::PathBuf>,
+}
+
+impl QuietRequest {
+    #[must_use]
+    pub fn new(mode_on: bool, browser: Browser) -> Self {
+        Self { mode_on, browser, ..Self::default() }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -172,15 +231,25 @@ pub trait WindowControl: Send + Sync + std::fmt::Debug {
 
     async fn snapshot(&self) -> Result<Snapshot>;
 
-    /// Windows: adds (`mode_on`) or removes `--silent-debugger-extension-api` on each Run entry that starts
-    /// the browser at `chrome_path`, and reports whether the running browser has it. `run_key` defaults to
-    /// [`DEFAULT_RUN_KEY`]; it must be under HKCU.
+    /// Windows: adds (`mode_on`) or removes [`QUIET_FLAG`] on each Run entry and each shortcut that starts
+    /// the browser at `chrome_path`, touching no other argument and nothing else, and reports whether the
+    /// running browser has it. The Run key must be under HKCU.
     ///
-    /// macOS: reports only. `running` as above; `run_value` is always `None` and nothing is written (the
-    /// only persistent route is a `LaunchAgent`, which phantab does not create; docs/MAC.md). `run_key` is
-    /// ignored.
-    async fn quiet(&self, mode_on: bool, chrome_path: &str, run_key: Option<&str>) -> Result<QuietState>;
+    /// macOS: writes (`mode_on`) or removes phantab's own `LaunchAgent`, which starts Chrome with the flag
+    /// at login (docs/MAC.md Q4), and reports the running browser as above. Never a file it did not write.
+    async fn quiet(&self, request: &QuietRequest) -> Result<QuietState>;
+
+    /// Quits the running browser on `browser`'s user-data dir the way a system restart does, so Chrome
+    /// saves the whole session as it closes, and waits for it to exit. `Ok(None)` when none runs. It acts
+    /// on that one process, found by its path and user-data dir, never on a process name. The default
+    /// refuses: only Windows and macOS have one.
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
+        Err(WindowError::Unsupported(std::env::consts::OS))
+    }
 }
+
+/// How long `quit_browser` waits for Chrome to save its session and exit.
+pub const QUIT_WAIT: Duration = Duration::from_secs(45);
 
 /// Stops this process's stdin, stdout and stderr from being inherited by the children it starts later
 /// (Windows; a no-op elsewhere, where Rust's `Command` never leaks them). Call it first in `main`.
@@ -390,7 +459,12 @@ mod tests {
     fn serde_shapes_are_the_wire_shapes() {
         let snap = Snapshot { foreground: Some(NativeHandle(1)), chrome_windows: vec![NativeHandle(2)] };
         assert_eq!(serde_json::to_string(&snap).unwrap(), r#"{"foreground":1,"chromeWindows":[2]}"#);
-        let quiet = QuietState { run_value: Some(true), running: None };
-        assert_eq!(serde_json::to_string(&quiet).unwrap(), r#"{"runValue":true,"running":null}"#);
+        let quiet = QuietState { run_value: Some(true), shortcuts: 2, ..QuietState::default() };
+        assert_eq!(
+            serde_json::to_string(&quiet).unwrap(),
+            r#"{"runValue":true,"running":null,"shortcuts":2,"unwritable":[],"launchAgent":null}"#
+        );
+        let old: QuietState = serde_json::from_str(r#"{"runValue":true,"running":false}"#).unwrap();
+        assert_eq!(old, QuietState { run_value: Some(true), running: Some(false), ..QuietState::default() });
     }
 }

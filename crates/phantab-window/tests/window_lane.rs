@@ -38,7 +38,7 @@ mod lane {
 
     use futures_util::{SinkExt, StreamExt};
     use phantab_window::{
-        HideStrategy, NativeHandle, QUIET_FLAG, QuietState, WindowControl, WindowSpec, seams,
+        Browser, HideStrategy, NativeHandle, QUIET_FLAG, QuietRequest, WindowControl, WindowSpec, seams,
     };
     use serde_json::{Value, json};
     use tokio::net::TcpStream;
@@ -347,14 +347,19 @@ mod lane {
         let restored = w.find(&decoy).await.unwrap();
         assert!(w.is_visible(restored).await.unwrap(), "never left hidden on a guess");
 
-        quiet(w.as_ref(), &chrome).await;
-        let (mut browser, mut cdp) = killed_and_again(w.as_ref(), &chrome, &spec, browser, cdp, handle).await;
+        quiet(w.as_ref(), &chrome, &browser.dir).await;
+        let (mut browser, cdp) = killed_and_again(w.as_ref(), &chrome, &spec, browser, cdp, handle).await;
 
+        // The clean quit `phantab chrome restart-quiet` makes: only the browser on this user-data dir, by its
+        // pid, and it exits by itself.
         let t = Instant::now();
-        let _ =
-            cdp.ws.send(Message::Text(json!({"id": 0, "method": "Browser.close"}).to_string().into())).await;
+        let target = lane_browser(&chrome, &browser.dir);
+        let quit = w.quit_browser(&target).await.unwrap();
+        assert_eq!(quit, Some(browser.child.id()), "the lane's own browser, by its user-data dir");
         let exited = browser.wait_exit(Duration::from_secs(10));
-        println!("timing: close {:?} (exited by itself: {exited})", t.elapsed());
+        println!("timing: quit {:?} (exited by itself: {exited})", t.elapsed());
+        assert!(exited, "Chrome closed itself when asked");
+        assert_eq!(w.quit_browser(&target).await.unwrap(), None, "none runs on that dir now");
         drop(cdp);
         drop(browser);
     }
@@ -603,10 +608,28 @@ mod lane {
         (browser, cdp)
     }
 
-    async fn quiet(w: &dyn WindowControl, chrome: &Path) {
-        // Quiet matches the configured path as written, and Windows reports the
-        // running image with backslashes. Git Bash hands `PHANTAB_TEST_CHROME=/c/...` over as `C:/...`.
-        let path = &chrome.to_str().unwrap().replace('/', "\\");
+    /// The lane's browser as quiet and quit name it: its Chrome, on its scratch user-data dir.
+    fn lane_browser(chrome: &Path, dir: &Path) -> Browser {
+        // Quiet matches the configured path as written, and Windows reports the running image with
+        // backslashes. Git Bash hands `PHANTAB_TEST_CHROME=/c/...` over as `C:/...`.
+        Browser {
+            chrome_path: chrome.to_str().unwrap().replace('/', "\\"),
+            user_data_dir: dir.display().to_string(),
+            default_dir: false,
+        }
+    }
+
+    async fn quiet(w: &dyn WindowControl, chrome: &Path, dir: &Path) {
+        let target = lane_browser(chrome, dir);
+        let path = &target.chrome_path.clone();
+        // Run key and shortcuts on scratch places only: a key of this test's own and an empty folder.
+        let shortcuts = std::env::temp_dir().join(format!("phantab-window-lane-lnk-{}", std::process::id()));
+        std::fs::create_dir_all(&shortcuts).unwrap();
+        let ask = |mode_on: bool, chrome_path: &str, run_key: &str| QuietRequest {
+            run_key: Some(run_key.to_owned()),
+            shortcut_dirs: Some(vec![phantab_window::ShortcutDir { path: shortcuts.clone(), recurse: true }]),
+            ..QuietRequest::new(mode_on, Browser { chrome_path: chrome_path.to_owned(), ..target.clone() })
+        };
         let subkey = format!(r"Software\phantab-test-{}", std::process::id());
         let key_name = format!(r"HKCU\{subkey}");
         let scratch = ScratchKey(subkey.clone());
@@ -619,33 +642,39 @@ mod lane {
         key.set_u32("number", 7).unwrap();
 
         let t = Instant::now();
-        let on = w.quiet(true, path, Some(&key_name)).await.unwrap();
+        let on = w.quiet(&ask(true, path, &key_name)).await.unwrap();
         println!("timing: quiet {:?}", t.elapsed());
-        // Our own browser runs from this path with the flag.
-        assert_eq!(on, QuietState { run_value: Some(true), running: Some(true) });
+        // Our own browser runs from this path, on this dir, with the flag.
+        assert_eq!((on.run_value, on.running, on.shortcuts), (Some(true), Some(true), 0));
+        let elsewhere = QuietRequest {
+            browser: Browser { user_data_dir: format!("{}-not", dir.display()), ..target.clone() },
+            ..ask(true, path, &key_name)
+        };
+        assert_eq!(w.quiet(&elsewhere).await.unwrap().running, None, "no browser runs on another dir");
         let flagged = format!("\"{path}\" {QUIET_FLAG} --profile-directory=Default --no-startup-window");
         assert_eq!(key.get_string("browser").unwrap(), flagged);
         assert_eq!(key.get_type("expandable").unwrap(), windows_registry::Type::ExpandString, "type kept");
         assert_eq!(key.get_string("expandable").unwrap(), format!("\"{path}\" {QUIET_FLAG} --x"));
         assert_eq!(key.get_string("other").unwrap(), other);
         assert_eq!(key.get_u32("number").unwrap(), 7);
-        assert_eq!(w.quiet(true, path, Some(&key_name)).await.unwrap().run_value, Some(true));
+        assert_eq!(w.quiet(&ask(true, path, &key_name)).await.unwrap().run_value, Some(true));
         assert_eq!(key.get_string("browser").unwrap(), flagged, "on is idempotent");
 
-        let off = w.quiet(false, path, Some(&key_name)).await.unwrap();
+        let off = w.quiet(&ask(false, path, &key_name)).await.unwrap();
         assert_eq!(off.run_value, Some(false));
         assert_eq!(key.get_string("browser").unwrap(), entry);
         assert_eq!(key.get_string("other").unwrap(), other);
-        w.quiet(false, path, Some(&key_name)).await.unwrap();
+        w.quiet(&ask(false, path, &key_name)).await.unwrap();
         assert_eq!(key.get_string("browser").unwrap(), entry, "off is idempotent");
 
         // No entry for this browser, and no key at all: run_value is None.
         key.remove_value("browser").unwrap();
         key.remove_value("expandable").unwrap();
-        assert_eq!(w.quiet(true, path, Some(&key_name)).await.unwrap().run_value, None);
+        assert_eq!(w.quiet(&ask(true, path, &key_name)).await.unwrap().run_value, None);
         drop(scratch);
-        assert_eq!(w.quiet(true, path, Some(&key_name)).await.unwrap().run_value, None);
-        assert!(w.quiet(true, "", Some(&key_name)).await.is_err());
-        assert!(w.quiet(true, path, Some(r"HKLM\Software\x")).await.is_err());
+        assert_eq!(w.quiet(&ask(true, path, &key_name)).await.unwrap().run_value, None);
+        assert!(w.quiet(&ask(true, "", &key_name)).await.is_err());
+        assert!(w.quiet(&ask(true, path, r"HKLM\Software\x")).await.is_err());
+        std::fs::remove_dir_all(&shortcuts).unwrap();
     }
 }

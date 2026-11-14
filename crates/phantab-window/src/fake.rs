@@ -4,13 +4,13 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::{
-    ArmGuard, HideStrategy, NativeHandle, QuietState, Result, Snapshot, WindowControl, WindowError,
-    WindowSpec,
+    ArmGuard, Browser, HideStrategy, NativeHandle, QuietRequest, QuietState, Result, Snapshot, WindowControl,
+    WindowError, WindowSpec,
 };
 
 /// Does nothing and succeeds, so the engine's window steps pass through a headless lane: arm catches
 /// nothing, `find` answers handle 0, show and hide succeed, `snapshot` is empty and `quiet` finds no entry
-/// and no running browser. Tokens are still checked, so a lane catches a malformed one.
+/// and no running browser, and `quit_browser` finds none to quit. Tokens are still checked, so a lane catches a malformed one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Noop;
 
@@ -39,8 +39,11 @@ impl WindowControl for Noop {
     async fn snapshot(&self) -> Result<Snapshot> {
         Ok(Snapshot::default())
     }
-    async fn quiet(&self, _mode_on: bool, _chrome_path: &str, _run_key: Option<&str>) -> Result<QuietState> {
+    async fn quiet(&self, _request: &QuietRequest) -> Result<QuietState> {
         Ok(QuietState::default())
+    }
+    async fn quit_browser(&self, _browser: &Browser) -> Result<Option<u32>> {
+        Ok(None)
     }
 }
 
@@ -54,7 +57,8 @@ pub enum Call {
     KeepHidden { handle: NativeHandle, on: bool },
     IsVisible(NativeHandle),
     Snapshot,
-    Quiet { mode_on: bool, chrome_path: String, run_key: Option<String> },
+    Quiet(QuietRequest),
+    QuitBrowser(Browser),
 }
 
 /// Records every call and answers with what the test set up. It keeps a visible/hidden state per handle,
@@ -65,6 +69,7 @@ pub struct Recording {
 }
 
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools, reason = "one switch per failure a test can ask for")]
 struct RecordingState {
     calls: Vec<Call>,
     arm_answer: Option<NativeHandle>,
@@ -72,6 +77,10 @@ struct RecordingState {
     visible: Vec<NativeHandle>,
     snapshot: Snapshot,
     quiet: QuietState,
+    /// What `quit_browser` answers: the pid it quit, `None` for no browser running.
+    quit: Option<u32>,
+    /// `quit_browser` fails, as a Chrome that would not close would.
+    quits_fail: bool,
     /// `None` reads as [`HideStrategy::OsHook`], the strategy whose calls the engine makes most.
     strategy: Option<HideStrategy>,
     /// `keep_hidden(_, true)` fails, as a keeper that timed out or could not hook would.
@@ -118,6 +127,23 @@ impl Recording {
     pub fn with_quiet(self, quiet: QuietState) -> Self {
         self.state().quiet = quiet;
         self
+    }
+
+    /// What `quiet` answers from now on (the running browser has the flag after a restart, say).
+    pub fn set_quiet(&self, quiet: QuietState) {
+        self.state().quiet = quiet;
+    }
+
+    /// What `quit_browser` answers: the pid of the browser it quit (default `None`, none running).
+    #[must_use]
+    pub fn with_quit(self, pid: Option<u32>) -> Self {
+        self.state().quit = pid;
+        self
+    }
+
+    /// From now on, `quit_browser` fails (still recorded); `false` ends that.
+    pub fn fail_quits(&self, on: bool) {
+        self.state().quits_fail = on;
     }
 
     /// From now on, `keep_hidden(_, true)` fails (still recorded), as a keeper that timed out or could not
@@ -233,13 +259,19 @@ impl WindowControl for Recording {
         Ok(self.record(Call::Snapshot).snapshot.clone())
     }
 
-    async fn quiet(&self, mode_on: bool, chrome_path: &str, run_key: Option<&str>) -> Result<QuietState> {
-        let state = self.record(Call::Quiet {
-            mode_on,
-            chrome_path: chrome_path.to_owned(),
-            run_key: run_key.map(str::to_owned),
-        });
-        Ok(state.quiet)
+    async fn quiet(&self, request: &QuietRequest) -> Result<QuietState> {
+        Ok(self.record(Call::Quiet(request.clone())).quiet.clone())
+    }
+
+    async fn quit_browser(&self, browser: &Browser) -> Result<Option<u32>> {
+        let state = self.record(Call::QuitBrowser(browser.clone()));
+        if state.quits_fail {
+            return Err(WindowError::Os {
+                context: "quit the browser",
+                message: "the test failed this quit".into(),
+            });
+        }
+        Ok(state.quit)
     }
 }
 
@@ -259,7 +291,10 @@ mod tests {
         w.hide(h).await.unwrap();
         w.show(h, true).await.unwrap();
         assert_eq!(w.snapshot().await.unwrap(), Snapshot::default());
-        assert_eq!(w.quiet(true, "chrome.exe", None).await.unwrap(), QuietState::default());
+        let request =
+            QuietRequest::new(true, Browser { chrome_path: "chrome.exe".into(), ..Browser::default() });
+        assert_eq!(w.quiet(&request).await.unwrap(), QuietState::default());
+        assert_eq!(w.quit_browser(&request.browser).await.unwrap(), None);
         assert!(matches!(w.find("other").await, Err(WindowError::InvalidToken)));
     }
 
@@ -275,7 +310,12 @@ mod tests {
         assert!(!w.is_visible(h).await.unwrap());
         w.show(h, true).await.unwrap();
         assert!(w.is_visible(h).await.unwrap());
-        w.quiet(false, "c.exe", Some(r"HKCU\Software\x")).await.unwrap();
+        let request = QuietRequest {
+            run_key: Some(r"HKCU\Software\x".into()),
+            ..QuietRequest::new(false, Browser { chrome_path: "c.exe".into(), ..Browser::default() })
+        };
+        w.quiet(&request).await.unwrap();
+        w.quit_browser(&request.browser).await.unwrap();
         assert_eq!(
             w.calls(),
             vec![
@@ -285,11 +325,8 @@ mod tests {
                 Call::IsVisible(h),
                 Call::Show { handle: h, maximize: true },
                 Call::IsVisible(h),
-                Call::Quiet {
-                    mode_on: false,
-                    chrome_path: "c.exe".into(),
-                    run_key: Some(r"HKCU\Software\x".into())
-                },
+                Call::Quiet(request.clone()),
+                Call::QuitBrowser(request.browser.clone()),
             ]
         );
     }
@@ -298,7 +335,8 @@ mod tests {
     async fn recording_answers_what_it_was_given() {
         let w = Recording::new()
             .with_arm_answer(Some(NativeHandle(9)))
-            .with_quiet(QuietState { run_value: Some(true), running: Some(false) });
+            .with_quiet(QuietState { run_value: Some(true), running: Some(false), ..QuietState::default() })
+            .with_quit(Some(77));
         let mut guard = w.arm_hide(&WindowSpec::workspace(TOKEN)).await.unwrap();
         assert_eq!(guard.settle().await, Some(NativeHandle(9)));
         assert_eq!(guard.settle().await, Some(NativeHandle(9)));
@@ -309,9 +347,10 @@ mod tests {
         let mac = Recording::new().with_strategy(HideStrategy::ExtensionMinimize);
         assert_eq!(mac.strategy(), HideStrategy::ExtensionMinimize);
         assert!(mac.calls().is_empty(), "strategy is not a call");
-        assert_eq!(
-            w.quiet(true, "c.exe", None).await.unwrap(),
-            QuietState { run_value: Some(true), running: Some(false) }
-        );
+        let request = QuietRequest::new(true, Browser::default());
+        assert_eq!(w.quiet(&request).await.unwrap().running, Some(false));
+        assert_eq!(w.quit_browser(&request.browser).await.unwrap(), Some(77));
+        w.fail_quits(true);
+        assert!(w.quit_browser(&request.browser).await.is_err());
     }
 }

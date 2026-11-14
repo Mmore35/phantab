@@ -178,18 +178,9 @@ impl Engine {
 
     /// `--user-data-dir` for a start, only when `config.json`'s differs from Chrome's own: Chrome on Windows
     /// finds its running browser by that exact string, so naming the default one could miss it and fail.
-    fn start_user_data_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn start_user_data_dir(&self) -> Option<PathBuf> {
         let dir = self.setup.config.user_data_dir.clone()?;
-        let default = crate::install::discover::user_data_dir();
-        let same = default.is_some_and(|d| {
-            if cfg!(windows) {
-                d.as_os_str().to_string_lossy().to_lowercase()
-                    == dir.as_os_str().to_string_lossy().to_lowercase()
-            } else {
-                d == dir
-            }
-        });
-        (!same).then_some(dir)
+        (!crate::install::discover::is_default_user_data_dir(&dir)).then_some(dir)
     }
 }
 

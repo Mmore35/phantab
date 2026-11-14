@@ -426,6 +426,11 @@ pub trait PageService: Send + Sync + std::fmt::Debug {
     async fn check_wait(&self, _watch: &str) -> Value {
         serde_json::json!({ "state": "gone" })
     }
+    /// `restart_quiet`: the owner's Chrome restarts with the quiet-debugging flag, saving and restoring its
+    /// session (`phantab chrome restart-quiet`). Exclusive in the queue. An engine without windows refuses.
+    async fn restart_quiet(&self) -> EngineResult {
+        Err(EngineError("This service cannot restart Chrome.".to_owned()))
+    }
     async fn release(&self, client: &str) -> EngineResult;
     async fn dispose(&self) -> EngineResult<()>;
     fn status(&self) -> Map<String, Value>;
