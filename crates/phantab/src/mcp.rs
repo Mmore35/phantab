@@ -546,15 +546,20 @@ fn act_plan(
 ) -> Result<(Vec<serde_json::Map<String, Value>>, bool), String> {
     let fields = &properties["then"]["items"]["properties"];
     if let Some(steps) = arguments.remove("steps") {
-        if let Some(both) = arguments.keys().find(|k| k.as_str() == "then" || fields.get(k.as_str()).is_some()) {
+        if let Some(both) =
+            arguments.keys().find(|k| k.as_str() == "then" || fields.get(k.as_str()).is_some())
+        {
             let shown: String = both.chars().take(40).collect();
-            return Err(format!("steps takes the place of action, its fields and then: leave {shown:?} out."));
+            return Err(format!(
+                "steps takes the place of action, its fields and then: leave {shown:?} out."
+            ));
         }
         let Value::Array(items) = steps else { return Err(STEPS_FORM.to_owned()) };
         if items.is_empty() {
             return Err(STEPS_FORM.to_owned());
         }
-        let mut plan = items.iter().enumerate().map(|(i, item)| act_step(item, i + 1)).collect::<Result<Vec<_>, _>>()?;
+        let mut plan =
+            items.iter().enumerate().map(|(i, item)| act_step(item, i + 1)).collect::<Result<Vec<_>, _>>()?;
         let then = plan.split_off(1);
         arguments.extend(plan.remove(0));
         // Every cost-task call that acted and then looked at the page asked for the snapshot, so the
@@ -600,7 +605,12 @@ const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click
 /// `action` and `selector` five times over. A number stands for itself where one is wanted, and for its
 /// digits where text is; a number written as text is read as one.
 fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, String> {
-    let bad = || format!("steps item {n}: each must be {}", &STEPS_FORM["steps must be a list of actions, each ".len()..]);
+    let bad = || {
+        format!(
+            "steps item {n}: each must be {}",
+            &STEPS_FORM["steps must be a list of actions, each ".len()..]
+        )
+    };
     let Some(parts) = item.as_array() else { return Err(bad()) };
     let Some(action) = parts.first().and_then(Value::as_str) else { return Err(bad()) };
     let names: &[&str] = match action {
@@ -1193,7 +1203,11 @@ mod tests {
         );
         assert_eq!(refused(compact(json!([]))).await, json!(STEPS_FORM));
         assert_eq!(refused(compact(json!({ "click": "#a" }))).await, json!(STEPS_FORM));
-        for bad in [json!([["click", "#a"], ["fill", "#b"]]), json!([["click", "#a"], ["hover", "#b"]]), json!([["click", "#a"], ["scroll", "far"]])] {
+        for bad in [
+            json!([["click", "#a"], ["fill", "#b"]]),
+            json!([["click", "#a"], ["hover", "#b"]]),
+            json!([["click", "#a"], ["scroll", "far"]]),
+        ] {
             assert_eq!(refused(compact(bad)).await, json!(format!("steps item 2: each must be {form}")));
         }
         assert_eq!(
@@ -1206,10 +1220,17 @@ mod tests {
             let (then, snapshot) = act_plan(&mut a, properties).unwrap();
             (Value::Object(a), Value::Array(then.into_iter().map(Value::Object).collect()), snapshot)
         };
-        let (first, then, snapshot) =
-            plan(json!({ "steps": [["fill", "#qty", 2], ["click_xy", "32", 192], ["press", "Enter"]], "ownerConfirmed": true }));
-        assert_eq!(first, json!({ "action": "fill", "selector": "#qty", "text": "2", "ownerConfirmed": true }));
-        assert_eq!(then, json!([{ "action": "click_xy", "x": 32.0, "y": 192 }, { "action": "press", "key": "Enter" }]));
+        let (first, then, snapshot) = plan(
+            json!({ "steps": [["fill", "#qty", 2], ["click_xy", "32", 192], ["press", "Enter"]], "ownerConfirmed": true }),
+        );
+        assert_eq!(
+            first,
+            json!({ "action": "fill", "selector": "#qty", "text": "2", "ownerConfirmed": true })
+        );
+        assert_eq!(
+            then,
+            json!([{ "action": "click_xy", "x": 32.0, "y": 192 }, { "action": "press", "key": "Enter" }])
+        );
         assert!(snapshot);
         assert!(!plan(json!({ "steps": [["click", "#a"]], "snapshot": false })).2);
         // The older form keeps its snapshot opt-in.
