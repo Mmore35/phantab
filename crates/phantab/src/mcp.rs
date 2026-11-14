@@ -34,10 +34,8 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         a.extend(fields);
         let step = json!({ "type": "object", "properties": action(), "required": ["action"], "additionalProperties": false });
         a.insert("then".into(), json!({ "type": "array", "items": step }));
-        a.insert(
-            "steps".into(),
-            json!({ "type": "array", "items": { "type": "array", "items": { "type": ["string", "number"] } } }),
-        );
+        let list = json!({ "type": "array", "items": { "type": ["string", "number"] } });
+        a.insert("steps".into(), json!({ "type": "array", "items": list }));
         a.insert("snapshot".into(), json!({ "type": "boolean" }));
         // The guardrails' owner confirmation (docs/GUARDRAILS.md) is the first action's alone: a `then`
         // step it would refuse is repeated on its own, once the owner approves that step.
