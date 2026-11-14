@@ -121,7 +121,11 @@ jobs:
           cmp "$w/extension.zip.sha256" "$m/extension.zip.sha256" ||
             { echo "the two runners' extension.zip differ: the zip is not deterministic"; exit 1; }
           mkdir -p "dist/$GITHUB_REF_NAME"
-          cp "$w"/* "$m"/* "dist/$GITHUB_REF_NAME/"
+          cp "$w"/* "dist/$GITHUB_REF_NAME/"
+          # One cp of both halves fails: cp will not overwrite a file it has just created (extension.zip).
+          for f in "$m"/*; do
+            [ -e "dist/$GITHUB_REF_NAME/${f##*/}" ] || cp "$f" "dist/$GITHUB_REF_NAME/"
+          done
           ls -l "dist/$GITHUB_REF_NAME"
       - name: release.sh upload (a draft only)
         env:
