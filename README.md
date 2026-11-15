@@ -17,8 +17,8 @@ login. It runs on Windows and macOS. It is free and open source under the Apache
 - **It is light.** A single native binary (the Windows bundle is about 7 MB), no Node, Python or
   PowerShell at runtime. The service runs on two worker threads and starts on the first call.
 - **Your logins just work.** The agent works in your real Chrome profile, through the extension and
-  `chrome.debugger`. There is no copied profile, no exported cookies and no remote-debugging port to
-  leave open.
+  `chrome.debugger`, and in any other profile where you load the bridge once. There is no copied
+  profile, no exported cookies and no remote-debugging port to leave open.
 - **It stays out of your way.** Agent pages open in hidden windows. You keep using Chrome; nothing
   steals focus. Click the toolbar badge (`PT`) and every tab is taken back from the agents at once.
   Chrome's "started debugging this browser" bar can be turned off at install (below).
@@ -111,10 +111,10 @@ copies the binary to `<runtime>/bin` and the extension to `<runtime>/extension`;
 unpacked as in step 3 above. On Windows with the GNU toolchain, run `. scripts/dev-env.sh` (Git Bash)
 first (`CONTRIBUTING.md`).
 
-Other install flags: `--add-profile` / `--remove-profile` (below), `--runtime <dir>`,
-`--server-name <name>` (the MCP entry's name, default `phantab`), `--sign-in-provider <json array>`,
-`--quiet-debugging on|off`, `--extension-dir <dir>` and `--uninstall`. `phantab install --help`
-lists them all.
+Other install flags: `--all-profiles on|off`, `--add-profile` / `--remove-profile` (below),
+`--runtime <dir>`, `--server-name <name>` (the MCP entry's name, default `phantab`),
+`--sign-in-provider <json array>`, `--quiet-debugging on|off`, `--extension-dir <dir>` and
+`--uninstall`. `phantab install --help` lists them all.
 
 ### Chrome's debugging bar
 Chrome shows a "started debugging this browser" bar while the bridge drives a tab. Install at a
@@ -208,12 +208,22 @@ types it into the page. The agent never sees it, and it presses the site's own b
 login is named after the site and the day, so you can find it in your vault.
 
 ## Another Chrome profile
-Agents use your usual profile unless you allow others. To allow one, run
-`phantab install --add-profile Work`, using Chrome's name for the profile or its folder (`Profile 1`).
-Repeat `--add-profile` for more. Install puts a copy of the bridge for that profile in
-`<runtime>/extension-profiles/<folder>/extension`. In that profile, load the copy once at
-chrome://extensions (Developer mode, Load unpacked); install prints the step. The copy works in that
-profile only. The usual copy also works in the usual profile only.
+Agents may use every Chrome profile you have, each only once you load the bridge in it. Install gives
+each profile besides your usual one its own copy of the bridge in
+`<runtime>/extension-profiles/<folder>/extension`. In each profile you want agents in, load that copy
+once at chrome://extensions (Developer mode, Load unpacked); install prints the step for each profile
+that has not loaded it yet. A profile where you never load it stays out of reach: phantab does not start
+it. The copy works in its own profile only, and the usual copy in the usual profile only. Guest and
+System profiles are never included.
+
+To leave a profile out, run `phantab install --remove-profile Barry`, using Chrome's name for the profile
+or its folder (`Profile 5`); repeat it for more. Install deletes that profile's copy and keeps it on a
+leave-out list, so a later install leaves it out too. `phantab install --add-profile Barry` brings it
+back. A profile you make later joins at your next `phantab install`.
+
+To allow only the profiles you name instead, run `phantab install --all-profiles off`: install keeps
+the profiles it allows now and adds no new ones, `--add-profile Work` allows one more and
+`--remove-profile Work` stops allowing it. `--all-profiles on` goes back to every profile.
 
 An agent then names the profile with `profile` on `browser_open`, `browser_tabs`, `browser_attach` or
 `browser_connect`; leaving it out means your usual profile. Pages opened there are hidden, as in your
@@ -221,13 +231,13 @@ usual profile, and you can take them over the same way. If the profile has no wi
 starts it in your own Chrome with no window. Under `guardrails: full` it waits for you to open the
 profile instead. phantab never copies a profile's cookies and never opens a debugging port.
 
-`phantab install --remove-profile Work` stops allowing that profile and deletes its copy. Remove the
-bridge from that profile's chrome://extensions as well: until you do, phantab refuses the bridge in
-every profile.
+When phantab stops allowing a profile where you loaded the bridge, remove the bridge from that
+profile's chrome://extensions as well: until you do, phantab refuses the bridge in every profile.
+Install names the profile when this applies.
 
-phantab reads the allowed profiles when its service starts. After adding or removing one, restart only
-the phantab service, once its pages are drained; never close Chrome. Install says so when the list
-changed.
+phantab reads the allowed profiles when its service starts. After the list changes (a profile added,
+left out or newly made), restart only the phantab service, once its pages are drained; never close
+Chrome. Install says so when the list changed.
 
 ## Saved logins
 `browser_sign_in` fills a saved login without the agent seeing it, from the built-in Bitwarden source

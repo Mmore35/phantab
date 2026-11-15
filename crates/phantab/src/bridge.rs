@@ -277,6 +277,15 @@ fn settings(user_data_dir: &Path, dir: &str, id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Whether profile `dir` lists extension `id` at all (its Secure Preferences or Preferences): the owner
+/// loaded it there. The same read [`profiles_check`] makes, so a profile this says has no bridge is one
+/// whose copy the check would not find either. It says nothing about where the copy was loaded from;
+/// that is [`profiles_check`]'s job once its link is up.
+#[must_use]
+pub fn lists_extension(user_data_dir: &Path, dir: &str, id: &str) -> bool {
+    !settings(user_data_dir, dir, id).is_empty()
+}
+
 /// An extension's display name: its manifest name, or the `__MSG_x__` message it names in
 /// `_locales/<default_locale>`. `path` is relative to `<profile>/Extensions` for store installs and
 /// absolute for unpacked ones. The ID when nothing resolves.
@@ -514,7 +523,7 @@ pub fn profiles_check(
         match files_check(a.extension_dir, record_required) {
             ProfileCheck::Failed { final_, error } if a.folder != which => {
                 let error = format!(
-                    "{} loaded a copy of the phantab bridge that fails its check, so the bridge is refused in                      every profile. {error}",
+                    "{} loaded a copy of the phantab bridge that fails its check, so the bridge is refused in every profile. {error}",
                     named(a.folder)
                 );
                 return Ok(ProfileCheck::Failed { final_, error });
@@ -913,7 +922,7 @@ impl Bridge {
                     conn,
                     None,
                     format!(
-                        "A phantab bridge copy for Chrome profile folder {} connected, but config.json's otherProfiles does not name it. Run phantab install --add-profile with that profile to allow it, then restart only the phantab service; or remove that copy at chrome://extensions.",
+                        "A phantab bridge copy for Chrome profile folder {} connected, but config.json's otherProfiles does not name it. Run phantab install to allow it (it allows every profile but those left out, and --add-profile brings back one left out), then restart only the phantab service; or remove that copy at chrome://extensions.",
                         cut_label(&js_string(Some(other)))
                     ),
                 );

@@ -76,9 +76,11 @@ These are not guardrails. They never refuse what you ask; they keep secrets and 
   copy or ends the page (SR-78 to SR-83).
 - The service listens on loopback only, behind its bearer token; the viewer token is never returned to
   an agent.
-- An agent reaches a Chrome profile other than your usual one only if you allowed it with
-  `phantab install --add-profile`. It reaches that profile through the profile's own copy of the bridge,
-  and that copy speaks for no other profile (SR-76).
+- An agent reaches a Chrome profile other than your usual one only if install allows it (by default
+  every profile but those you leave out with `phantab install --remove-profile`) and you loaded the
+  bridge's copy in that profile yourself. phantab never starts a profile where you did not. It reaches
+  that profile through the profile's own copy of the bridge, and that copy speaks for no other profile
+  (SR-76).
 
 ## Kept in every mode: not guardrails
 These are coordination and correctness. They protect your own work, not you from the agent.

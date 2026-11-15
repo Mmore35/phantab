@@ -116,7 +116,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T35 | A dropped service leaves attached tabs or hidden windows. | SR-22 | L4 |
 | T36 | An unknown bridge op runs. | SR-20 | L4 |
 | T86 | A same-user program swaps a file in the installed unpacked extension (`background.js`) and keeps its `key`, so the ID, the path and the native host's origin check all still pass. | SR-74; the rest is residual R1 | L1 |
-| T87 | With other profiles allowed (phantab only), a copy of the bridge in one profile speaks for another: a hello that names a profile it is not in, a copy loaded where the owner allowed none, or a reply on one profile's link to another's call, so agents act in a profile nobody named. | SR-76 | L1, L3, L4 |
+| T87 | With other profiles allowed (phantab only; by default every profile but those left out), a copy of the bridge in one profile speaks for another: a hello that names a profile it is not in, a copy loaded where the owner allowed none or left the profile out, or a reply on one profile's link to another's call, so agents act in a profile the owner did not allow; or phantab starts a profile where the owner never loaded the bridge. | SR-76 | L1, L3, L4 |
 
 ### B6: other extensions (foreign-frame defence)
 
@@ -355,10 +355,22 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   modification time restored is refused (`tests/bridge.rs`); L4.*
   phantab status: L1 done; the L4 lane is the same opt-in real-extension lane and was not run.
 - **SR-76** Agents reach a Chrome profile other than the usual one only when the owner allowed it, and
-  then only in that profile. `config.json`'s `otherProfiles` lists the allowed profile folders. Only
-  `phantab install --add-profile` / `--remove-profile` write it; each resolves Chrome's name or a
-  folder to a real profile folder directly in `userDataDir`, and the usual profile is refused. The
-  service ignores an entry that is not a plain profile folder name or is the usual profile. Each
+  then only in that profile. Allowed means two things: the installer listed it, and the owner loaded
+  its copy of the bridge there by hand (Chrome requires that for every unpacked extension, so it is the
+  owner's consent step per profile). `config.json`'s `otherProfiles` lists the profile folders the
+  installer allows, and it is the only list the service reads, once, at its start; the service never
+  widens it. Only `phantab install` writes it. By default (`--all-profiles on`, `allProfiles` absent)
+  it is every profile folder directly in `userDataDir` with a `Preferences` file and a plain profile
+  folder name (`Default` or `Profile <n>`, so never a Guest or System profile), but the usual one and
+  those in `excludeProfiles`, the owner's leave-out list; `--remove-profile` adds to that list and
+  `--add-profile` takes off it. A profile made after an install joins at the next one. With
+  `--all-profiles off` (`allProfiles: false`) the list changes only by `--add-profile` and
+  `--remove-profile`. Each flag resolves Chrome's name or a folder to a real profile folder, and the
+  usual profile is refused. The service ignores an entry that is not a plain profile folder name or is
+  the usual profile. A closed allowed profile whose Preferences do not list the bridge is never
+  started, and under `full` the owner is not sent to open it: the call fails saying how to load the
+  copy. A call naming a real profile that is not allowed says whether it is left out or not yet picked
+  up by an install, and which install command changes that; it gets no access either way. Each
   allowed profile gets its own copy of the bridge at `<runtime>/extension-profiles/<folder>/extension`:
   the installed files plus a `profile.json` naming the folder. Each copy is recorded and checked as the
   usual one is (SR-74), with its own `extension-files.json` beside it. A source holding a `profile.json`
@@ -374,11 +386,14 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `--user-data-dir` only when it is not Chrome's default and the quiet flag when quiet debugging is on.
   It is started with no shell and never with a debugging port, so no cookie is copied and no profile
   lock is bypassed. Under `guardrails: full` phantab never starts a profile; it waits 10 s for the owner
-  to open one. Taking a profile out of `otherProfiles` while its copy is still loaded refuses the
-  bridge in every profile until the owner removes that copy, and install says so. *L1: `tests/bridge.rs`
-  (links, forged replies, unknown labels, every profile's copy and path), `tests/install.rs` (a
-  recorded copy per profile, removal), `runtime.rs` (what the service ignores); L3: engine tests (links,
-  pages, tabs, leases, a hidden start, `full`); L4: the two-profile phase of `engine_real_extension`
+  to open one. Taking a profile out of `otherProfiles` (leaving it out, or switching the profile
+  `--profile` binds) while its copy is still loaded refuses the bridge in every profile until the owner
+  removes that copy, and install names each such profile. *L1: `tests/bridge.rs` (links, forged
+  replies, unknown labels, every profile's copy and path), `tests/install.rs` (a recorded copy per
+  profile, removal, every profile by default, the leave-out list, a new profile joining, `off`, the
+  owner steps only where they apply), `runtime.rs` (what the service ignores); L3: engine tests (links,
+  pages, tabs, leases, a hidden start, `full`, no start where the bridge was never loaded, the
+  not-allowed answers); L4: the two-profile phase of `engine_real_extension`
   (opt-in, run on a macOS machine).*
 - **SR-20** The extension's `send` op and the service both enforce one CDP method allow-list. It is
   one checked-in list of exact method names, the ones `phantab-cdp` sends, from the `Page`, `Runtime`,

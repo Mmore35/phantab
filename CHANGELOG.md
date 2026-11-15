@@ -5,13 +5,27 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 
 ## Unreleased
 
+### Changed
+- Install allows every Chrome profile, not only the ones named with `--add-profile`. Each profile gets
+  its own copy of the bridge, and agents can use it once you load that copy there at
+  chrome://extensions. `--remove-profile` now leaves a profile out (a leave-out list later installs
+  keep), `--add-profile` brings it back, and a profile made later joins at the next install.
+  `--all-profiles off` returns to only the profiles you name. An install from before this turns it on
+  at its next run. Install now prints the load step only for profiles that have not loaded the bridge,
+  a reload step for those that have, and the removal step only for a profile left out that had loaded
+  it.
+
 ### Added
+- phantab no longer starts a closed profile where the bridge was never loaded, nor waits for you to
+  open one under `guardrails: full`: the call says how to load it. A call naming a profile that is left
+  out, or one made since the last install, says so and names the install command that changes it.
 - `browser_sign_up`: an agent can make an account for you. It fills in the sign-up form; phantab makes
   the password, saves it in your Bitwarden and reads it back, then types it into the page. The agent never
   sees it and presses the site's own button. While the password is on the page, a copy the page makes is
   blanked and screenshots of the page are refused. Only the built-in Bitwarden source can save one.
 
 ### Fixed
+- A stray gap of spaces in the "refused in every profile" error.
 - A sign-in is no longer walled by a human check no one can see. Invisible reCAPTCHA, hCaptcha and
   Turnstile widgets load zero-size, hidden or offscreen frames on ordinary sign-in pages; a check is now a
   wall only when it is at least 10 by 10 CSS pixels, visible and not pushed further off the page than a

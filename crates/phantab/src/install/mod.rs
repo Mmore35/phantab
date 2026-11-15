@@ -164,6 +164,20 @@ struct Prepared {
     removed_profiles: Vec<Other>,
     /// Whether `otherProfiles` changed. A running service read the list at its start (SR-76).
     profiles_changed: bool,
+    /// Whether every profile is allowed but those left out (`--all-profiles on`, the default), or only
+    /// those named with `--add-profile`.
+    all_profiles: bool,
+    /// `excludeProfiles`: the profiles left out under `--all-profiles on`.
+    left_out: Vec<Other>,
+}
+
+/// [`other_profiles`]'s answer: what [`Prepared`] keeps of it.
+struct Profiles {
+    allowed: Vec<Other>,
+    removed: Vec<Other>,
+    left_out: Vec<Other>,
+    all: bool,
+    changed: bool,
 }
 
 /// One of `otherProfiles`: its folder, and Chrome's name for it when it has one.
@@ -347,17 +361,53 @@ fn report(
          mode and Load unpacked {}; if it is already loaded, click its reload button.",
         runtime.join("extension").display()
     )?;
-    for other in &prepared.other_profiles {
+    let labels = |list: &[&Other]| list.iter().map(|o| o.label()).collect::<Vec<_>>().join(", ");
+    let allowed: Vec<&Other> = prepared.other_profiles.iter().collect();
+    let left_out: Vec<&Other> = prepared.left_out.iter().collect();
+    if prepared.all_profiles && !(allowed.is_empty() && left_out.is_empty()) {
+        let left_out =
+            if left_out.is_empty() { String::new() } else { format!("; left out: {}", labels(&left_out)) };
         writeln!(
             out,
-            "Owner step, once per update: in Chrome profile {} open chrome://extensions, turn on Developer mode \
-             and Load unpacked {} (its own copy of the bridge, not the usual one); if it is already loaded, \
-             click its reload button.",
+            "Other Chrome profiles agents may use: {} (every profile but the usual one{left_out}; a new one \
+             joins at the next phantab install).",
+            if allowed.is_empty() { "none".to_owned() } else { labels(&allowed) }
+        )?;
+    } else if !prepared.all_profiles {
+        writeln!(
+            out,
+            "Other Chrome profiles agents may use: {} (only those named with --add-profile).",
+            if allowed.is_empty() { "none".to_owned() } else { labels(&allowed) }
+        )?;
+    }
+    // A profile that lists the bridge loaded it already and needs only a reload; one that does not is
+    // told how to load its copy, once.
+    let (loaded, unloaded): (Vec<&Other>, Vec<&Other>) = allowed.iter().partition(|o| {
+        crate::bridge::lists_extension(&prepared.user_data_dir, &o.folder, &crate::bridge::EXTENSION_ID)
+    });
+    if !loaded.is_empty() {
+        writeln!(
+            out,
+            "Owner step, once per update: in Chrome profile {} click the phantab bridge's reload button at \
+             chrome://extensions.",
+            labels(&loaded)
+        )?;
+    }
+    for other in unloaded {
+        writeln!(
+            out,
+            "Owner step, once, for each profile agents should use: in Chrome profile {} open chrome://extensions, \
+             turn on Developer mode and Load unpacked {} (its own copy of the bridge, not the usual one). \
+             Until then phantab does not start that profile.",
             other.label(),
             paths::profile_extension_dir_in(runtime, &other.folder).display()
         )?;
     }
-    for other in &prepared.removed_profiles {
+    // A profile phantab stops allowing matters only where the bridge is loaded: there its copy makes the
+    // bridge refused in every profile (SR-76) until the owner removes it.
+    for other in prepared.removed_profiles.iter().filter(|o| {
+        crate::bridge::lists_extension(&prepared.user_data_dir, &o.folder, &crate::bridge::EXTENSION_ID)
+    }) {
         writeln!(
             out,
             "Owner step: in Chrome profile {} remove the phantab bridge at chrome://extensions. Until then the \
@@ -487,7 +537,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
         config.insert("userDataDir".to_owned(), path_text(&found));
     }
     let user_data_dir = check_binding(&config)?;
-    let (other_profiles, removed_profiles, changed) = other_profiles(args, &mut config, &user_data_dir)?;
+    let profiles = other_profiles(args, &mut config, &user_data_dir)?;
     config.insert("installedSource".to_owned(), Value::String(binary.to_owned()));
     if let Some(raw) = &args.sign_in_provider {
         set_sign_in_provider(&mut config, raw)?;
@@ -538,9 +588,11 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
         user_data_dir,
         extension,
         files,
-        other_profiles,
-        removed_profiles,
-        profiles_changed: changed,
+        other_profiles: profiles.allowed,
+        removed_profiles: profiles.removed,
+        profiles_changed: profiles.changed,
+        all_profiles: profiles.all,
+        left_out: profiles.left_out,
     })
 }
 
@@ -566,21 +618,27 @@ fn unique(list: &mut Vec<String>) {
 /// extension reads it and says so in its hello (SR-76).
 const PROFILE_FILE: &str = "profile.json";
 
-/// `--add-profile` and `--remove-profile` applied to `config.json`'s `otherProfiles` (SR-76): profile
-/// folders in `user_data_dir`, never the usual one. Returns the list after this install, the profiles it
-/// stopped allowing, and whether the list changed. An entry that is now the usual profile (`--profile` moved there) is dropped too.
+/// `config.json`'s `otherProfiles` after this install (SR-76): profile folders in `user_data_dir`, never
+/// the usual one. The service reads only that list; this turns the owner's choice into it.
+///
+/// - `--all-profiles on` (the default, and an install with no `allProfiles` key): every profile folder
+///   there is ([`discover::profiles`], valid names only, so no Guest or System profile), but the usual one
+///   and `excludeProfiles`. `--remove-profile` leaves one out (adds it to `excludeProfiles`),
+///   `--add-profile` takes it back off. A profile made since the last install joins at the next one.
+///   Neither key is written: absent is on.
+/// - `--all-profiles off` (`allProfiles: false`): the list as it stands, changed only by `--add-profile`
+///   and `--remove-profile`.
+///
+/// An entry that is now the usual profile (`--profile` moved there) is dropped in both.
 fn other_profiles(
     args: &args::Args,
     config: &mut Map<String, Value>,
     user_data_dir: &Path,
-) -> Result<(Vec<Other>, Vec<Other>, bool)> {
+) -> Result<Profiles> {
     let usual = text(config, "profileDirectory").unwrap_or_default().to_owned();
     let before = config.get("otherProfiles").cloned();
-    let mut list: Vec<String> = config
-        .get("otherProfiles")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
-        .unwrap_or_default();
+    let mut list = folders(config, "otherProfiles");
+    let mut exclude = folders(config, "excludeProfiles");
     let mut removed: Vec<String> = Vec::new();
     list.retain(|f| {
         let keep = *f != usual && paths::valid_profile_dir(f);
@@ -590,44 +648,98 @@ fn other_profiles(
         keep
     });
     unique(&mut list);
+    exclude.retain(|f| *f != usual && paths::valid_profile_dir(f));
     let names = crate::bridge::profile_names(user_data_dir);
-    for arg in &args.remove_profiles {
-        let allowed: Vec<&str> = list.iter().map(String::as_str).collect();
-        let folder = crate::bridge::resolve_profile(&names, &allowed, arg)
-            .map_err(|e| anyhow!("--remove-profile: {e}"))?;
-        list.retain(|f| *f != folder);
-        removed.push(folder);
-    }
     let found = discover::profiles(user_data_dir);
-    for arg in &args.add_profiles {
-        let mut candidates: Vec<&str> =
-            found.iter().map(String::as_str).filter(|f| paths::valid_profile_dir(f)).collect();
-        // The usual one too, so naming it says it is the usual one rather than unknown.
-        if !candidates.contains(&usual.as_str()) {
-            candidates.push(&usual);
-        }
-        let folder = crate::bridge::resolve_profile(&names, &candidates, arg)
-            .map_err(|e| anyhow!("--add-profile: {e}"))?;
+    let mut candidates: Vec<&str> =
+        found.iter().map(String::as_str).filter(|f| paths::valid_profile_dir(f)).collect();
+    // The usual one too, so naming it says it is the usual one rather than unknown.
+    if !candidates.contains(&usual.as_str()) {
+        candidates.push(&usual);
+    }
+    let resolve = |flag: &str, arg: &str| -> Result<String> {
+        let folder =
+            crate::bridge::resolve_profile(&names, &candidates, arg).map_err(|e| anyhow!("{flag}: {e}"))?;
         if folder == usual {
-            bail!("--add-profile: {arg} is the usual Chrome profile ({usual}), which agents reach already.");
+            bail!("{flag}: {arg} is the usual Chrome profile ({usual}), which agents reach already.");
         }
-        if !list.contains(&folder) {
-            list.push(folder.clone());
+        Ok(folder)
+    };
+    let all = args
+        .all_profiles
+        .unwrap_or_else(|| config.get("allProfiles").and_then(Value::as_bool) != Some(false));
+    if all {
+        for arg in &args.remove_profiles {
+            let folder = resolve("--remove-profile", arg)?;
+            if !exclude.contains(&folder) {
+                exclude.push(folder);
+            }
         }
-        removed.retain(|f| *f != folder);
+        for arg in &args.add_profiles {
+            let folder = resolve("--add-profile", arg)?;
+            exclude.retain(|f| *f != folder);
+        }
+        unique(&mut exclude);
+        exclude.sort();
+        let now: Vec<String> = candidates
+            .iter()
+            .filter(|f| **f != usual && !exclude.iter().any(|x| x == **f))
+            .map(|f| (*f).to_owned())
+            .collect();
+        removed.extend(list.iter().filter(|f| !now.contains(f)).cloned());
+        list = now;
+        config.remove("allProfiles");
+    } else {
+        for arg in &args.remove_profiles {
+            let allowed: Vec<&str> = list.iter().map(String::as_str).collect();
+            let folder = crate::bridge::resolve_profile(&names, &allowed, arg)
+                .map_err(|e| anyhow!("--remove-profile: {e}"))?;
+            list.retain(|f| *f != folder);
+            removed.push(folder);
+        }
+        for arg in &args.add_profiles {
+            let folder = resolve("--add-profile", arg)?;
+            if !list.contains(&folder) {
+                list.push(folder.clone());
+            }
+            removed.retain(|f| *f != folder);
+        }
+        exclude.clear();
+        config.insert("allProfiles".to_owned(), json!(false));
     }
     unique(&mut removed);
-    if list.is_empty() {
-        config.remove("otherProfiles");
-    } else {
-        config.insert("otherProfiles".to_owned(), json!(list));
-    }
+    set_folders(config, "excludeProfiles", &exclude);
+    set_folders(config, "otherProfiles", &list);
     let changed = config.get("otherProfiles") != before.as_ref();
     let other = |folder: String| {
         let name = names.iter().find(|(f, _)| *f == folder).map(|(_, n)| n.clone());
         Other { folder, name }
     };
-    Ok((list.into_iter().map(other).collect(), removed.into_iter().map(other).collect(), changed))
+    Ok(Profiles {
+        allowed: list.into_iter().map(other).collect(),
+        removed: removed.into_iter().map(other).collect(),
+        left_out: exclude.into_iter().map(other).collect(),
+        all,
+        changed,
+    })
+}
+
+/// The strings in `config[key]`'s array.
+fn folders(config: &Map<String, Value>, key: &str) -> Vec<String> {
+    config
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// `config[key] = list`, or no key when the list is empty.
+fn set_folders(config: &mut Map<String, Value>, key: &str, list: &[String]) {
+    if list.is_empty() {
+        config.remove(key);
+    } else {
+        config.insert(key.to_owned(), json!(list));
+    }
 }
 
 fn text<'a>(config: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -1095,6 +1207,8 @@ mod tests {
             other_profiles: Vec::new(),
             removed_profiles: Vec::new(),
             profiles_changed: false,
+            all_profiles: true,
+            left_out: Vec::new(),
         };
         let binary = runtime.join("bin").join("phantab");
         // A folder where fsops::atomic writes the record's temp file (its `.phantab.tmp`), so the
