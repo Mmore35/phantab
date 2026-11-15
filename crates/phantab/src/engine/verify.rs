@@ -25,7 +25,7 @@ use super::Engine;
 use super::record::{CheckKind, CheckState, PasskeyFrom, Rec, Verification};
 use crate::engine_api::{EngineError, EngineResult};
 use crate::page_js::VERIFY_STATE;
-use crate::signin::{challenge_frame, passkey};
+use crate::signin::{challenge_frame, challenge_shows, passkey};
 use crate::util::{iso_now, random_hex, same_secret};
 
 /// How long a check gets to clear by itself before the owner sees it. Turnstile on the owner's real,
@@ -94,8 +94,10 @@ pub(crate) async fn detect(page: &Page) -> Seen {
             continue;
         }
         // The box comes from the `<iframe>` element in its parent; nothing runs inside the frame.
+        // An area is not enough: a check parked offscreen or hidden asks nothing of the owner.
         if let Ok(Some(b)) = page.frame_element_box(&f.id).await
             && b.width * b.height > 0.0
+            && challenge_shows(page, &f.id).await
         {
             visible = true;
             break;
@@ -153,8 +155,10 @@ pub(crate) async fn challenge_box(page: &Page) -> Option<BoundingBox> {
         if f.id == main || !challenge_frame(&f.url) {
             continue;
         }
+        // An area is not enough: a check parked offscreen or hidden asks nothing of the owner.
         if let Ok(Some(b)) = page.frame_element_box(&f.id).await
             && b.width * b.height > 0.0
+            && challenge_shows(page, &f.id).await
         {
             return Some(b);
         }

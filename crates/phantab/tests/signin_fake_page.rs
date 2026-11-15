@@ -28,6 +28,8 @@ const HREF: &str = "()=>location.href";
 
 const LOGIN: &str = "https://example.test/login";
 const WIDGET: &str = "https://example.test/widget";
+/// A visible reCAPTCHA checkbox's frame (`web::captcha_frame`).
+const CHECK: &str = "https://www.google.com/recaptcha/api2/anchor?k=x";
 
 /// How a frame answers a read or an index blank.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,15 @@ enum Mode {
     Ignore,
     /// Never answers.
     Hang,
+}
+
+/// How a captcha frame's element answers whether it shows (`pipeline::challenge_shows`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shows {
+    Yes,
+    No,
+    Hang,
+    Throws,
 }
 
 struct Input {
@@ -75,11 +86,12 @@ struct Script {
     /// A frame and the URL Chrome reports it moved to, at the first `location.href` read after the
     /// provider was asked.
     moves_when_asked: Option<(&'static str, &'static str)>,
+    shows: Shows,
 }
 
 impl Script {
     fn new(docs: Vec<Doc>, report: Value) -> Script {
-        Script { docs, report, submitted: false, on_submit: None, moves_when_asked: None }
+        Script { docs, report, submitted: false, on_submit: None, moves_when_asked: None, shows: Shows::Yes }
     }
 
     fn moves_when_asked(mut self, frame: &'static str, url: &'static str) -> Script {
@@ -140,6 +152,17 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
     let ctx = main_ctx(params);
     let args = params["arguments"].as_array().cloned().unwrap_or_default();
     let mut s = script.lock().unwrap();
+    // The visibility check on a frame's element, passed as the call's argument (the only call that asks
+    // `checkVisibility`).
+    if params["arguments"][0]["objectId"] == "owner" && js.contains("checkVisibility") {
+        return match s.shows {
+            Shows::Yes => by_value(json!(true)),
+            Shows::No => by_value(json!(false)),
+            Shows::Hang => Reply::Hang,
+            Shows::Throws => Reply::Now(json!({"result": {"type": "object", "subtype": "error"},
+                "exceptionDetails": {"exceptionId": 1, "text": "Uncaught", "lineNumber": 0, "columnNumber": 0}})),
+        };
+    }
     let Some(at) = s.docs.iter().position(|d| d.ctx == ctx) else { return by_value(Value::Null) };
     match js {
         _ if js == FIND_SIGN_IN => Reply::Now(json!({"result": {"type": "object", "objectId": "sign-in"}})),
@@ -614,4 +637,30 @@ async fn a_frame_that_moves_while_the_provider_is_asked_gets_nothing() {
     assert_eq!(lane.value("F", "username"), "");
     assert_eq!(lane.value("F", "password"), "");
     assert_eq!(lane.phase(), None);
+}
+
+/// A visible check's frame keeps the wall unless it answers that it shows nothing: one that never
+/// answers or throws is not known to be clear. The answer "not shown" (a hidden or
+/// offscreen widget) is the control: the same page then signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_check_frame_that_does_not_say_it_is_hidden_keeps_the_wall() {
+    let wall = json!({"status": "wall", "reason": "captcha"});
+    for (shows, want) in [
+        (Shows::Hang, &wall),
+        (Shows::Throws, &wall),
+        (Shows::Yes, &wall),
+        (Shows::No, &json!({"status": "submitted"})),
+    ] {
+        let docs = vec![doc("F", 1, LOGIN, sign_in_form()), doc("C", 2, CHECK, vec![])];
+        let mut script = Script::new(docs, report(&["username", "password"]));
+        script.shows = shows;
+        let lane = Lane::new(script).await;
+        assert_eq!(&lane.sign().await, want);
+        if *want == wall {
+            assert_eq!(lane.requests(), 0, "a walled sign-in asks for nothing");
+            assert_eq!(lane.value("F", "password"), "");
+        } else {
+            assert_eq!(lane.requests(), 1);
+        }
+    }
 }

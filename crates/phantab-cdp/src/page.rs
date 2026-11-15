@@ -212,6 +212,10 @@ pub struct Dialog {
 
 /// Dialogs kept until [`Page::take_dialogs`]; a page that opens more loses the oldest.
 const DIALOG_MEMORY: usize = 10;
+
+/// [`Page::visual_viewport`]'s fallback: the viewport as the page sees it, in CSS pixels.
+const VISUAL_VIEWPORT: &str = "()=>{const v=window.visualViewport;return v?{x:v.pageLeft,y:v.pageTop,width:v.width,height:v.height}:{x:scrollX,y:scrollY,width:document.documentElement.clientWidth,height:document.documentElement.clientHeight};}";
+
 /// `Page.captureScreenshot`'s base64, moved out of the reply rather than copied (a few hundred kilobytes).
 fn screenshot_data(reply: Value) -> Result<String, CdpError> {
     if let Value::Object(mut m) = reply
@@ -1303,11 +1307,29 @@ impl Page {
     }
 
     /// The visual viewport in CSS pixels: `x`/`y` its scroll offset in the document, then its size.
+    /// `Page.getLayoutMetrics` first; when that fails, the page's own `visualViewport`, which gives the
+    /// same numbers. An extension older than the one that allows the method refuses it, and the owner
+    /// reloads the extension only at the PC: without the fallback, every frame of a phone's live view of
+    /// a check failed until then (2026-11-06, the owner away from the PC with a check waiting).
     pub async fn visual_viewport(&self) -> Result<BoundingBox, CdpError> {
-        let m = self.send("Page.getLayoutMetrics", json!({})).await?;
+        let m = match self.send("Page.getLayoutMetrics", json!({})).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(error = %e, "Page.getLayoutMetrics failed; reading visualViewport instead");
+                return self.page_visual_viewport().await;
+            }
+        };
         let v = m.get("cssVisualViewport").ok_or_else(|| CdpError::Other("no cssVisualViewport".into()))?;
         let n = |k: &str| v.get(k).and_then(Value::as_f64).unwrap_or(0.0);
         Ok(BoundingBox { x: n("pageX"), y: n("pageY"), width: n("clientWidth"), height: n("clientHeight") })
+    }
+
+    /// [`Page::visual_viewport`] as the page's own `visualViewport` reports it: its fallback, public so a
+    /// test can hold the two to the same numbers.
+    pub async fn page_visual_viewport(&self) -> Result<BoundingBox, CdpError> {
+        let v = self.evaluate(&self.main_frame()?, VISUAL_VIEWPORT, vec![]).await?;
+        let n = |k: &str| v.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+        Ok(BoundingBox { x: n("x"), y: n("y"), width: n("width"), height: n("height") })
     }
 
     /// A JPEG of the `clip` rectangle, scaled by `scale`, base64-encoded. `clip` is in viewport

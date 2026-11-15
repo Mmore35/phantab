@@ -3,6 +3,17 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
+## Unreleased
+
+### Fixed
+- A sign-in is no longer walled by a human check no one can see. Invisible reCAPTCHA, hCaptcha and
+  Turnstile widgets load zero-size, hidden or offscreen frames on ordinary sign-in pages; a check is now a
+  wall only when it is at least 10 by 10 CSS pixels, visible and not pushed further off the page than a
+  person could scroll it back. The owner hand-off pops a page up only for such a check too.
+- A check the owner has solved no longer walls the sign-in it was solved for: a shown check whose own
+  kind of response field is filled, in the document that holds it, is no wall. Another kind's filled
+  field does not count.
+
 ## 0.5.0 (2026-11-15)
 Faster, cheaper agent tasks, and no "started debugging this browser" bar.
 

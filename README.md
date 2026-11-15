@@ -190,6 +190,11 @@ The page pops up after a few seconds so you can do the check, and hides itself o
 keeps working meanwhile. With a remote view set up, the agent can also post a link so you can do it from
 your phone or another computer (`docs/REMOTE.md`). phantab never does the check for you.
 
+A check only counts when a person could act on it. Invisible checks (reCAPTCHA scores, hCaptcha and
+Turnstile in their invisible modes) sit in zero-size, hidden or offscreen frames on ordinary sign-in
+pages; they neither stop a sign-in nor pop the page up. A check you have solved keeps its box on the
+page, so once its own response field is filled the sign-in goes on.
+
 ## When a site wants your passkey
 A sign-in that meets a passkey request shows you the page at once, and the agent tells you in one line.
 Confirm it in the pop-up (Bitwarden, Windows Hello or Touch ID); the page hides itself again once the site has

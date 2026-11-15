@@ -716,7 +716,9 @@ Each requirement is a release blocker, and each is tested in the lanes named.
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
-  tree, the challenge frame's box as its parent lays it out, and `VERIFY_STATE` in the main frame. It
+  tree, the challenge frame's box as its parent lays it out, whether that frame's element shows (read
+  on the element in the parent document), `VERIFY_STATE` in the main frame, and the page's visual
+  viewport in the main frame's isolated world when Chrome refuses its layout metrics. It
   sends no input, focus or script to a challenge frame, and no input to the page at all except the
   owner's, through the viewer or their own window. No solving service, no change to the browser's
   identity. Agent writes to the page and its site are refused while the check is live. A check pops up

@@ -26,10 +26,11 @@ use super::seal::Request;
 use super::secret::{Echo, Leftover, Scrubbed, Secret, Values};
 use super::source;
 use super::web::{
-    BadUrl, CODE_TOKEN_MIN, captcha_frame, echo_forms, holds_token, host_of, origin_of, readable,
-    same_document, secure, strip,
+    BadUrl, CODE_TOKEN_MIN, captcha_field, captcha_frame, challenge_frame, echo_forms, holds_token, host_of,
+    origin_of, readable, same_document, secure, strip,
 };
 use crate::engine_api::{EngineError, EngineResult};
+use crate::page_js::VERIFY_STATE;
 use crate::sign_in_guard::{
     GuardError, account_stopped, host_stopped, now_millis, over_limit, read_guard, record_send, stop_account,
 };
@@ -108,6 +109,86 @@ async fn read_one(page: &Page, frame: &FrameId, main: bool) -> Result<Option<Arc
     Ok(Some(Arc::new(Found { frame: frame.clone(), handle, report })))
 }
 
+/// Whether a captcha frame's element is on the page where a person could act on it: at least 10 by 10
+/// CSS pixels, visible, and not pushed off the top or left further than a person could scroll it back.
+/// That reach is the sum, over the real scrollers above the check (overflow auto, scroll or overlay;
+/// across shadow roots and open slots) and then the page itself, of how far each can scroll back from
+/// where it is now. A reversed axis (right-to-left, row-reverse, column-reverse) reads a scroll of 0 as
+/// its start, so it can scroll back its whole range. A fixed box is not moved by anything above it, so
+/// the walk stops there. Content that only spills out (overflow visible or hidden) adds nothing: a check
+/// parked at -10000 px stays hidden however long the page is. Not seen: a scroller inside a closed
+/// shadow root that the check is slotted into. Invisible widgets (reCAPTCHA v3 or
+/// enterprise score, hCaptcha and Turnstile in their invisible modes) sit in zero-size, hidden or
+/// offscreen frames and ask nothing of a person, so they are not a wall.
+const CHALLENGE_SHOWS: &str = concat!(
+    "e=>{const b=e.getBoundingClientRect(),d=document,se=d.scrollingElement,cs=n=>getComputedStyle(n),",
+    "up=n=>n.assignedSlot||n.parentElement||n.parentNode?.host,",
+    "back=(s,r,rev)=>r<=0?0:s<0?r+s:s>0?s:rev?r:0,",
+    "flex=(c,v)=>/flex/.test(c.display)&&c.flexDirection===v,can=v=>/auto|scroll|overlay/.test(v);",
+    "let x=0,y=0,fixed=cs(e).position===\"fixed\";",
+    "for(let p=up(e);p&&!fixed;p=up(p)){const c=cs(p);if(p!==se){",
+    "if(can(c.overflowX))x+=back(p.scrollLeft,p.scrollWidth-p.clientWidth,(c.direction===\"rtl\")!==flex(c,\"row-reverse\"));",
+    "if(can(c.overflowY))y+=back(p.scrollTop,p.scrollHeight-p.clientHeight,flex(c,\"column-reverse\"));}",
+    "fixed=c.position===\"fixed\";}",
+    "if(!fixed&&se){x+=back(se.scrollLeft,se.scrollWidth-se.clientWidth,",
+    "[d.documentElement,d.body].some(n=>n&&cs(n).direction===\"rtl\"));",
+    "y+=back(se.scrollTop,se.scrollHeight-se.clientHeight,false);}",
+    "return b.width>=10&&b.height>=10&&b.right+x>0&&b.bottom+y>0",
+    "&&e.checkVisibility({opacityProperty:true,visibilityProperty:true});}"
+);
+
+/// [`CHALLENGE_SHOWS`] for `frame`. A frame whose element cannot be found or read counts as shown: the
+/// wall stays unless the page is known to show nothing. The owner hand-off (`engine::verify`) asks it too,
+/// so a check parked offscreen (auth.tesla.com, 2026-11-05) neither walls a sign-in nor pops up the window.
+pub(crate) async fn challenge_shows(page: &Page, frame: &FrameId) -> bool {
+    match page.frame_element_evaluate(frame, CHALLENGE_SHOWS).await {
+        Ok(Some(v)) => v.as_bool() != Some(false),
+        Ok(None) | Err(_) => true,
+    }
+}
+
+/// Whether the document `holder` has at least one response field of the check's own kind (`field`, by
+/// [`captcha_field`]) and every one of them is filled, by [`VERIFY_STATE`]. Only the check's own kind
+/// counts: a filled invisible reCAPTCHA score field does not answer for an hCaptcha checkbox beside it.
+/// A field it cannot find (a renamed or switched-off one) leaves the check unsolved, a wall, unless
+/// another widget of the same kind in the document has filled its own.
+async fn captcha_solved(page: &Page, holder: &FrameId, field: &str) -> bool {
+    let Ok(state) = page.evaluate(holder, VERIFY_STATE, Vec::new()).await else { return false };
+    let n = |k: &str| {
+        state.get("byName").and_then(|b| b.get(field)).and_then(|f| f.get(k)).and_then(Value::as_u64)
+    };
+    n("total").is_some_and(|t| t > 0) && n("empty") == Some(0)
+}
+
+/// Whether `frame` is a captcha wall: a [`captcha_frame`] that [`challenge_shows`], unless the document
+/// that holds it has its kind's response fields, all filled. A check the owner solved keeps its box on the page (auth.tesla.com's
+/// ticked "I am human", 2026-11-06, walled the sign-in it was solved for), but every response field is
+/// then filled (the sign that `engine::verify` ends a hand-off by, which reads the main frame only). The fields are counted in the document that
+/// holds the check's frame, so a sign-in inside a frame is judged by its own check, and a filled field
+/// elsewhere on the page does not hide a check still asking.
+async fn captcha_walls(page: &Page, frame: &FrameInfo, main: &FrameId) -> bool {
+    let now = page.frame_info(&frame.id);
+    let url = now.as_ref().map_or(frame.url.as_str(), |i| i.url.as_str());
+    if !captcha_frame(url) {
+        return false;
+    }
+    let field = captcha_field(url);
+    // The nearest document above it that is not a check itself: `VERIFY_STATE` stays out of a live
+    // check's frames (THREAT-MODEL SR-68), and a check's inner frame is held by the site's page, not by its
+    // outer frame.
+    let mut holder =
+        now.and_then(|i| i.parent).or_else(|| frame.parent.clone()).unwrap_or_else(|| main.clone());
+    while let Some(up) = page.frame_info(&holder).filter(|i| challenge_frame(&i.url)) {
+        holder = up.parent.unwrap_or_else(|| main.clone());
+        if holder == *main {
+            break;
+        }
+    }
+    let (shows, solved) =
+        futures_util::join!(challenge_shows(page, &frame.id), captcha_solved(page, &holder, field));
+    shows && !solved
+}
+
 /// `scan(r,engine)`. `None` where the scan cannot be read.
 async fn scan(r: &dyn SignInRecord) -> Option<Scan> {
     if r.detached() {
@@ -120,12 +201,19 @@ async fn scan(r: &dyn SignInRecord) -> Option<Scan> {
         page.frames().into_iter().filter(|f| f.id != main && readable(&f.url)).take(20).collect();
     let frames: Vec<&FrameId> = std::iter::once(&main).chain(others.iter().map(|f| &f.id)).collect();
     // `undefined` (outer None) did not answer; `null` (inner None) has no area.
-    let results: Vec<Option<Option<Arc<Found>>>> = join_all(frames.iter().map(|f| {
+    let reads = join_all(frames.iter().map(|f| {
         let page = &page;
         let is_main = *f == &main;
         async move { timeout(ms(3000), read_one(page, f, is_main)).await.ok().and_then(Result::ok) }
-    }))
-    .await;
+    }));
+    // Alongside the reads, in the same 3 s, so a scan stays inside its callers' budgets (4 s). A check
+    // that does not answer in time keeps the wall: an unknown frame is not a clear one.
+    let walls = join_all(others.iter().map(|f| {
+        let (page, main) = (&page, &main);
+        async move { timeout(ms(3000), captcha_walls(page, f, main)).await.unwrap_or(true) }
+    }));
+    let (results, walls) = futures_util::join!(reads, walls);
+    let captcha = walls.into_iter().any(|wall| wall);
     let reports: Vec<Arc<Found>> = results.iter().flatten().flatten().cloned().collect();
     let pick = |name: &str| reports.iter().find(|x| flag(&x.report, name)).cloned();
     let chosen = pick("password").or_else(|| pick("code")).or_else(|| pick("username")).or_else(|| {
@@ -134,9 +222,6 @@ async fn scan(r: &dyn SignInRecord) -> Option<Scan> {
             .find(|x| x.report.get("wall").and_then(Value::as_str) == Some("field-not-editable"))
             .cloned()
     });
-    let captcha = others
-        .iter()
-        .any(|f| captcha_frame(&page.frame_info(&f.id).map_or_else(|| f.url.clone(), |i| i.url)));
     Some(Scan {
         unread: results.iter().filter(|x| x.is_none()).count(),
         main_read: results.first().is_some_and(|x| x.as_ref().is_some_and(Option::is_some)),

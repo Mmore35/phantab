@@ -2272,3 +2272,21 @@ async fn fill_reads_in_the_isolated_world_and_writes_in_the_page_world() {
         );
     }
 }
+
+/// An extension too old to allow `Page.getLayoutMetrics` refuses it; the viewport then comes from the
+/// page's own `visualViewport`, so a phone's live view of a check keeps working (2026-11-06).
+#[tokio::test]
+async fn a_refused_layout_metrics_reads_the_viewport_from_the_page() {
+    let rig = Rig::new(handler(|_, m, p| match m {
+        "Page.getLayoutMetrics" => Some(Reply::Err(CdpError::Other("CDP method not allowed".into()))),
+        "Runtime.callFunctionOn" if p["functionDeclaration"] == VISUAL_VIEWPORT => Some(Reply::Ok(
+            json!({"result": {"type": "object", "value": {"x": 3, "y": 400, "width": 390, "height": 844}}}),
+        )),
+        _ => None,
+    }))
+    .await;
+    rig.context(None, "MAIN", 7);
+    let v = rig.page.visual_viewport().await.unwrap();
+    assert_eq!(v, BoundingBox { x: 3.0, y: 400.0, width: 390.0, height: 844.0 });
+    assert_eq!(rig.mock.count("Page.getLayoutMetrics"), 1);
+}

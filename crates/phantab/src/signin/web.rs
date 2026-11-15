@@ -81,6 +81,18 @@ pub(crate) fn captcha_frame(url: &str) -> bool {
     url.contains("hcaptcha.com/captcha") || url.contains("challenges.cloudflare.com") || recaptcha_anchor(url)
 }
 
+/// The response field a [`captcha_frame`]'s check fills once solved, by the frame's provider, in
+/// [`captcha_frame`]'s order: hCaptcha, Turnstile, else a reCAPTCHA anchor.
+pub(crate) fn captcha_field(url: &str) -> &'static str {
+    if url.contains("hcaptcha.com/captcha") {
+        "h-captcha-response"
+    } else if url.contains("challenges.cloudflare.com") {
+        "cf-turnstile-response"
+    } else {
+        "g-recaptcha-response"
+    }
+}
+
 /// A verification check's frame, for the owner hand-off (`engine::verify`): [`captcha_frame`] plus
 /// the frames of `DataDome` and `Arkose`, which only ever block a whole page. Sign-in keeps its own rule, so this
 /// change does not move its outcomes.
@@ -268,6 +280,21 @@ mod tests {
         assert_eq!(secure("javascript:void(0)", true), Ok(false));
         assert_eq!(secure("about:blank", true), Ok(false));
         assert_eq!(secure("null", true), Err(BadUrl));
+    }
+
+    #[test]
+    fn captcha_fields() {
+        for (url, field) in [
+            ("https://newassets.hcaptcha.com/captcha/v1/x", "h-captcha-response"),
+            ("https://challenges.cloudflare.com/cdn-cgi/x", "cf-turnstile-response"),
+            ("https://www.google.com/recaptcha/api2/anchor?k=x", "g-recaptcha-response"),
+            (
+                "http://127.0.0.1:1/captcha-frame/newassets.hcaptcha.com/captcha/v1/fixture",
+                "h-captcha-response",
+            ),
+        ] {
+            assert_eq!(captcha_field(url), field, "{url}");
+        }
     }
 
     #[test]

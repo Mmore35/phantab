@@ -440,6 +440,14 @@ async fn a_widget_waits_for_the_agent_to_ask_and_a_closed_page_ends_its_check() 
     // A page with nothing but a word in its title is not a check.
     let (plain, _, _) = lane.open("a", "/verify/captcha-word-title").await;
     assert!(plain.get("verification").is_none(), "{plain}");
+    // A check parked offscreen, as auth.tesla.com keeps one, asks nothing of the owner: no check, no pop-up.
+    let parked = Instant::now();
+    let (offscreen, o, _) = lane.open("a", "/verify/offscreen").await;
+    assert!(offscreen.get("verification").is_none(), "{offscreen}");
+    let snap = lane.ok("snapshot", json!({ "pageId": o }), "a").await;
+    assert!(snap.get("verification").is_none(), "{snap}");
+    lane.ok("close", json!({ "pageId": o }), "a").await;
+    assert!(lane.logged("markShown true", parked).is_none(), "no pop-up for an offscreen check");
 
     // A widget on a page that still works: Phantab says so and does nothing until asked.
     let start = Instant::now();

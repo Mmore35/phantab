@@ -783,6 +783,17 @@ impl Page {
         r
     }
 
+    /// Runs `js` on `frame`'s element in its parent document and returns the value; `None` for the main
+    /// frame. Guarded like [`Page::frame_element_box`]: a call dropped while it holds the element (a
+    /// timeout) still lets it go.
+    pub async fn frame_element_evaluate(&self, frame: &FrameId, js: &str) -> Result<Option<Value>, CdpError> {
+        let Some(el) = self.frame_element(frame).await? else { return Ok(None) };
+        let el = DisposeOnDrop(el);
+        let r = el.0.evaluate(js, vec![]).await;
+        el.0.dispose().await;
+        r.map(Some)
+    }
+
     /// Puppeteer's `ElementHandle.boundingBox`: the element's box in page coordinates.
     pub async fn element_box(&self, el: &JsHandle) -> Result<Option<BoundingBox>, CdpError> {
         let Some(b) = parse_box(&el.evaluate(JS_BOX, vec![]).await?) else { return Ok(None) };

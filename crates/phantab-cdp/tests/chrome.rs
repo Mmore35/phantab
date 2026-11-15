@@ -311,6 +311,13 @@ async fn screenshot(page: &Page, fx: &Fixtures) {
     assert_eq!(jpeg_size(&bytes), Some((240, 120)));
     let v = page.visual_viewport().await.unwrap();
     assert!(v.width > 0.0 && v.height > 0.0, "{v:?}");
+    // Its fallback, for an extension that refuses Page.getLayoutMetrics, reads the same viewport.
+    let own = page.page_visual_viewport().await.unwrap();
+    let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+    assert!(
+        near(own.x, v.x) && near(own.y, v.y) && near(own.width, v.width) && near(own.height, v.height),
+        "{own:?} vs {v:?}"
+    );
 }
 
 /// Width and height from a JPEG's start-of-frame marker.

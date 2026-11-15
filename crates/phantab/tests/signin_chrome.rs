@@ -329,6 +329,94 @@ async fn browser_sign_in_against_a_real_chrome_and_a_fake_provider() {
         });
     }
 
+    case!("/captcha-frame, a captcha a person can see, is a wall", async {
+        assert_eq!(cx.once("captcha-frame").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.requests().len(), 0);
+        assert_eq!(cx.posts().len(), 0);
+    });
+
+    // A visible check the owner has not solved walls; once solved, its box stays but every response field is
+    // filled, and the sign-in goes on (auth.tesla.com, 2026-11-06).
+    case!("/captcha-unsolved, a visible check with an empty response, is a wall", async {
+        assert_eq!(cx.once("captcha-unsolved").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    case!("/captcha-solved, a visible check the owner solved, is not a wall", async {
+        assert_eq!(cx.once("captcha-solved").await, status("submitted"));
+        assert!(cx.posted(0, "pass", PASSWORD), "the value was not posted");
+    });
+    // The response fields are read in the document that holds the check: a framed sign-in whose check was
+    // solved signs in, and a filled field on the outer page does not hide the framed check still asking.
+    case!("/captcha-framed-solved, a framed sign-in's solved check, is not a wall", async {
+        assert_eq!(cx.once("captcha-framed-solved").await, status("submitted"));
+        assert!(cx.posted(0, "pass", PASSWORD), "the value was not posted");
+    });
+    case!(
+        "/captcha-framed-unsolved, a framed check still asking beside a filled outer field, is a wall",
+        async {
+            assert_eq!(cx.once("captcha-framed-unsolved").await, status_reason("wall", "captcha"));
+            assert_eq!(cx.posts().len(), 0);
+        }
+    );
+
+    // Only the check's own kind of response field answers for it: a filled reCAPTCHA score token does not
+    // make an hCaptcha checkbox solved, while the check's own field counts inside an open shadow root.
+    case!("/captcha-other-kind, a check beside another kind's filled field, is a wall", async {
+        assert_eq!(cx.once("captcha-other-kind").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    case!("/captcha-shadow-solved, a solved check whose field is in a shadow root, is not a wall", async {
+        assert_eq!(cx.once("captcha-shadow-solved").await, status("submitted"));
+        assert!(cx.posted(0, "pass", PASSWORD), "the value was not posted");
+    });
+    // A check scrolled up out of an inner scroller can be scrolled back: it still shows.
+    case!("/captcha-scrolled, a check scrolled away inside a dialog, is a wall", async {
+        assert_eq!(cx.once("captcha-scrolled").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    // A check slotted into a web component's scroller, scrolled away, can be scrolled back too.
+    case!("/captcha-slotted-scrolled, a check slotted into a scrolled shadow scroller, is a wall", async {
+        assert_eq!(cx.once("captcha-slotted-scrolled").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    // A right-to-left page starts scrolled to its right end: a check off the left is reached by scrolling.
+    case!("/captcha-rtl, a check off the left of a right-to-left page, is a wall", async {
+        assert_eq!(cx.once("captcha-rtl").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    // An inner right-to-left scroller starts at its right end, and a column-reverse one at its bottom:
+    // a check past their start edge is reached by scrolling, so it still shows.
+    case!("/captcha-inner-rtl, a check off the left of a right-to-left scroller, is a wall", async {
+        assert_eq!(cx.once("captcha-inner-rtl").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    case!("/captcha-column-reverse, a check above a column-reverse scroller's start, is a wall", async {
+        assert_eq!(cx.once("captcha-column-reverse").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+    // The page's own scroll counts for a check inside a web component's shadow root too.
+    case!("/captcha-shadow-scrolled, a check in a shadow root on a scrolled page, is a wall", async {
+        assert_eq!(cx.once("captcha-shadow-scrolled").await, status_reason("wall", "captcha"));
+        assert_eq!(cx.posts().len(), 0);
+    });
+
+    // Invisible widgets ask nothing of a person: the page signs in as if they were not there. That holds
+    // for a frame parked far above a long scrolled page too, whether it is placed on the page (only the
+    // page's real scroll can bring it back) or fixed (no scroll moves it).
+    for page in [
+        "captcha-invisible",
+        "captcha-zero",
+        "captcha-hidden",
+        "captcha-offscreen",
+        "captcha-parked-long",
+        "captcha-parked-fixed",
+    ] {
+        case!(format!("/{page}, a captcha frame no one can see, is not a wall"), async {
+            assert_eq!(cx.once(page).await, status("submitted"));
+            assert!(cx.posted(0, "pass", PASSWORD), "the value was not posted");
+        });
+    }
+
     // A passkey request waiting is the owner's to answer, whatever the form looks like.
     // The fixtures' passkey pop-up is a stand-in that never calls the browser's own WebAuthn.
     case!("a passkey asked as the page loads is a passkey wall, before anything is asked or filled", async {

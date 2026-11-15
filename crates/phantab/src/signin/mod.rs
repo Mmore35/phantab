@@ -24,6 +24,7 @@ mod secret;
 pub(crate) mod source;
 mod web;
 
+pub(crate) use pipeline::challenge_shows;
 pub(crate) use web::challenge_frame;
 
 pub use host::{Host, Phase, SignInRecord, check_call};
