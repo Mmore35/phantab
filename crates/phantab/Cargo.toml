@@ -1,6 +1,6 @@
 [package]
 name = "phantab"
-description = "Lets AI agents use your own signed-in Chrome, in windows you never see."
+description = "A fast, lightweight MCP browser server: lets AI agents use your own signed-in Chrome, in windows you never see."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

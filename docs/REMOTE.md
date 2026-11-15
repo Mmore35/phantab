@@ -1,4 +1,4 @@
-# Solving a check from another device
+# Solving a human check (CAPTCHA) from another device
 
 When a page hits a verification check, Phantab pops it up on the computer for the owner (README
 § When a site asks if you're human). With a remote view set up, the agent also gets a link to the check that works from the owner's

@@ -1,21 +1,27 @@
 # phantab
 
+**A fast, lightweight MCP browser server for AI agents, using your own signed-in Chrome.**
+
 phantab lets AI agents use **your own signed-in Chrome**, in windows you never see. An agent opens a
 page in a hidden Chrome window of your usual profile, so your logins come with it. When a page needs
 you (a check, a passkey, a decision), you take it over, then hand it back.
 
-It is one small native program, `phantab`, plus a Chrome extension. Any MCP client can use it: Claude
-Code, Codex, or anything else that speaks the Model Context Protocol over stdio. It runs on Windows and
-macOS. It is free and open source under the Apache License 2.0.
+It is one small native program, `phantab`, written in Rust, plus a Chrome extension. Any MCP client can
+use it: Claude Code, Codex, or anything else that speaks the Model Context Protocol over stdio. Agents
+use it to browse, read pages, fill forms, click through web apps and pull data from sites that need a
+login. It runs on Windows and macOS. It is free and open source under the Apache License 2.0.
 
-## Why use it
+## What makes it different
+- **It is fast.** In the benchmark below, agents finished the same six browser tasks in about half
+  the time they took with Chrome DevTools MCP, at well under half the cost.
+- **It is light.** A single native binary (the Windows bundle is about 7 MB), no Node, Python or
+  PowerShell at runtime. The service runs on two worker threads and starts on the first call.
 - **Your logins just work.** The agent works in your real Chrome profile, through the extension and
   `chrome.debugger`. There is no copied profile, no exported cookies and no remote-debugging port to
   leave open.
 - **It stays out of your way.** Agent pages open in hidden windows. You keep using Chrome; nothing
   steals focus. Click the toolbar badge (`PT`) and every tab is taken back from the agents at once.
-- **It is light.** A single native binary (the Windows bundle is about 7 MB), no Node, Python or
-  PowerShell at runtime. The service runs on two worker threads and starts on the first call.
+  Chrome's "started debugging this browser" bar can be turned off at install (below).
 - **It is cheap to run.** Every byte a tool returns costs your agent tokens, so phantab returns little:
   `browser_snapshot` gives the page as plain lines, not JSON, and on a repeat only what changed;
   `browser_act` runs several actions and the check after them in one call; page ids are shortened and
@@ -24,6 +30,43 @@ macOS. It is free and open source under the Apache License 2.0.
 - **It knows when to stop.** Human checks and passkeys are never answered for you: phantab shows you
   the page and waits. Optional guardrails ask for your confirmation before payments, password changes
   and deletions.
+- **Passwords stay out of the conversation.** `browser_sign_in` fills a saved login from Bitwarden or
+  your own provider command, and the agent never sees the password.
+
+## Benchmark
+Measured on 2026-11-14 on a Windows PC: six agent tasks on local test pages (read an article, look up
+orders, sign up, sign in, use a single-page app, shop through several pages), each run five times by
+Claude Code (`claude -p`, Claude Sonnet 5.5), one run at a time, each in a fresh Chrome. That is 30
+runs per tool, and every run succeeded with both tools. The figures add up each task's median.
+
+| Tool | Time for the six tasks | API cost for the six tasks |
+|---|---|---|
+| phantab (the code released as 0.5.0) | 50.6 s | $0.24 |
+| Chrome DevTools MCP | 98.5 s | $0.55 |
+
+That is about 1.95 times faster and 2.29 times cheaper on this set. Most of the difference is fewer
+agent turns and fewer tokens per turn: an agent reads a page in one call, and several actions and the
+check after them in another. The harness that ran these tasks is not in this repository yet, and
+results move with the model and the API's latency on the day, so take them as one measurement.
+
+## How it compares
+Several open-source tools give an AI agent a browser. They differ mainly in which browser the agent
+gets and what runs on your machine. As of November 2026:
+
+- **Chrome DevTools MCP** (Google) is a Node.js server. By default it starts its own Chrome with a
+  separate profile; it can also attach to your running Chrome over remote debugging, which you turn on
+  in Chrome and approve when the server connects. It has DevTools features phantab does not, such as
+  performance traces and network inspection.
+- **Playwright MCP** (Microsoft) is a Node.js server built on Playwright. It starts its own browser by
+  default, and with its bridge extension it can use tabs in your browser. It supports Chromium, Firefox
+  and WebKit.
+- **Browser MCP** and similar extension-based servers drive your own browser through an extension and
+  a Node.js server, in your visible tabs.
+
+phantab's own choices: one native binary with no runtime to install, agent pages in **hidden**
+windows of your profile so you keep working, no debugging port, compact tool output to keep agent
+turns short, and a human takes over for checks and passkeys. If you need a clean throwaway browser,
+cross-browser testing or performance profiling, one of the tools above is the better fit.
 
 ## Requirements
 - **Google Chrome 125 or later.** The extension is loaded unpacked (Developer mode).
@@ -178,13 +221,34 @@ changed.
 `browser_sign_in` fills a saved login without the agent seeing it, from the built-in Bitwarden source
 (`docs/BITWARDEN.md`) or from a sign-in provider command you configure.
 
+## Questions
+**Does the agent get my existing logins?** Yes. It works in your own Chrome profile, so any site you
+are signed in to is signed in for the agent too. That is also why the Safety section above matters.
+
+**Does it open a remote-debugging port?** No. The extension drives your tabs with `chrome.debugger`
+and talks to the native program over Chrome's native messaging; the phantab service listens only on
+127.0.0.1, behind a random token. The full path is in `docs/ARCHITECTURE.md`.
+
+**Will agent windows get in my way?** No. Agent pages open in hidden windows and never take focus. A
+page shows itself when it needs you for a check or a passkey, and you can take any page over yourself.
+
+**Which agents and clients does it work with?** Any MCP client over stdio. The installer sets up
+Claude Code and Codex; for others, point the client at `phantab mcp` (§ Connect your agent).
+
+**Can I use it for scraping or data extraction?** It reads pages as text an agent can act on, so an
+agent can collect data from pages it can reach in your browser, including ones behind your login. Keep
+to each site's terms. For large crawls of public pages, a headless crawler is a better tool.
+
+**Does it work with Edge, Brave or Firefox?** It is built and tested for Google Chrome 125 or later.
+Other browsers are not supported.
+
 ## Documentation
 - `docs/ARCHITECTURE.md`: the pieces and how they talk.
 - `docs/GUARDRAILS.md`: what each guardrails mode asks for.
 - `docs/THREAT-MODEL.md`: assets, attackers, requirements and residual risks.
 - `docs/SECURITY-AUDIT-2026-11.md`: a security audit and its open findings.
 - `docs/BITWARDEN.md`: the built-in Bitwarden source.
-- `docs/REMOTE.md`: doing a human check from another device.
+- `docs/REMOTE.md`: doing a human check (a CAPTCHA, for example) from your phone or another computer.
 - `docs/WORK-LAPTOP.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.
 - `docs/MAC.md`: how phantab behaves on macOS.
 - `docs/TESTING.md`, `CONTRIBUTING.md`: building, testing and contributing.

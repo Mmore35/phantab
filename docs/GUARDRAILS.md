@@ -1,4 +1,4 @@
-# Guardrails
+# Guardrails: confirmation before payments, password changes and deletions
 
 Phantab acts as you, in your own signed-in Chrome. How much it holds an agent back on top of what you
 ask is one setting, `guardrails` in `config.json`:
