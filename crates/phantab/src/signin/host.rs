@@ -68,7 +68,8 @@ pub trait Host: Send + Sync {
     /// `engine.records.get(pageId)`, when `client` owns it. `None` for an unknown page or another
     /// session's (the call then throws `Unknown page or page belongs to another agent session.`).
     fn record(&self, page_id: &Value, client: &str) -> Option<Arc<dyn SignInRecord>>;
-    /// `engine.config.signInProvider`.
+    /// `engine.config.signInProvider`, or the `signInProviders` list with it
+    /// ([`crate::signin::source::provider_config`]).
     fn provider(&self) -> Option<Value>;
     /// `engine.config.signInGuard`.
     fn guard_file(&self) -> PathBuf;

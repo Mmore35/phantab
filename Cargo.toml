@@ -41,3 +41,8 @@ panic = "abort"
 # each aborted the service). Turn it on only after an audit of every sum or product a page, the bridge
 # or a client can reach shows each one bounded or saturating. Until then release builds wrap, and those
 # sums saturate on their own (engine/read.rs). Debug builds and tests run with the checks.
+
+# The provider pin hashes its program before every run, and a debug test binary is hundreds of MB:
+# unoptimised sha2 makes each pinned run take seconds.
+[profile.dev.package.sha2]
+opt-level = 3

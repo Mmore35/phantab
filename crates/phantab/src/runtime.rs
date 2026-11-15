@@ -44,6 +44,14 @@ pub struct Config {
     /// `{command: [program, ...args]}` of the sign-in provider, if the owner set one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_provider: Option<Value>,
+    /// Several sign-in sources in order (docs/VAULTS.md): `[{name, source?, command?, caps?, pin?,
+    /// sites?, bitwarden?}]`. Set with `phantab install --add-sign-in-provider`; never together with
+    /// `signInProvider` (every sign-in then answers `provider-failed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_providers: Option<Value>,
+    /// The `signInProviders` name a sign-up's new login is saved to, when no site pin or `vault` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_save_to: Option<Value>,
     /// `true` once install recorded the extension's files beside the folder and checked the folder
     /// against the record; install writes it last (THREAT-MODEL SR-74). With it set, a missing record
     /// refuses the bridge like a changed file; without it (an install from before SR-74) a missing record

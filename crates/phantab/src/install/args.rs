@@ -25,7 +25,13 @@ loaded once, by hand, at chrome://extensions in that profile):
 Other:
   --runtime <dir>                   runtime dir (default: PHANTAB_RUNTIME, else the per-user default)
   --server-name <name>              the MCP entry's name in both clients (default: phantab)
-  --sign-in-provider <json array>   the command browser_sign_in runs for a saved login; [] removes it
+  --sign-in-provider <json array>   the command browser_sign_in runs for a saved login; [] removes it.
+                                    With a provider list, it sets (or [] removes) the list's \"default\"
+  --add-sign-in-provider <json object>
+                                    adds one password manager to the list, or replaces the one of its
+                                    name (docs/VAULTS.md); repeatable
+  --remove-sign-in-provider <name>  removes one from the list; repeatable
+  --sign-in-save-to <name>          the provider browser_sign_up saves new logins to; \"\" removes it
   --quiet-debugging on|off          on hides Chrome's debugging bar, off brings it back; every extension
                                     that uses Chrome's debugger then attaches silently. Answers the
                                     question an install at a terminal asks once; with no client flag it
@@ -45,6 +51,9 @@ pub(crate) struct Args {
     pub chrome: Option<PathBuf>,
     pub uninstall: bool,
     pub sign_in_provider: Option<String>,
+    pub add_sign_in_providers: Vec<String>,
+    pub remove_sign_in_providers: Vec<String>,
+    pub sign_in_save_to: Option<String>,
     pub quiet_debugging: Option<bool>,
     /// Tests only: a scratch key instead of the real Run key (`--run-key`, not in the usage text).
     pub run_key: Option<String>,
@@ -105,6 +114,9 @@ pub(crate) fn parse(words: &[String]) -> Result<Args, String> {
             "user-data-dir" => args.user_data_dir = Some(value(name)?.into()),
             "chrome" => args.chrome = Some(value(name)?.into()),
             "sign-in-provider" => args.sign_in_provider = Some(value(name)?),
+            "add-sign-in-provider" => args.add_sign_in_providers.push(value(name)?),
+            "remove-sign-in-provider" => args.remove_sign_in_providers.push(value(name)?),
+            "sign-in-save-to" => args.sign_in_save_to = Some(value(name)?),
             "quiet-debugging" => {
                 args.quiet_debugging = Some(match value(name)?.as_str() {
                     "on" => true,

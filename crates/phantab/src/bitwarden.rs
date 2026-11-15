@@ -172,7 +172,7 @@ async fn connect_with(
 }
 
 /// `status`, as the JSON it prints.
-async fn status_with(config: &Config, vault: &dyn SessionVault) -> Value {
+pub(crate) async fn status_with(config: &Config, vault: &dyn SessionVault) -> Value {
     let (session, key) = match vault.load() {
         Ok(Some(key)) if pin::holds(config, &key).await => ("stored", Some(key)),
         // Made with another `bw`: `bw status` runs without it, and `run` tells the owner to connect again.
@@ -245,7 +245,7 @@ pub async fn run(args: &[String]) -> i32 {
     let dir = paths::runtime_dir().join("bitwarden");
     let vault = OsVault::new(&dir);
     let config = crate::runtime::read_config().map_err(|e| format!("phantab: {e:#}")).and_then(|c| {
-        bitwarden_config(c.sign_in_provider.as_ref(), &dir)
+        bitwarden_config(crate::signin::source::provider_config(&c).as_ref(), &dir)
             .map_err(|e| format!("{}: {e}", paths::config_path().display()))
     });
     // disconnect removes the stored session even when the config no longer names the source.

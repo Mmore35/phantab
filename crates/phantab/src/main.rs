@@ -72,6 +72,7 @@ fn run_async(mode: Mode, args: &[String]) -> ExitCode {
             Mode::Mcp => phantab::mcp::run(&args[1..]).await,
             Mode::Serve => phantab::service::run().await,
             Mode::Bitwarden => phantab::bitwarden::run(&args[1..]).await,
+            Mode::Vaults => phantab::vaults::run(&args[1..]).await,
             Mode::Install | Mode::Cli => phantab::cli::run(args).await,
         }
     });

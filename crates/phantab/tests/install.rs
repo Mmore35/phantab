@@ -551,6 +551,62 @@ fn sign_in_provider_is_written_kept_and_removed_only_by_the_installer() {
     assert_eq!(read(), None);
 }
 
+#[test]
+fn sign_in_providers_are_added_replaced_and_removed_and_a_bad_list_is_never_written() {
+    let world = Fixture::new("providers").with_runtime("1");
+    let read = |key: &str| world.config().get(key).cloned();
+    let legacy = json!([NODE, "legacy.mjs"]);
+    world.run(&world.argv(&["--sign-in-provider", &legacy.to_string()])).unwrap();
+    // The first list edit makes the legacy provider the list's `default`.
+    let script = if cfg!(windows) { r"C:\tools\fixture.mjs" } else { "/opt/tools/fixture.mjs" };
+    let sha = "a".repeat(64);
+    let fixture = json!({
+        "name": "fixture",
+        "command": [NODE, script],
+        "caps": ["lookup", "totp", "create"],
+        "pin": { NODE: sha, script: sha },
+        "sites": ["https://login.site.test"],
+    });
+    world
+        .run(&world.argv(&["--add-sign-in-provider", &fixture.to_string(), "--sign-in-save-to", "fixture"]))
+        .unwrap();
+    assert_eq!(read("signInProvider"), None, "moved into the list");
+    assert_eq!(read("signInProviders"), Some(json!([{ "command": legacy, "name": "default" }, fixture])),);
+    assert_eq!(read("signInSaveTo"), Some(json!("fixture")));
+    world.run(&world.argv(&[])).unwrap();
+    assert_eq!(read("signInSaveTo"), Some(json!("fixture")), "a later install keeps the list");
+    // The old flag now sets the list's default.
+    let other = json!([NODE, "other.mjs"]);
+    world.run(&world.argv(&["--sign-in-provider", &other.to_string()])).unwrap();
+    assert_eq!(read("signInProviders").unwrap()[0], json!({ "name": "default", "command": other }));
+    // Refused, and nothing written: an unknown key, a bad name, caps without a pin, a duplicate
+    // bitwarden, saveTo a provider without create, removing one that is not there.
+    let before = world.config();
+    let bad_entries = [
+        json!({ "name": "x", "command": [NODE], "extra": 1 }),
+        json!({ "name": "Not Ok", "command": [NODE] }),
+        json!({ "name": "x", "command": [NODE], "caps": ["lookup"] }),
+        json!({ "name": "x", "command": ["node"] }),
+        json!({ "name": "x", "command": [NODE], "sites": ["http://plain.test"] }),
+    ];
+    for bad in bad_entries {
+        assert!(world.run(&world.argv(&["--add-sign-in-provider", &bad.to_string()])).is_err(), "{bad}");
+    }
+    let bw = |name: &str| json!({ "name": name, "source": "bitwarden" }).to_string();
+    world.run(&world.argv(&["--add-sign-in-provider", &bw("bw")])).unwrap();
+    assert!(world.run(&world.argv(&["--add-sign-in-provider", &bw("bw2")])).is_err(), "two bitwardens");
+    assert!(world.run(&world.argv(&["--sign-in-save-to", "default"])).is_err(), "default cannot create");
+    assert!(world.run(&world.argv(&["--remove-sign-in-provider", "nobody"])).is_err());
+    world.run(&world.argv(&["--remove-sign-in-provider", "bw"])).unwrap();
+    assert_eq!(world.config(), before, "a refused flag changes nothing");
+    // Removing the save target removes signInSaveTo; removing the last entry removes the list.
+    world.run(&world.argv(&["--remove-sign-in-provider", "fixture"])).unwrap();
+    assert_eq!(read("signInSaveTo"), None);
+    world.run(&world.argv(&["--sign-in-provider", "[]"])).unwrap();
+    assert_eq!(read("signInProviders"), None);
+    assert_eq!(read("signInProvider"), None);
+}
+
 #[cfg(windows)]
 #[test]
 fn native_host_registration_restores_on_uninstall() {

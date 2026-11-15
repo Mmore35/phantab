@@ -21,6 +21,8 @@ pub enum Mode {
     Mcp,
     Serve,
     Bitwarden,
+    /// `phantab vaults status`: the configured sign-in providers (docs/VAULTS.md).
+    Vaults,
     /// Any other first argument: one CLI command.
     Cli,
 }
@@ -35,6 +37,7 @@ impl Mode {
             Some("mcp") => Self::Mcp,
             Some("serve") => Self::Serve,
             Some("bitwarden") => Self::Bitwarden,
+            Some("vaults") => Self::Vaults,
             _ => Self::Cli,
         }
     }
@@ -71,6 +74,7 @@ mod tests {
         assert_eq!(Mode::of(&args(&["mcp", "--name", "x"])), Mode::Mcp);
         assert_eq!(Mode::of(&args(&["serve"])), Mode::Serve);
         assert_eq!(Mode::of(&args(&["bitwarden", "status"])), Mode::Bitwarden);
+        assert_eq!(Mode::of(&args(&["vaults", "status"])), Mode::Vaults);
         assert_eq!(Mode::of(&args(&["status"])), Mode::Cli);
         assert_eq!(Mode::of(&args(&[])), Mode::Cli);
     }
@@ -82,6 +86,7 @@ mod tests {
             (Mode::Host, 1),
             (Mode::Mcp, 1),
             (Mode::Bitwarden, 1),
+            (Mode::Vaults, 1),
             (Mode::Cli, 1),
             (Mode::Serve, SERVICE_WORKERS),
         ] {

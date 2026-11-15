@@ -6,7 +6,9 @@
 //! - [`pipeline`]: the call itself, one function per step.
 //! - [`signup`]: `browser_sign_up`, which fills a sign-up form with a new password; [`generate`]: that
 //!   password.
-//! - [`source`]: which saved-login source the config picks ([`source::CredentialSource`]).
+//! - [`source`]: which saved-login sources the config picks ([`source::CredentialSource`]); [`chain`]:
+//!   several at once, in order (docs/VAULTS.md); [`caps`]: what each can do.
+//! - [`runner`]: a command provider started by its pinned files.
 //! - [`provider`], [`seal`]: the external provider command and its sealed answer.
 //! - [`bitwarden`]: the built-in Bitwarden source (docs/BITWARDEN.md).
 //! - [`web`]: URL rules and the leak forms; [`page`]: the in-page functions, verbatim.
@@ -14,6 +16,8 @@
 //! - [`options`]: time budgets and the test-only switches; the debug-logging check.
 
 pub(crate) mod bitwarden;
+pub(crate) mod caps;
+mod chain;
 mod generate;
 mod host;
 mod label;
@@ -21,7 +25,8 @@ mod options;
 mod page;
 pub(crate) mod passkey;
 mod pipeline;
-mod provider;
+pub(crate) mod provider;
+pub(crate) mod runner;
 mod seal;
 mod secret;
 mod signup;
@@ -58,4 +63,7 @@ pub use signup::{SECRET_ON_PAGE, before_screenshot, sign_up, sweep_sign_up};
 #[cfg(feature = "test-seams")]
 pub use source::MemorySource;
 #[cfg(feature = "test-seams")]
-pub use source::{bitwarden_ask_for_test, bitwarden_create_for_test};
+pub use source::{
+    ProvidersCall, bitwarden_ask_for_test, bitwarden_create_for_test, providers_ask_for_test,
+    providers_create_for_test,
+};

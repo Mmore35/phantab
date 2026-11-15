@@ -22,3 +22,4 @@ pub mod service;
 pub mod sign_in_guard;
 pub mod signin;
 pub mod util;
+pub mod vaults;

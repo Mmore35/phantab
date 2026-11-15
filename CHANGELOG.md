@@ -23,6 +23,15 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   the password, saves it in your Bitwarden and reads it back, then types it into the page. The agent never
   sees it and presses the site's own button. While the password is on the page, a copy the page makes is
   blanked and screenshots of the page are refused. Only the built-in Bitwarden source can save one.
+- Any password manager, several at once (`docs/VAULTS.md`). `signInProviders` lists sign-in providers
+  by name: the built-in Bitwarden source and provider commands. They are asked in order, and a vault's
+  no is never overruled by the next. Account keys are namespaced per vault, an owner can pin sites to
+  a vault, and `signInSaveTo` picks where a sign-up saves. A provider command that declares `caps` is
+  pinned by hash and speaks protocol v2, which adds `create`, so sign-up can save there too.
+  `browser_sign_in` and `browser_sign_up` take an optional `vault`. `phantab vaults status` shows each
+  provider's caps, pin and lock state, and sites named twice. Install has
+  `--add-sign-in-provider`, `--remove-sign-in-provider` and `--sign-in-save-to`. A config with one
+  provider answers exactly as before. A conformance kit and a fixture provider test any provider.
 
 ### Fixed
 - A stray gap of spaces in the "refused in every profile" error.

@@ -27,6 +27,7 @@ use sha2::Digest as _;
 
 use crate::extension_files::{self, Verdict};
 use crate::paths;
+use crate::signin::source;
 pub use drift::drift;
 
 /// The MCP entry's name when `--server-name` gives none.
@@ -501,12 +502,94 @@ fn set_sign_in_provider(config: &mut Map<String, Value>, raw: &str) -> Result<()
         // sec-creds-8: the service refuses a bare name, so a config with one would never sign in.
         bail!("--sign-in-provider: the program ({program}) must be an absolute path, never a name on PATH.");
     }
+    // With a list, the flag is the list's `default` entry, as the legacy value is read (docs/VAULTS.md).
+    if let Some(Value::Array(list)) = config.get_mut(source::LIST) {
+        let at = list.iter().position(|e| e["name"] == source::DEFAULT_NAME);
+        let entry = json!({ "name": source::DEFAULT_NAME, "command": command });
+        match (at, command.is_empty()) {
+            (Some(i), true) => drop(list.remove(i)),
+            (Some(i), false) => list[i] = entry,
+            (None, true) => {}
+            (None, false) => list.insert(0, entry),
+        }
+        return Ok(());
+    }
     if command.is_empty() {
         config.retain(|key, _| key != "signInProvider");
     } else {
         config.insert("signInProvider".to_owned(), json!({ "command": command }));
     }
     Ok(())
+}
+
+/// The sign-in provider flags, in this order: `--sign-in-provider`, each `--remove-sign-in-provider`,
+/// each `--add-sign-in-provider`, `--sign-in-save-to`. What they leave is checked as the service reads
+/// it, so a config the service would refuse is never written.
+fn set_sign_in_providers(config: &mut Map<String, Value>, args: &args::Args) -> Result<()> {
+    if let Some(raw) = &args.sign_in_provider {
+        set_sign_in_provider(config, raw)?;
+    }
+    for name in &args.remove_sign_in_providers {
+        let list = provider_list(config);
+        let before = list.len();
+        list.retain(|e| e["name"] != name.as_str());
+        if list.len() == before {
+            bail!("--remove-sign-in-provider: no sign-in provider is named {name:?}.");
+        }
+        if config.get(source::SAVE_TO).and_then(Value::as_str) == Some(name) {
+            config.remove(source::SAVE_TO);
+        }
+    }
+    for raw in &args.add_sign_in_providers {
+        let entry: Value = serde_json::from_str(raw)
+            .context("--add-sign-in-provider takes a JSON object (docs/VAULTS.md).")?;
+        let name = source::entry(&entry).map_err(|why| anyhow!("--add-sign-in-provider: {why}."))?.name;
+        let list = provider_list(config);
+        match list.iter().position(|e| e["name"] == name.as_str()) {
+            Some(i) => list[i] = entry,
+            None => list.push(entry),
+        }
+    }
+    match args.sign_in_save_to.as_deref() {
+        None => {}
+        Some("") => drop(config.remove(source::SAVE_TO)),
+        Some(name) => drop(config.insert(source::SAVE_TO.to_owned(), Value::String(name.to_owned()))),
+    }
+    if config.get(source::LIST).and_then(Value::as_array).is_some_and(Vec::is_empty) {
+        config.remove(source::LIST);
+    }
+    if config.contains_key(source::LIST) || config.contains_key(source::SAVE_TO) {
+        let read = json!({
+            source::LIST: config.get(source::LIST).cloned().unwrap_or(Value::Null),
+            source::SAVE_TO: config.get(source::SAVE_TO).cloned().unwrap_or(Value::Null),
+            source::LEGACY: config.get(source::LEGACY).cloned().unwrap_or(Value::Null),
+        });
+        source::entries(&read).map_err(|why| anyhow!("Sign-in providers: {why}."))?;
+    }
+    Ok(())
+}
+
+/// The config's `signInProviders` list, made from the legacy `signInProvider` (as the entry `default`,
+/// its known keys only) the first time a flag edits the list. A list that is not an array is replaced.
+fn provider_list(config: &mut Map<String, Value>) -> &mut Vec<Value> {
+    if !matches!(config.get(source::LIST), Some(Value::Array(_))) {
+        let mut list = Vec::new();
+        if let Some(Value::Object(legacy)) = config.remove(source::LEGACY) {
+            let mut entry: Map<String, Value> = legacy
+                .into_iter()
+                .filter(|(k, _)| ["source", "command", "bitwarden"].contains(&k.as_str()))
+                .collect();
+            if !entry.is_empty() {
+                entry.insert("name".to_owned(), json!(source::DEFAULT_NAME));
+                list.push(Value::Object(entry));
+            }
+        }
+        config.insert(source::LIST.to_owned(), Value::Array(list));
+    }
+    match config.get_mut(source::LIST) {
+        Some(Value::Array(list)) => list,
+        _ => unreachable!("an array was just put there"),
+    }
 }
 
 /// Install only: the runtime's config and the extension to copy.
@@ -539,9 +622,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
     let user_data_dir = check_binding(&config)?;
     let profiles = other_profiles(args, &mut config, &user_data_dir)?;
     config.insert("installedSource".to_owned(), Value::String(binary.to_owned()));
-    if let Some(raw) = &args.sign_in_provider {
-        set_sign_in_provider(&mut config, raw)?;
-    }
+    set_sign_in_providers(&mut config, args)?;
     let binary = std::fs::read(exe).with_context(|| format!("Could not read {}", exe.display()))?;
     let extension = extension_source(args.extension_dir.as_deref(), exe)?;
     // SR-74: the installed binary reinstalling from the installed folder itself (no --extension-dir) copies

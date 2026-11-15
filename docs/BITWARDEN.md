@@ -10,8 +10,9 @@ is a design note only (§ Phase 2).
 
 ## Sources
 
-A sign-in asks one `CredentialSource` (`crates/phantab/src/signin/source.rs`) for the values of one
-login:
+Which provider a call asks, and how several work together, is in `docs/VAULTS.md`; this document is the
+Bitwarden source's own part. A sign-in asks one `CredentialSource` (`crates/phantab/src/signin/source.rs`)
+for the values of one login:
 
 ```rust
 #[async_trait]
@@ -100,7 +101,8 @@ reaches a label or an error.
 ## Sign-up
 
 `browser_sign_up` (THREAT-MODEL SR-78, SR-79, SR-83) saves the new password here before
-anything is filled. Only this source creates: a command provider answers `no-provider-create` and
+anything is filled. Besides this source, only a pinned v2 command provider that declared `create` creates
+(`docs/VAULTS.md`); any other answers `no-provider-create` and
 starts nothing. `BitwardenSource::make` (`crates/phantab/src/signin/bitwarden/create.rs`), within the
 call's deadline as a sign-in is:
 

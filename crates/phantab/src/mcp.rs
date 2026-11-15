@@ -117,14 +117,14 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "sign_in",
-            "Sign in to the site on this page with its saved login, with no secret ever shown to you. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: snapshot to see where it landed. account picks one saved login by its exact name when status is ambiguous. Statuses: README.md of phantab.",
-            json!({ "pageId": s(), "account": s() }),
+            "Sign in to the site on this page with its saved login, with no secret ever shown to you. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: snapshot to see where it landed. account picks one saved login by its exact name when status is ambiguous. vault picks one of the owner's configured password managers by name; omit it to use them in the owner's order. Statuses: README.md of phantab.",
+            json!({ "pageId": s(), "account": s(), "vault": s() }),
             &["pageId"],
         ),
         (
             "sign_up",
-            "Make the site's new password for a sign-up the owner asked for: phantab creates and saves a strong password in the owner's Bitwarden for this site and fills it into the page's new-password fields, never showing it to you. Fill the form's other fields first; then press the site's own button yourself. Returns a status, never a secret. If a check appears after submit, use browser_wait/browser_show with verification true.",
-            json!({ "pageId": s(), "username": s(), "name": s(), "regenerate": { "type": "boolean" } }),
+            "Make the site's new password for a sign-up the owner asked for: phantab creates and saves a strong password in the owner's password manager for this site (the one vault names, else the owner's choice) and fills it into the page's new-password fields, never showing it to you. Fill the form's other fields first; then press the site's own button yourself. Returns a status, never a secret. If a check appears after submit, use browser_wait/browser_show with verification true.",
+            json!({ "pageId": s(), "username": s(), "name": s(), "regenerate": { "type": "boolean" }, "vault": s() }),
             &["pageId", "username"],
         ),
         (

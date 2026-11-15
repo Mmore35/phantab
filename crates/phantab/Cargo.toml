@@ -110,6 +110,14 @@ path = "tests/bin/fake_provider.rs"
 required-features = ["test-seams"]
 test = false
 
+# The stand-in password manager the provider tests drive (docs/VAULTS.md § Conformance kit): a v2
+# command provider over a vault file of made-up logins. Never a real vault.
+[[bin]]
+name = "phantab-fixture-provider"
+path = "tests/fixtures/fixture_provider.rs"
+required-features = ["test-seams"]
+test = false
+
 # The fake Bitwarden CLI the built-in Bitwarden source's tests drive (docs/BITWARDEN.md § Testing).
 [[bin]]
 name = "phantab-fake-bw"

@@ -241,8 +241,10 @@ Chrome. Install says so when the list changed.
 
 ## Saved logins
 `browser_sign_in` fills a saved login without the agent seeing it, from the built-in Bitwarden source
-(`docs/BITWARDEN.md`) or from a sign-in provider command you configure. `browser_sign_up` makes a new
-login in Bitwarden and fills a sign-up form with it (§ When an agent makes an account for you).
+(`docs/BITWARDEN.md`) or from a sign-in provider command you configure: any password manager, and several
+at once (`docs/VAULTS.md`). `browser_sign_up` makes a new login in Bitwarden, or in a provider that
+declares it can, and fills a sign-up form with it (§ When an agent makes an account for you).
+`phantab vaults status` shows the providers configured, never a value.
 
 ## Questions
 **Does the agent get my existing logins?** Yes. It works in your own Chrome profile, so any site you
@@ -270,6 +272,7 @@ Other browsers are not supported.
 - `docs/GUARDRAILS.md`: what each guardrails mode asks for.
 - `docs/THREAT-MODEL.md`: assets, attackers, requirements and residual risks.
 - `docs/SECURITY-AUDIT-2026-11.md`: a security audit and its open findings.
+- `docs/VAULTS.md`: sign-in providers, several at once, and writing one.
 - `docs/BITWARDEN.md`: the built-in Bitwarden source.
 - `docs/REMOTE.md`: doing a human check (a CAPTCHA, for example) from your phone or another computer.
 - `docs/WORK-LAPTOP.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.

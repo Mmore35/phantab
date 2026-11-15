@@ -82,6 +82,11 @@ pub(crate) struct BitwardenSource {
 }
 
 impl BitwardenSource {
+    /// Lookup, one-time codes and sign-up saves. Passkey release is not answered until passkey sign-in is
+    /// built (docs/VAULTS.md § Capabilities).
+    pub(crate) const CAPS: super::caps::Caps =
+        super::caps::Caps::LOOKUP.with(super::caps::Caps::TOTP).with(super::caps::Caps::CREATE);
+
     pub(crate) fn new(config: Config, vault: Box<dyn SessionVault>) -> Self {
         BitwardenSource { config, vault: Arc::from(vault) }
     }
@@ -232,6 +237,10 @@ fn take(item: &mut Value, pointer: &str) -> Option<Secret> {
 
 #[async_trait]
 impl CredentialSource for BitwardenSource {
+    fn caps(&self) -> super::caps::Caps {
+        Self::CAPS
+    }
+
     async fn ask(&self, request: &Request, budget: Duration) -> Answer {
         self.decide(request, Instant::now() + budget).await.unwrap_or_else(Answer::Not)
     }

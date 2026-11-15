@@ -111,6 +111,8 @@ struct Asks {
     username: String,
     name: Option<String>,
     regenerate: bool,
+    /// The provider the agent named (`vault`), never a secret.
+    vault: Option<String>,
 }
 
 fn asks(args: &Value) -> Result<Asks, EngineError> {
@@ -128,7 +130,8 @@ fn asks(args: &Value) -> Result<Asks, EngineError> {
         })?),
     };
     let regenerate = args.get("regenerate").and_then(Value::as_bool) == Some(true);
-    Ok(Asks { username: username.to_owned(), name, regenerate })
+    let vault = source::vault_arg(args).map_err(EngineError)?.map(str::to_owned);
+    Ok(Asks { username: username.to_owned(), name, regenerate, vault })
 }
 
 /// UTC `YYYY-MM-DD` (Howard Hinnant's `civil_from_days`).
@@ -255,7 +258,7 @@ async fn run(
     let source: &dyn CredentialSource = if let Some(s) = given {
         s
     } else {
-        opened = source::open(host.provider().as_ref(), &host.bitwarden_dir());
+        opened = source::open_for(host.provider().as_ref(), &host.bitwarden_dir(), asks.vault.as_deref());
         opened.as_ref()
     };
     let left = (start + ms(t.fill_by_ms)).saturating_duration_since(Instant::now());

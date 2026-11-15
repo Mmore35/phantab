@@ -145,6 +145,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T52 | The site echoes the value into the URL or page text. | SR-45 | L3 |
 | T53 | Values cross native messaging and loopback in plain JSON. | SR-47; rest is residual R5 | L3 |
 | T90 | A sign-up's new password is exposed while it waits on the page: the agent invents it, it is filled before the vault holds it, it fills another site or a reused login, the page copies it into another field, its address or its text, a show-password toggle reveals it, a screenshot shows it, or a result, log or record holds it. | SR-78 to SR-83; SR-47 and residual R5 for the way to the page | L1, L3 |
+| T91 | With several providers (`docs/VAULTS.md`), a second vault overrules an owner's no in the first, a held account key goes to a vault that did not issue it, a swapped provider program is sent a sign-up's password, a sign-up password is written to two vaults, or a provider's answer carries fields the protocol does not name. | SR-84 to SR-87 | L1, L3 |
 
 ### B8: installer, client configs and registry
 
@@ -944,8 +945,8 @@ they apply; these are its own.
   a read-back that holds the same password and username, compared in constant time, is filled; a
   failed write or a read-back that differs fills nothing. `regenerate` replaces the saved login's
   password in place (its id unchanged), keeping the rest of the login. Ask-first applies to the
-  create. Only the built-in Bitwarden source creates; a command provider answers `no-provider-create`
-  and starts nothing. *L1: the generator's alphabet, classes, lengths and rules; L3: the fake `bw`'s
+  create. The built-in Bitwarden source and a pinned v2 command provider that declared `create`
+  (SR-85, SR-87) create; any other provider answers `no-provider-create` and starts nothing. *L1: the generator's alphabet, classes, lengths and rules; L3: the fake `bw`'s
   create, edit, read-back, failures and ask-first.*
 - **SR-79** It fills only the page's origin: every URL above the form and every place it sends to is
   `https`, every ancestor frame is the form's origin, and every action goes to the page's host or a
@@ -978,6 +979,32 @@ they apply; these are its own.
   environment, in a buffer allocated once at its final size and zeroized, and `bw`'s output of the
   item is wiped once read. *L1: the label; L3: the fake's log and argv hold no password; L4: the
   sentinel check on every result.*
+
+### Several sign-in providers
+- **SR-84** The provider list fails closed. A list that does not check (a duplicate or bad name, an
+  unknown key or source, two Bitwarden sources, caps without a pin, a site that is not an `https`
+  origin, a `signInSaveTo` that cannot create) makes every call `provider-failed`, and install refuses
+  to write one. A sign-in asks the allowed providers in config order. Only `none`, `locked`, `busy`
+  and `provider-failed` fall through; `refused`, `ask-first`, `wall` and `ambiguous` stop the chain,
+  so no second vault overrules an owner's no. Matches are never merged across vaults. A sign-up saves
+  to exactly one provider that declared `create`, and one that fails is the answer. The agent's
+  `vault` names a provider, never a secret, and an unknown one is `provider-failed`. *L1: every status
+  pair, the budget, the save target; L3: the chain over two fixture vaults (`tests/signin_chain.rs`).*
+- **SR-85** A command provider that declares caps must be pinned. Its program, and any argument that
+  is a file it runs, is held open and hashed before every run, then started from the held file. A
+  file that is missing or changed answers `provider-failed` and starts nothing. A sign-up's password
+  goes only to a pinned provider, on stdin. `phantab vaults status` shows each pin's state, never a
+  path. *L1: the pin's parse; L3: a changed and a missing program over the fixture.*
+- **SR-86** Account keys are namespaced per provider. A key from any provider but the bare one (the
+  `default` entry, else the Bitwarden source) is returned as `<name>:<key>`, and a held key goes back
+  only to the provider that issued it. A bare provider's key that reads as another provider's
+  namespaced key is `provider-failed`. *L1: key routing; L3: a held key never reaches another vault.*
+- **SR-87** Protocol v2 is negotiated by the config, never by the provider. A provider with no caps is
+  sent v1 sign-ins only, byte for byte as before. One with caps is sent `"v":2` and only the
+  operations its caps allow. A v2 answer with a key the protocol does not name is `provider-failed`,
+  whether the key is outside the seal, inside it, among the values or on a plain answer. Sealed
+  answers are bound to the SHA-256 of the exact request bytes. *L1: the strict reader; L3: the
+  conformance kit (`tests/provider_conformance.rs`), with its canary leak test.*
 
 ### Installer
 - **SR-48** The binary that the service, MCP server and native host run from sits in a folder that

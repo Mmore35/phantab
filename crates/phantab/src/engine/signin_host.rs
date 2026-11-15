@@ -112,7 +112,7 @@ impl Host for Engine {
     }
 
     fn provider(&self) -> Option<Value> {
-        self.setup.config.sign_in_provider.clone()
+        crate::signin::source::provider_config(&self.setup.config)
     }
 
     /// The sign-in limits and stops are a `guardrails: full` guard (`docs/GUARDRAILS.md`); otherwise no

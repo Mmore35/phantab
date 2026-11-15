@@ -468,7 +468,7 @@ fn ends_with(path: &Path, suffix: &str) -> bool {
 /// the handle, so no link on the configured path is followed again; on unix it is the configured path,
 /// resolved, and refused unless it names the open file: a link repointed after the open would otherwise
 /// start another one.
-fn run_path(path: &Path, held: &HeldFile) -> std::io::Result<PathBuf> {
+pub(crate) fn run_path(path: &Path, held: &HeldFile) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     let resolved = held.final_path().ok_or_else(|| {
         std::io::Error::other(format!("Windows cannot say which file {} opened", escaped(path)))
@@ -686,7 +686,7 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, (Stamp, Hashed)>> {
 /// delete it while it is open, and the loader's and Node's own opens, which read, still can), with the
 /// SHA-256 of what it holds in lower-case hex and its first [`MAGIC_LEN`] bytes. Anything but a regular
 /// file is refused.
-fn hashed(path: &Path) -> std::io::Result<(HeldFile, String, Vec<u8>)> {
+pub(crate) fn hashed(path: &Path) -> std::io::Result<(HeldFile, String, Vec<u8>)> {
     let refuse_kind = || refuse(&format!("{} is not a file", escaped(path)));
     if !std::fs::metadata(path)?.is_file() {
         return Err(refuse_kind());

@@ -1001,7 +1001,11 @@ async fn run(host: &dyn Host, r: &dyn SignInRecord, args: &Value, start: Instant
     let account = args.get("account").and_then(Value::as_str).filter(|a| !a.is_empty()).map(str::to_owned);
     let request = Request { urls, account, account_key: held.clone(), want };
     let left = (start + ms(t.fill_by_ms)).saturating_duration_since(Instant::now());
-    let source = source::open(host.provider().as_ref(), &host.bitwarden_dir());
+    let source = source::open_for(
+        host.provider().as_ref(),
+        &host.bitwarden_dir(),
+        source::vault_arg(args).ok().flatten(),
+    );
     let (values, key) = match source.ask(&request, ms(t.provider_ms).min(left)).await {
         Answer::Ok { values, account_key } => (values, account_key),
         Answer::Not(outcome) => return Ok(outcome),
@@ -1097,6 +1101,7 @@ impl Drop for Running {
 /// `Unknown page or page belongs to another agent session.`, or the engine's lock error.
 pub async fn sign_in(host: &dyn Host, client: &str, args: &Value) -> EngineResult {
     let page_id = args.get("pageId").unwrap_or(&Value::Null);
+    source::vault_arg(args).map_err(EngineError)?;
     let Some(r) = host.record(page_id, client) else {
         return Err(EngineError("Unknown page or page belongs to another agent session.".into()));
     };
