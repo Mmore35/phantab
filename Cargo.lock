@@ -957,7 +957,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phantab"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "phantab-cdp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1019,14 +1019,14 @@ dependencies = [
 
 [[package]]
 name = "phantab-testkit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "phantab-window"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "core-foundation",

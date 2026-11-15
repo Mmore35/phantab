@@ -3,7 +3,8 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
-## Unreleased
+## 0.5.0 (2026-11-15)
+Faster, cheaper agent tasks, and no "started debugging this browser" bar.
 
 ### Changed
 - A `browser_act` click, fill or select whose selector matches nothing on a loaded page now fails once

@@ -192,7 +192,9 @@ What that means:
   the last change is caught.
 - Before merging, `scripts/check.sh` on Windows and `scripts/check.sh --chrome --real-extension` on
   macOS must both end `RESULT: PASSED` at the PR's head. A Mac that goes to sleep stalls the run until
-  it wakes; gate-heads.sh runs the job under `caffeinate`.
+  it wakes; gate-heads.sh runs the job under `caffeinate`, which keeps a Mac awake only on AC power. A
+  MacBook on battery with its lid closed still sleeps, waking for about 30 s every 15 to 18 minutes, and a
+  gate run then crawls: plug it in before starting one.
 - No check sees whether the extension's agent window is drawn on screen: lane 4 reads the state Chrome
   reports, and `trials/mac/observe.mjs` drives Chrome through raw CDP without the extension. After a
   change to the agent window on macOS (the extension's hide, show, keepMinimized or close), watch the
