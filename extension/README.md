@@ -47,7 +47,7 @@ Native messaging: JSON messages, each way.
 - On connect the extension sends `{hello: {version, protocol: 1, instance, profile?}}`. `instance` is a
   fresh UUID per worker, so the service can tell a reconnect from a second instance in the same profile.
   `profile` is the Chrome profile folder named in the extension's own `profile.json`, which
-  `phantab install --add-profile` writes into each extra profile's copy
+  `phantab install` writes into each extra profile's copy
   (`runtime/extension-profiles/<folder>/extension/`); the usual profile's copy has none, and its hello has no
   `profile`. The worker reads it before its first connect, so no hello goes out without it. The service
   trusts it only after checking that profile lists the bridge from exactly that copy's folder.

@@ -121,6 +121,14 @@ impl Fixture {
         serde_json::from_slice(&std::fs::read(self.runtime.join("config.json")).unwrap()).unwrap()
     }
 
+    /// Chrome profile `folder` lists the bridge, loaded from `copy`, as Chrome writes it once the owner
+    /// loads it at `chrome://extensions`.
+    fn loads_bridge(&self, folder: &str, copy: &Path) {
+        let id = phantab::bridge::EXTENSION_ID.as_str();
+        let prefs = json!({ "extensions": { "settings": { id: { "path": copy, "location": 4 } } } });
+        std::fs::write(self.browser.join(folder).join("Secure Preferences"), prefs.to_string()).unwrap();
+    }
+
     fn record(&self) -> Value {
         serde_json::from_slice(&std::fs::read(self.runtime.join("registration-v2.json")).unwrap()).unwrap()
     }
@@ -1270,7 +1278,7 @@ fn add_profile_installs_a_recorded_copy_and_remove_profile_takes_it_away() {
     let copy = |folder: &str| world.runtime.join("extension-profiles").join(folder).join("extension");
     let drift = || phantab::install::drift(&world.runtime).unwrap();
 
-    let out = world.run(&world.argv(&["--add-profile", "work"])).unwrap();
+    let out = world.run(&world.argv(&["--all-profiles", "off", "--add-profile", "work"])).unwrap();
     assert_eq!(world.config()["otherProfiles"], json!(["Profile 1"]));
     assert_eq!(
         std::fs::read(copy("Profile 1").join("profile.json")).unwrap(),
@@ -1343,6 +1351,8 @@ fn add_profile_installs_a_recorded_copy_and_remove_profile_takes_it_away() {
     std::fs::remove_file(world.extension.join("profile.json")).unwrap();
     assert_eq!(world.files(), before, "the refusals write nothing");
 
+    // The owner loaded Work's copy, so leaving Work says to remove it there (SR-76's stray copy).
+    world.loads_bridge("Profile 1", &copy("Profile 1"));
     let out = world.run(&world.argv(&["--add-profile", "Profile 5", "--remove-profile", "Work"])).unwrap();
     assert_eq!(world.config()["otherProfiles"], json!(["Profile 5"]));
     assert!(!world.runtime.join("extension-profiles").join("Profile 1").exists(), "copy and record removed");
@@ -1354,4 +1364,123 @@ fn add_profile_installs_a_recorded_copy_and_remove_profile_takes_it_away() {
     assert_eq!(world.config().get("otherProfiles"), None, "an empty list is no key");
     assert!(!world.runtime.join("extension-profiles").join("Profile 5").exists());
     assert_eq!(drift(), Vec::<String>::new());
+}
+
+/// SR-76, `--all-profiles on` (the default): every profile folder but the usual one is allowed, and an
+/// install from before it (an `otherProfiles` list, no `allProfiles` key) turns it on. `--remove-profile`
+/// leaves one out (`excludeProfiles`), `--add-profile` takes it back, a new profile joins at the next
+/// install, and `--all-profiles off` keeps the list as it stands. Guest and System profiles never join.
+/// The owner is told to load a copy only where the bridge is not loaded yet, to reload it where it is,
+/// and to remove it only from a profile left out that had loaded it.
+#[test]
+fn every_profile_is_allowed_by_default_but_those_left_out() {
+    let world = Fixture::new("allprofiles").with_runtime("1");
+    for folder in ["Profile 1", "Profile 5", "Guest Profile", "System Profile"] {
+        std::fs::create_dir_all(world.browser.join(folder)).unwrap();
+        std::fs::write(world.browser.join(folder).join("Preferences"), "{}").unwrap();
+    }
+    let state = json!({ "profile": { "info_cache": {
+        "Default": { "name": "Person 1" },
+        "Profile 1": { "name": "Remi" },
+        "Profile 5": { "name": "Barry" },
+    } } });
+    std::fs::write(world.browser.join("Local State"), state.to_string()).unwrap();
+    let copy = |folder: &str| world.runtime.join("extension-profiles").join(folder).join("extension");
+    let new_profile = |folder: &str| {
+        std::fs::create_dir_all(world.browser.join(folder)).unwrap();
+        std::fs::write(world.browser.join(folder).join("Preferences"), "{}").unwrap();
+    };
+    let restart = "The allowed Chrome profiles changed: restart only the phantab service";
+    let load =
+        |label: &str| format!("in Chrome profile {label} open chrome://extensions, turn on Developer mode");
+    let leave = |label: &str| format!("in Chrome profile {label} remove the phantab bridge");
+
+    // An install from #35's named-only days, with Remi named and loaded: the next install turns on.
+    let config_path = world.runtime.join("config.json");
+    let mut config = world.config();
+    config["otherProfiles"] = json!(["Profile 1"]);
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    world.loads_bridge("Profile 1", &copy("Profile 1"));
+    let out = world.run(&world.argv(&[])).unwrap();
+    assert_eq!(world.config()["otherProfiles"], json!(["Profile 1", "Profile 5"]));
+    assert_eq!(world.config().get("allProfiles"), None, "on is the default, no key");
+    assert_eq!(world.config().get("excludeProfiles"), None);
+    assert!(
+        copy("Profile 1").join("profile.json").is_file() && copy("Profile 5").join("profile.json").is_file()
+    );
+    assert!(
+        out.contains(
+            "Other Chrome profiles agents may use: Remi (Profile 1), Barry (Profile 5) (every profile but the usual one; a new one joins at the next phantab install)."
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("in Chrome profile Remi (Profile 1) click the phantab bridge's reload button"),
+        "Remi loaded it already: {out}"
+    );
+    assert!(!out.contains(&load("Remi (Profile 1)")), "{out}");
+    assert!(
+        out.contains(&load("Barry (Profile 5)")) && out.contains(&copy("Profile 5").display().to_string()),
+        "{out}"
+    );
+    assert!(out.contains(restart), "{out}");
+
+    // Leaving out Barry, who never loaded it, needs no removal there.
+    let out = world.run(&world.argv(&["--remove-profile", "Barry"])).unwrap();
+    assert_eq!(world.config()["otherProfiles"], json!(["Profile 1"]));
+    assert_eq!(world.config()["excludeProfiles"], json!(["Profile 5"]));
+    assert!(!world.runtime.join("extension-profiles").join("Profile 5").exists());
+    assert!(
+        out.contains("Remi (Profile 1) (every profile but the usual one; left out: Barry (Profile 5);"),
+        "{out}"
+    );
+    assert!(!out.contains(&leave("Barry (Profile 5)")) && out.contains(restart), "{out}");
+
+    new_profile("Profile 7");
+    let out = world.run(&world.argv(&[])).unwrap();
+    assert_eq!(
+        world.config()["otherProfiles"],
+        json!(["Profile 1", "Profile 7"]),
+        "a new profile joins, Barry stays out"
+    );
+    assert!(out.contains(&load("Profile 7")), "{out}");
+
+    // Leaving out Remi, who loaded it, says to remove it there.
+    let out = world.run(&world.argv(&["--remove-profile", "remi", "--add-profile", "Barry"])).unwrap();
+    assert_eq!(world.config()["otherProfiles"], json!(["Profile 5", "Profile 7"]));
+    assert_eq!(world.config()["excludeProfiles"], json!(["Profile 1"]));
+    assert!(out.contains(&leave("Remi (Profile 1)")), "{out}");
+    world.run(&world.argv(&["--add-profile", "Profile 1"])).unwrap();
+    assert_eq!(world.config()["otherProfiles"], json!(["Profile 1", "Profile 5", "Profile 7"]));
+    assert_eq!(world.config().get("excludeProfiles"), None, "an empty leave-out list is no key");
+
+    let out = world.run(&world.argv(&["--all-profiles", "off"])).unwrap();
+    assert_eq!(world.config()["allProfiles"], json!(false));
+    assert!(out.contains("(only those named with --add-profile)") && !out.contains(restart), "{out}");
+    new_profile("Profile 8");
+    world.run(&world.argv(&[])).unwrap();
+    assert_eq!(
+        world.config()["otherProfiles"],
+        json!(["Profile 1", "Profile 5", "Profile 7"]),
+        "off: no pick-up"
+    );
+    world.run(&world.argv(&["--all-profiles", "on"])).unwrap();
+    assert_eq!(world.config()["otherProfiles"], json!(["Profile 1", "Profile 5", "Profile 7", "Profile 8"]));
+    assert_eq!(world.config().get("allProfiles"), None);
+
+    let before = world.files();
+    for (args, needle) in [
+        (
+            ["--remove-profile", "Person 1"],
+            "--remove-profile: Person 1 is the usual Chrome profile (Default)",
+        ),
+        (["--add-profile", "Default"], "--add-profile: Default is the usual Chrome profile (Default)"),
+        (["--remove-profile", "Guest Profile"], "--remove-profile: Unknown Chrome profile Guest Profile"),
+        (["--remove-profile", "Nobody"], "--remove-profile: Unknown Chrome profile Nobody"),
+    ] {
+        let error = world.run(&world.argv(&args)).unwrap_err().to_string();
+        assert!(error.contains(needle), "{args:?}: {error}");
+    }
+    assert_eq!(world.files(), before, "the refusals write nothing");
+    assert_eq!(phantab::install::drift(&world.runtime).unwrap(), Vec::<String>::new());
 }

@@ -1,5 +1,6 @@
 //! Chrome profiles other than the usual one (THREAT-MODEL SR-76). The installer allows each by its folder
-//! (`config.json` `otherProfiles`) and puts a copy of the bridge for it at
+//! (`config.json` `otherProfiles`: by default every profile but those the owner left out) and puts a copy
+//! of the bridge for it at
 //! `runtime/extension-profiles/<folder>/extension`; a call names one with `profile` (its folder, or Chrome's name for
 //! it). Every page lives in one profile for life, and everything about a page goes over that profile's link.
 
@@ -73,12 +74,51 @@ impl Engine {
         let usual = self.usual_folder();
         let allowed: Vec<&str> = std::iter::once(usual).chain(others.iter().map(String::as_str)).collect();
         let names = self.profile_names();
-        let folder = bridge::resolve_profile(&names, &allowed, arg).map_err(EngineError)?;
+        let folder =
+            bridge::resolve_profile(&names, &allowed, arg).map_err(|e| self.not_allowed(&names, arg, e))?;
         if folder == usual {
             return Ok(Target::usual());
         }
         let name = names.into_iter().find(|(f, _)| *f == folder).map_or_else(|| folder.clone(), |(_, n)| n);
         Ok(Target { profile: Arc::from(folder), name: Some(name) })
+    }
+
+    /// Why `arg` names no allowed profile, when it names a real one: left out by the owner
+    /// (`excludeProfiles`), or not in the list this service read at its start (made since the last install,
+    /// or `allProfiles: false` and never named). Otherwise `unknown`, the resolver's own answer. The
+    /// service never widens its list itself: that is the installer's, read once at start (SR-76).
+    fn not_allowed(&self, names: &[(String, String)], arg: &str, unknown: String) -> EngineError {
+        let Some(dir) = self.setup.config.user_data_dir.as_deref() else { return EngineError(unknown) };
+        let found = crate::install::discover::profiles(dir);
+        let real: Vec<&str> =
+            found.iter().map(String::as_str).filter(|f| paths::valid_profile_dir(f)).collect();
+        let Ok(folder) = bridge::resolve_profile(names, &real, arg) else { return EngineError(unknown) };
+        let label = match names.iter().find(|(f, _)| *f == folder) {
+            Some((_, name)) => format!("{name} ({folder})"),
+            None => folder.clone(),
+        };
+        let listed = |key: &str| {
+            self.setup
+                .config
+                .other
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(|a| a.iter().any(|v| v == folder.as_str()))
+        };
+        let restart = "then restart only the phantab service once its pages are drained; never close Chrome";
+        if listed("excludeProfiles") {
+            return EngineError(format!(
+                "Chrome profile {label} is left out of the profiles agents may use. The owner brings it back with phantab install --add-profile \"{folder}\", {restart}."
+            ));
+        }
+        let how = if self.setup.config.other.get("allProfiles") == Some(&Value::Bool(false)) {
+            format!("phantab install --add-profile \"{folder}\"")
+        } else {
+            "phantab install (it picks up every profile but those left out)".to_owned()
+        };
+        EngineError(format!(
+            "Chrome profile {label} is not one this phantab service allows yet. The owner runs {how}, {restart}."
+        ))
     }
 
     /// [`Engine::target`] for `open`: an isolated-headless page runs in no Chrome profile.
@@ -149,6 +189,26 @@ impl Engine {
             return Ok(());
         }
         let label = self.profile_label(profile);
+        // A profile whose owner never loaded its copy of the bridge is not started, and under `full` the
+        // owner is not sent to open it: nothing there could answer, and a started one would run without a
+        // window for nothing. Loading the copy by hand is the owner's consent for that profile (SR-76).
+        let listed = match self.setup.config.user_data_dir.clone() {
+            Some(dir) => {
+                let folder = self.folder(profile).to_owned();
+                tokio::task::spawn_blocking(move || {
+                    bridge::lists_extension(&dir, &folder, &bridge::EXTENSION_ID)
+                })
+                .await
+                .unwrap_or(false)
+            }
+            None => false,
+        };
+        if !listed {
+            return Err(EngineError(format!(
+                "Chrome profile {label} has no phantab bridge loaded, so phantab does not start or use it. The owner loads it once: in that profile open chrome://extensions, turn on Developer mode and Load unpacked {}.",
+                paths::profile_extension_dir_in(&self.setup.runtime, profile).display()
+            )));
+        }
         if self.guardrails().full() {
             if bridge.wait_connected_in(profile, OPEN_WAIT).await {
                 return Ok(());

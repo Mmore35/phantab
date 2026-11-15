@@ -291,6 +291,18 @@ fn fixture_profiles(
     others: &[&str],
     start: Option<Starter>,
 ) -> Fixture {
+    fixture_profiles_with(windows, remote_base, guardrails, others, start, |_, _| {})
+}
+
+/// [`fixture_profiles`], with `edit` given the user-data dir and the config before the engine is made.
+fn fixture_profiles_with(
+    windows: Recording,
+    remote_base: Option<String>,
+    guardrails: Option<&str>,
+    others: &[&str],
+    start: Option<Starter>,
+    edit: impl FnOnce(&std::path::Path, &mut Config),
+) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     for other in others {
         let copy = crate::paths::profile_extension_dir_in(dir.path(), other);
@@ -317,6 +329,7 @@ fn fixture_profiles(
     if let Some(g) = guardrails {
         config.other.insert("guardrails".to_owned(), json!(g));
     }
+    edit(dir.path(), &mut config);
     let bridge = Arc::new(Bridge::with_profiles(others.iter().map(|o| (*o).to_owned()).collect()));
     let start_profile = match start {
         Some(start) => start(Arc::clone(&bridge)),
@@ -2013,6 +2026,104 @@ async fn a_closed_profile_is_started_without_a_window_and_used_once_its_link_is_
     );
     e.tabs(&json!({ "profile": "Profile 3" })).await.unwrap();
     assert_eq!(e.st().checks.len(), 1, "only the profile asked for was checked");
+}
+
+/// SR-76: an allowed profile whose Preferences never list the bridge is not started, and under `full` the
+/// owner is not sent to open it: loading its copy is the owner's step for that profile, and nothing else
+/// there could answer.
+#[tokio::test(start_paused = true)]
+async fn a_closed_profile_that_never_loaded_the_bridge_is_not_started() {
+    for guardrails in [None, Some("light"), Some("full")] {
+        let calls = Arc::new(AtomicU32::new(0));
+        let start: Starter = {
+            let calls = Arc::clone(&calls);
+            Box::new(move |_| {
+                crate::engine_api::StartProfile(Arc::new(move |_, _| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }))
+            })
+        };
+        let f = fixture_profiles_with(
+            Recording::new(),
+            None,
+            guardrails,
+            &["Profile 2"],
+            Some(start),
+            |dir, _| {
+                std::fs::write(dir.join("Profile 2").join("Preferences"), "{}").unwrap();
+            },
+        );
+        let began = tokio::time::Instant::now();
+        let error = err(f.engine.tabs(&json!({ "profile": "Work" })).await);
+        let copy = crate::paths::profile_extension_dir_in(&f.engine.setup.runtime, "Profile 2");
+        assert_eq!(
+            error,
+            format!(
+                "Chrome profile Work (Profile 2) has no phantab bridge loaded, so phantab does not start or use it. The owner loads it once: in that profile open chrome://extensions, turn on Developer mode and Load unpacked {}.",
+                copy.display()
+            ),
+            "{guardrails:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "{guardrails:?}: nothing was started");
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "{guardrails:?}: answered at once, without waiting"
+        );
+    }
+}
+
+/// SR-76: a real profile the service does not allow says why, and the service never widens its list:
+/// one left out (`excludeProfiles`) says how it comes back; one made since the last install, or never
+/// named under `allProfiles: false`, says which install picks it up. A name no profile has stays unknown.
+#[tokio::test]
+async fn a_profile_the_service_does_not_allow_says_why() {
+    let make = |extra: serde_json::Map<String, Value>| {
+        fixture_profiles_with(Recording::new(), None, None, &["Profile 2"], None, move |dir, config| {
+            std::fs::create_dir(dir.join("Profile 3")).unwrap();
+            std::fs::write(dir.join("Profile 3").join("Preferences"), "{}").unwrap();
+            std::fs::create_dir(dir.join("Guest Profile")).unwrap();
+            std::fs::write(dir.join("Guest Profile").join("Preferences"), "{}").unwrap();
+            let names = json!({ "profile": { "info_cache": {
+                "P": { "name": "Person 1" }, "Profile 2": { "name": "Work" }, "Profile 3": { "name": "Barry" },
+            } } });
+            std::fs::write(dir.join("Local State"), names.to_string()).unwrap();
+            config.other.extend(extra);
+        })
+    };
+    let restart = "then restart only the phantab service once its pages are drained; never close Chrome.";
+
+    let f = make(serde_json::Map::from_iter([("excludeProfiles".to_owned(), json!(["Profile 3"]))]));
+    assert_eq!(
+        err(f.engine.target(&json!({ "profile": "barry" }))),
+        format!(
+            "Chrome profile Barry (Profile 3) is left out of the profiles agents may use. The owner brings it back with phantab install --add-profile \"Profile 3\", {restart}"
+        )
+    );
+
+    let f = make(serde_json::Map::new());
+    assert_eq!(
+        err(f.engine.target(&json!({ "profile": "Profile 3" }))),
+        format!(
+            "Chrome profile Barry (Profile 3) is not one this phantab service allows yet. The owner runs phantab install (it picks up every profile but those left out), {restart}"
+        )
+    );
+    let unknown = err(f.engine.target(&json!({ "profile": "Guest Profile" })));
+    assert!(
+        unknown.starts_with("Unknown Chrome profile Guest Profile. Allowed: "),
+        "never a Guest profile: {unknown}"
+    );
+    let unknown = err(f.engine.target(&json!({ "profile": "Nobody" })));
+    assert!(unknown.starts_with("Unknown Chrome profile Nobody. Allowed: "), "{unknown}");
+
+    let f = make(serde_json::Map::from_iter([("allProfiles".to_owned(), json!(false))]));
+    assert_eq!(
+        err(f.engine.target(&json!({ "profile": "Barry" }))),
+        format!(
+            "Chrome profile Barry (Profile 3) is not one this phantab service allows yet. The owner runs phantab install --add-profile \"Profile 3\", {restart}"
+        )
+    );
+    assert_eq!(f.engine.target(&json!({ "profile": "Work" })).unwrap().profile.as_ref(), "Profile 2");
 }
 
 /// SR-76, guardrails `full`: phantab never starts a profile; it waits for the owner to open one, then

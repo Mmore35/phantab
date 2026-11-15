@@ -28,7 +28,9 @@ pub struct Config {
     pub profile_directory: Option<String>,
     /// Chrome profile folders besides `profileDirectory` that agents may reach when they name one,
     /// each through its own copy of the bridge (`paths::profile_extension_dir`). Written by
-    /// `phantab install --add-profile` / `--remove-profile`; absent means the usual profile only.
+    /// `phantab install`: by default every profile folder but the usual one and `excludeProfiles`, or under
+    /// `allProfiles: false` those named with `--add-profile`. Absent means the usual profile only. The
+    /// service reads only this list, once at its start (SR-76).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub other_profiles: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -3,6 +3,26 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
+## Unreleased
+
+### Changed
+- Install allows every Chrome profile, not only the ones named with `--add-profile`. Each profile gets
+  its own copy of the bridge, and agents can use it once you load that copy there at
+  chrome://extensions. `--remove-profile` now leaves a profile out (a leave-out list later installs
+  keep), `--add-profile` brings it back, and a profile made later joins at the next install.
+  `--all-profiles off` returns to only the profiles you name. An install from before this turns it on
+  at its next run. Install now prints the load step only for profiles that have not loaded the bridge,
+  a reload step for those that have, and the removal step only for a profile left out that had loaded
+  it.
+
+### Added
+- phantab no longer starts a closed profile where the bridge was never loaded, nor waits for you to
+  open one under `guardrails: full`: the call says how to load it. A call naming a profile that is left
+  out, or one made since the last install, says so and names the install command that changes it.
+
+### Fixed
+- A stray gap of spaces in the "refused in every profile" error.
+
 ## 0.5.0 (2026-11-15)
 Faster, cheaper agent tasks, and no "started debugging this browser" bar.
 

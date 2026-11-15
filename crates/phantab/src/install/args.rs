@@ -13,10 +13,15 @@ Browser binding (first install needs all three; later installs keep them):
   --profile <dir name>              the Chrome profile folder inside the user-data dir (\"Default\", \"Profile 1\")
   --user-data-dir <dir>             Chrome's user-data dir (default: Chrome's own, when it exists)
   --chrome <exe>                    the Chrome executable (default: the installed Google Chrome)
-Other Chrome profiles agents may use too (kept by later installs):
-  --add-profile <name or dir>       allow another profile, by Chrome's name for it (\"Work\") or its folder
-                                    (\"Profile 1\"), and install a copy of the bridge for it; repeatable
-  --remove-profile <name or dir>    stop allowing one and remove its copy; repeatable
+Other Chrome profiles agents may use too (kept by later installs; each needs its copy of the bridge
+loaded once, by hand, at chrome://extensions in that profile):
+  --all-profiles on|off             on (the default): every profile in the user-data dir but the usual one
+                                    and those left out, a new one joining at the next install; off: only
+                                    those named with --add-profile
+  --add-profile <name or dir>       on: take one back off the leave-out list; off: allow it. By Chrome's
+                                    name for it (\"Work\") or its folder (\"Profile 1\"); repeatable
+  --remove-profile <name or dir>    on: leave one out; off: stop allowing it. Its copy is removed;
+                                    repeatable
 Other:
   --runtime <dir>                   runtime dir (default: PHANTAB_RUNTIME, else the per-user default)
   --server-name <name>              the MCP entry's name in both clients (default: phantab)
@@ -51,6 +56,7 @@ pub(crate) struct Args {
     pub extension_dir: Option<PathBuf>,
     pub add_profiles: Vec<String>,
     pub remove_profiles: Vec<String>,
+    pub all_profiles: Option<bool>,
     /// Tests only (Windows): the HKCU key that registers the native host, instead of Chrome's.
     pub native_host_key: Option<String>,
     pub help: bool,
@@ -106,6 +112,13 @@ pub(crate) fn parse(words: &[String]) -> Result<Args, String> {
                     other => return Err(format!("--quiet-debugging takes on or off, not {other:?}")),
                 });
             }
+            "all-profiles" => {
+                args.all_profiles = Some(match value(name)?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--all-profiles takes on or off, not {other:?}")),
+                });
+            }
             "run-key" => args.run_key = Some(value(name)?),
             "shortcut-dir" => args.shortcut_dirs.get_or_insert_with(Vec::new).push(value(name)?.into()),
             "launch-agents-dir" => args.launch_agents_dir = Some(value(name)?.into()),
@@ -149,11 +162,15 @@ mod tests {
             "--add-profile=Profile 5",
             "--remove-profile",
             "Other",
+            "--all-profiles=off",
             "--uninstall",
         ]))
         .unwrap();
         assert_eq!(a.add_profiles, ["Work", "Profile 5"]);
         assert_eq!(a.remove_profiles, ["Other"]);
+        assert_eq!(a.all_profiles, Some(false));
+        assert_eq!(parse(&strings(&["--all-profiles", "on"])).unwrap().all_profiles, Some(true));
+        assert_eq!(parse(&[]).unwrap().all_profiles, None, "absent: config.json decides");
         assert_eq!(a.codex_configs, [PathBuf::from("a.toml"), PathBuf::from("b.toml")]);
         assert_eq!(a.claude_configs, [PathBuf::from("c.json")]);
         assert_eq!(a.profile.as_deref(), Some("Work Profile"));
@@ -169,6 +186,9 @@ mod tests {
         assert!(parse(&strings(&["--profile"])).is_err());
         assert!(parse(&strings(&["--profile", "--chrome", "x"])).is_err());
         assert!(parse(&strings(&["--quiet-debugging", "maybe"])).is_err());
+        let error = parse(&strings(&["--all-profiles", "maybe"])).unwrap_err();
+        assert_eq!(error, r#"--all-profiles takes on or off, not "maybe""#);
+        assert!(parse(&strings(&["--all-profiles"])).is_err());
         assert!(parse(&strings(&["--uninstall=yes"])).is_err());
         assert!(parse(&strings(&["--migrate-from"])).is_err());
         assert!(parse(&strings(&["--instance-root", "x"])).is_err());
