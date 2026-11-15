@@ -667,6 +667,22 @@ fn copy_of_fake(dir: &Path) -> PathBuf {
     copy
 }
 
+/// Writes `bytes` over the program at `path`, waiting out a sharing violation (Windows error 32): an
+/// antivirus scan of the freshly written program, or the bw just run still being torn down, can hold
+/// it for a moment, and a write that lands then is refused.
+fn rewrite(path: &Path, bytes: &[u8]) {
+    let until = Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match std::fs::write(path, bytes) {
+            Ok(()) => return,
+            Err(e) if e.raw_os_error() == Some(32) && Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => panic!("rewriting {}: {e}", path.display()),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_session_goes_only_to_the_bw_it_was_made_with() {
     let f = Fake::new();
@@ -705,12 +721,12 @@ async fn a_session_goes_only_to_the_bw_it_was_made_with() {
     let ran_copy = f.commands().len();
     let mut bytes = std::fs::read(&copy).unwrap();
     bytes.push(0);
-    std::fs::write(&copy, &bytes).unwrap();
+    rewrite(&copy, &bytes);
     assert_eq!(ask(other.clone(), Some(for_copy)).await, json!({"status": "locked"}));
     assert_eq!(f.commands().len(), ran_copy, "no bw started for a key it was not pinned to");
     // Back to the fake's own bytes, so it runs again below as itself.
     bytes.pop();
-    std::fs::write(&copy, &bytes).unwrap();
+    rewrite(&copy, &bytes);
     assert!(f.runs()[ran..].iter().all(|r| r["session"] == "match"), "only pinned runs got the key");
     // status names it, runs bw without the key, and says nothing of the key; disconnect locks without it.
     let shown = test_seams::status(&fake, &dir, Some(SESSION)).await.unwrap();
