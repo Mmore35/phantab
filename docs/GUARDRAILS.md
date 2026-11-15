@@ -26,7 +26,8 @@ A `click`, `click_xy`, or a press of Enter or Space on a control that reads as o
   Pay or Google Pay frame;
 - **a password or two-factor change**: change, reset, set or save a password; turn two-factor, 2-step,
   an authenticator, a passkey or a security key on or off, or add or remove one; a submit button in a
-  form with a new-password field (not a sign-up form);
+  form with a new-password field (not a sign-up form, nor one `browser_sign_up` filled: your request
+  for that account was your word for its submit);
 - **deleting an account or vault items**: delete, close or deactivate an account; delete items or delete
   permanently; on a password manager's own site, any delete, trash or remove.
 
@@ -70,6 +71,9 @@ These are not guardrails. They never refuse what you ask; they keep secrets and 
   Phantab redacts the value from everything it returns to the agent for the rest of the service's
   life, and refuses screenshots of that tab until it closes. It stops no account and ends no page for
   it, in any mode.
+- The sign-up guards that keep a new password out of the agent's sight: phantab makes it and saves it in
+  your Bitwarden before it is typed, no screenshot while it is on the page, and the sweep that blanks a
+  copy or ends the page (SR-78 to SR-83).
 - The service listens on loopback only, behind its bearer token; the viewer token is never returned to
   an agent.
 - An agent reaches a Chrome profile other than your usual one only if you allowed it with

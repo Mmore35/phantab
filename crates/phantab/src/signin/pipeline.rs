@@ -88,7 +88,7 @@ struct Scan {
 }
 
 /// Whether a frame is detached now (a frame the page no longer knows is).
-fn gone(page: &Page, id: &FrameId) -> bool {
+pub(super) fn gone(page: &Page, id: &FrameId) -> bool {
     // Puppeteer detaches every frame when a page's session drops; phantab_cdp marks the page closed and
     // keeps its frame list, so a closed page's frames count as detached here. Without this, a link that
     // drops after the click and does not come back leaves the page `unblanked` instead of `unknown`.
@@ -633,7 +633,7 @@ async fn observe(
 /// Whether the report's `href` is the document Chrome's frame tree has in that frame, and its
 /// `ancestors` the origins of the frames above it, parent first. An ancestor whose URL has no origin of
 /// its own (`about:blank`, `about:srcdoc`) is counted but not compared.
-fn frame_tree_agrees(page: &Page, frame: &FrameId, report: &Value) -> bool {
+pub(super) fn frame_tree_agrees(page: &Page, frame: &FrameId, report: &Value) -> bool {
     let Some(info) = page.frame_info(frame).filter(|f| !f.detached) else { return false };
     let Some(href) = report.get("href").and_then(Value::as_str) else { return false };
     if !same_document(href, &info.url) {
@@ -652,7 +652,7 @@ fn frame_tree_agrees(page: &Page, frame: &FrameId, report: &Value) -> bool {
 }
 
 /// `()=>location.href` in the main frame, raced at 3 s.
-async fn top_href(r: &dyn SignInRecord) -> Option<Value> {
+pub(super) async fn top_href(r: &dyn SignInRecord) -> Option<Value> {
     let page = r.page();
     let main = page.main_frame().ok()?;
     timeout(ms(3000), page.evaluate(&main, HREF, vec![])).await.ok().and_then(Result::ok)
@@ -1080,7 +1080,7 @@ async fn run(host: &dyn Host, r: &dyn SignInRecord, args: &Value, start: Instant
 }
 
 /// Clears `r.signIn` when the call ends while it is still `running`, however it ends.
-struct Running(Arc<dyn SignInRecord>);
+pub(super) struct Running(pub(super) Arc<dyn SignInRecord>);
 
 impl Drop for Running {
     fn drop(&mut self) {

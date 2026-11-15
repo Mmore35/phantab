@@ -76,7 +76,7 @@ workers. `install` runs without a runtime.
 | Client id env | `PHANTAB_CLIENT` |
 | Seal HKDF info | `phantab-sign-in-seal-1`, the wire contract with sign-in providers |
 | MCP server key in client configs | default `phantab` (`install --server-name` picks another); tools are then `mcp__phantab__browser_*` |
-| MCP tools | 14: `browser_status`, `browser_connect`, `browser_open`, `browser_pages`, `browser_tabs`, `browser_attach`, `browser_snapshot`, `browser_act`, `browser_wait`, `browser_show`, `browser_resume`, `browser_screenshot`, `browser_close`, `browser_sign_in` |
+| MCP tools | 15: `browser_status`, `browser_connect`, `browser_open`, `browser_pages`, `browser_tabs`, `browser_attach`, `browser_snapshot`, `browser_act`, `browser_wait`, `browser_show`, `browser_resume`, `browser_screenshot`, `browser_close`, `browser_sign_in`, `browser_sign_up` |
 | Provider env allow-list | includes `PHANTAB_RUNTIME` |
 
 ### Keeping results small

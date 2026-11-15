@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 
@@ -73,11 +73,15 @@ pub(crate) struct Call<'a> {
     /// The pinned files `connect` holds: the child is started by their resolved paths. A call with a
     /// session holds its own.
     pub(crate) held: Option<&'a Held>,
+    /// What the child reads on stdin, then end of input: `create item` and `edit item`'s encoded login,
+    /// which holds the new password, so it never goes on the command line (SR-65). Borrowed from its
+    /// zeroized owner.
+    pub(crate) stdin: Option<&'a [u8]>,
 }
 
 impl<'a> Call<'a> {
     pub(crate) fn new(args: &'a [&'a str], session: Option<&'a SessionKey>) -> Self {
-        Call { args, session, extra_env: &[], interactive: false, held: None }
+        Call { args, session, extra_env: &[], interactive: false, held: None, stdin: None }
     }
 }
 
@@ -177,6 +181,7 @@ fn spawn(
         args.push(OsStr::new("--nointeraction"));
     }
     let interactive = call.interactive;
+    let fed = call.stdin.is_some();
     let env = bw_env(config, call);
     let secrets = secret_env(call);
     let mut cmd = CommandWrap::with_new(program, |c| {
@@ -184,9 +189,18 @@ fn spawn(
         for (name, value) in &secrets {
             c.env(name, value);
         }
-        c.stdin(if interactive { Stdio::inherit() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(if interactive { Stdio::inherit() } else { Stdio::null() });
+        let input = if interactive {
+            Stdio::inherit()
+        } else if fed {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+        c.stdin(input).stdout(Stdio::piped()).stderr(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        });
     });
     #[cfg(windows)]
     {
@@ -225,7 +239,15 @@ async fn read_capped(mut stdout: impl tokio::io::AsyncRead + Unpin) -> Result<Ze
     }
 }
 
-async fn finish(child: &mut dyn process_wrap::tokio::ChildWrapper) -> Ran {
+async fn finish(child: &mut dyn process_wrap::tokio::ChildWrapper, input: Option<&[u8]>) -> Ran {
+    if let Some(bytes) = input {
+        // Written whole, then closed: the CLI reads stdin to its end before it answers.
+        let Some(mut stdin) = child.stdin().take() else { return Ran::Failed };
+        if stdin.write_all(bytes).await.is_err() || stdin.shutdown().await.is_err() {
+            return Ran::Failed;
+        }
+        drop(stdin);
+    }
     let Some(stdout) = child.stdout().take() else { return Ran::Failed };
     let out = match read_capped(stdout).await {
         Ok(out) => out,
@@ -253,7 +275,8 @@ pub(crate) async fn run(config: &Config, call: &Call<'_>, deadline: Instant) -> 
         },
     };
     let Ok(mut child) = spawn(config, held.as_ref().or(call.held), call) else { return Ran::Failed };
-    let ran = tokio::time::timeout_at(deadline, finish(child.as_mut())).await.unwrap_or(Ran::TimedOut);
+    let ran =
+        tokio::time::timeout_at(deadline, finish(child.as_mut(), call.stdin)).await.unwrap_or(Ran::TimedOut);
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
     ran
@@ -348,6 +371,7 @@ mod tests {
             extra_env: &[("PHANTAB_BW_MASTER", "pw")],
             interactive: false,
             held: None,
+            stdin: None,
         };
         assert_eq!(secret_env(&unlock), vec![("PHANTAB_BW_MASTER", "pw")]);
         assert!(!names(&unlock).contains(&"PHANTAB_BW_MASTER".to_owned()));

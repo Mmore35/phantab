@@ -316,7 +316,12 @@ async fn browser_sign_in_against_a_real_chrome_and_a_fake_provider() {
         ("blank", "no-field"),
     ] {
         case!(format!("/{page} is not a sign-in, and fetches nothing"), async {
-            assert_eq!(cx.once(page).await, status_reason("not-a-sign-in", reason));
+            let mut want = status_reason("not-a-sign-in", reason);
+            // A form that asks for a new password names the tool that makes one.
+            if ["new-password", "two-passwords", "sign-up"].contains(&reason) {
+                want["next"] = json!("browser_sign_up");
+            }
+            assert_eq!(cx.once(page).await, want);
             assert_eq!(cx.requests().len(), 0);
             assert_eq!(cx.posts().len(), 0);
         });

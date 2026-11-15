@@ -580,7 +580,8 @@ mod tests {
         let turn = |m: &str| Method::from_name(m).unwrap().turn(&page, "mcp:a");
         let on = |page: &str| Some(Turn::Page { client: "mcp:a".into(), page: page.into() });
         assert_eq!(Method::from_name("check_wait"), Some(Method::CheckWait));
-        for m in ["status", "heartbeat", "wait", "sign_in", "check_wait"] {
+        assert_eq!(Method::from_name("sign_up"), Some(Method::Engine(EngineMethod::SignUp)));
+        for m in ["status", "heartbeat", "wait", "sign_in", "sign_up", "check_wait"] {
             assert_eq!(turn(m), None, "{m}");
         }
         for m in ["snapshot", "screenshot", "act"] {

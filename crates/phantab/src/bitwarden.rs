@@ -156,6 +156,7 @@ async fn connect_with(
             extra_env: &[(PASSWORD_ENV, password.as_str())],
             interactive: false,
             held: Some(&checked),
+            stdin: None,
         };
         match cli::run(config, &unlock, Instant::now() + STEP).await {
             Ran::Out(out) => out,

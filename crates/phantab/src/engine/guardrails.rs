@@ -18,6 +18,7 @@ use super::{Engine, until};
 use crate::engine_api::{EngineError, EngineResult};
 use crate::page_js::ACTIONABLE;
 use crate::runtime::Config;
+use crate::signin::SignInRecord;
 use crate::util::{js_string, truthy};
 
 /// The sensitive-set check: which of the three kinds a control is, or `null`. It returns only that
@@ -59,11 +60,14 @@ impl Guardrails {
     }
 }
 
+/// The password kind's name, which a form `browser_sign_up` filled is never asked about.
+const PASSWORD_CHANGE: &str = "a password or two-factor change";
+
 /// What the refusal calls each kind. The agent sees only this, never the control's own text.
 fn kind(word: &str) -> Option<&'static str> {
     match word {
         "payment" => Some("a payment or checkout"),
-        "password" => Some("a password or two-factor change"),
+        "password" => Some(PASSWORD_CHANGE),
         "delete" => Some("deleting an account or vault items"),
         _ => None,
     }
@@ -133,7 +137,11 @@ impl Engine {
                 }
             })
             .await?;
+        // A form `browser_sign_up` filled (its new password is still on the page) is the sign-up the
+        // owner asked for, not a password change: that request was the owner's word for this step.
+        let signing_up = || r.on_page().is_some();
         match asked {
+            Some(what) if what == PASSWORD_CHANGE && signing_up() => Ok(()),
             Some(what) => Err(EngineError(format!(
                 "Confirm first: this looks like {what}. Ask the owner, and only once they approve it, repeat the same act with ownerConfirmed true."
             ))),

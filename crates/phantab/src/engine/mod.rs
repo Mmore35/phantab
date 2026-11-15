@@ -607,6 +607,7 @@ impl Engine {
             EngineMethod::Screenshot => self.screenshot(client, &args).await,
             EngineMethod::Wait => self.wait(client, &args).await,
             EngineMethod::SignIn => crate::signin::sign_in(self, client, &args).await,
+            EngineMethod::SignUp => crate::signin::sign_up(self, client, &args).await,
         }
     }
 }

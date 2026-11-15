@@ -5,6 +5,12 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 
 ## Unreleased
 
+### Added
+- `browser_sign_up`: an agent can make an account for you. It fills in the sign-up form; phantab makes
+  the password, saves it in your Bitwarden and reads it back, then types it into the page. The agent never
+  sees it and presses the site's own button. While the password is on the page, a copy the page makes is
+  blanked and screenshots of the page are refused. Only the built-in Bitwarden source can save one.
+
 ### Fixed
 - A sign-in is no longer walled by a human check no one can see. Invisible reCAPTCHA, hCaptcha and
   Turnstile widgets load zero-size, hidden or offscreen frames on ordinary sign-in pages; a check is now a

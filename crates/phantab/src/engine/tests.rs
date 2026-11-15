@@ -710,6 +710,28 @@ async fn anything_else_goes_through() {
     }
 }
 
+/// A form `browser_sign_up` filled is the sign-up the owner asked for: its submit is not asked about as a
+/// password change while the new password is on the page. Payments and deletes still are,
+/// and once the mark clears the password kind is asked about again.
+#[tokio::test]
+async fn a_form_sign_up_filled_is_not_a_password_change() {
+    use crate::signin::SignInRecord as _;
+    use crate::signin::{OnPage, Secret};
+    let f = fixture_with(Recording::new(), None, Some("light"));
+    let e = &f.engine;
+    let click = |r: &Rec| json!({ "pageId": r.id, "action": "click", "selector": "#pay" });
+    let r = e.record(fake_page_judging("password").await, "a", Fields::default()).unwrap();
+    r.set_on_page(Some(Arc::new(OnPage::new(&Secret::new("Aa1!aaaaaaaaaaaaaaaa".into()), Vec::new(), None))));
+    e.confirm_first(&r, &click(&r), "click").await.unwrap();
+    r.set_on_page(None);
+    assert!(err(e.confirm_first(&r, &click(&r), "click").await).starts_with("Confirm first"));
+    for word in ["payment", "delete"] {
+        let r = e.record(fake_page_judging(word).await, "a", Fields::default()).unwrap();
+        r.set_on_page(Some(Arc::new(OnPage::new(&Secret::new("Aa1!aaaaaaaaaaaaaaaa".into()), Vec::new(), None))));
+        assert!(err(e.confirm_first(&r, &click(&r), "click").await).starts_with("Confirm first"), "{word}");
+    }
+}
+
 #[tokio::test]
 async fn dispose_refuses_while_the_owner_holds_a_page_then_closes_every_owned_tab() {
     let (f, ext) = connected(Recording::new()).await;

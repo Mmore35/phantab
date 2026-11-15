@@ -8,10 +8,15 @@
 //! Control fields: `status` (`unlocked`, `locked`, `unauthenticated`), `session` (the key `unlock` and
 //! `login` print, and the one the other commands need in `BW_SESSION`), `masterPassword`, `lastSync`,
 //! `items` (what `list items` prints, whatever the URL: the real CLI matches more widely than phantab),
-//! `totp` (`{id: code}`), and per command name (`status`, `sync`, `list`, `get`, `unlock`, `login`,
-//! `lock`, `config`): `delayMs.<name>`, `huge` (a list of names that print 5 MiB), `malformed` (names
-//! that print text that is not JSON), `fail` (names that exit 1). A successful `unlock` or `login` writes
+//! `totp` (`{id: code}`), `readBack` (`wrong`: `get item` prints another password than the one saved),
+//! and per command name (`status`, `sync`, `list`, `get`, `create`, `edit`, `unlock`, `login`, `lock`,
+//! `config`): `delayMs.<name>`, `huge` (a list of names that print 5 MiB), `malformed` (names that print
+//! text that is not JSON), `fail` (names that exit 1). A successful `unlock` or `login` writes
 //! `status: unlocked` back to the control file and `lock` writes `locked`, as the real CLI keeps its state.
+//!
+//! `create item` and `edit item <id>` read the encoded login from stdin, as the real CLI does when no
+//! argument carries it, and write it into `items` (a new one gets the id `created-<n>`); the log says only
+//! how many bytes came in (`stdinBytes`). `get item <id>` prints one item, `get totp <id>` its code.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,11 +60,19 @@ fn main() -> Result<()> {
     env.sort();
     let core = core_limit();
     let exe = std::env::current_exe().map_or(Value::Null, |p| json!(p));
+    // Only the writes read stdin; phantab gives every other command none.
+    let mut input = Vec::new();
+    if name == "create" || name == "edit" {
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut input)?;
+    }
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("fake-bw.log"))?;
     log.write_all(
         format!(
             "{}\n",
-            json!({"argv": argv, "env": env, "session": session, "password": password, "core": core, "exe": exe})
+            json!({
+                "argv": argv, "env": env, "session": session, "password": password, "core": core, "exe": exe,
+                "stdinBytes": input.len(),
+            })
         )
         .as_bytes(),
     )?;
@@ -89,8 +102,57 @@ fn main() -> Result<()> {
         out.write_all(b"{not json")?;
         return Ok(());
     }
+    if name == "create" || name == "edit" {
+        if session != "match"
+            || control.get("status").and_then(Value::as_str).unwrap_or("unlocked") != "unlocked"
+        {
+            eprintln!("Vault is locked.");
+            std::process::exit(1);
+        }
+        write_item(&dir, &control, &argv, &input, &mut out)?;
+        out.flush()?;
+        return Ok(());
+    }
     answer(&dir, &control, &argv, session == "match", password == "match", &mut out)?;
     out.flush()?;
+    Ok(())
+}
+
+/// `create item` / `edit item <id>`: the decoded login into `items`, written back, and printed.
+fn write_item(
+    dir: &std::path::Path,
+    control: &Value,
+    argv: &[String],
+    input: &[u8],
+    out: &mut impl Write,
+) -> Result<()> {
+    use base64::Engine as _;
+    let text = base64::engine::general_purpose::STANDARD.decode(input.trim_ascii())?;
+    let mut item: Value = serde_json::from_slice(&text)?;
+    let mut next = control.clone();
+    let items = next.get_mut("items").and_then(Value::as_array_mut);
+    let mut fresh = Vec::new();
+    let items = match items {
+        Some(items) => items,
+        None => &mut fresh,
+    };
+    if argv.first().map(String::as_str) == Some("edit") {
+        let id = argv.get(2).cloned().unwrap_or_default();
+        let Some(at) = items.iter().position(|i| i.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        else {
+            eprintln!("Not found.");
+            std::process::exit(1);
+        };
+        item["id"] = json!(id);
+        items[at] = item.clone();
+    } else {
+        item["id"] = json!(format!("created-{}", items.len() + 1));
+        items.push(item.clone());
+    }
+    let items = items.clone();
+    next["items"] = Value::Array(items);
+    std::fs::write(dir.join("fake-bw.json"), next.to_string())?;
+    writeln!(out, "{item}")?;
     Ok(())
 }
 
@@ -158,6 +220,22 @@ fn answer(
                 return locked();
             }
             let id = argv.get(2).map(String::as_str).unwrap_or_default();
+            if argv.get(1).map(String::as_str) == Some("item") {
+                let found = control.get("items").and_then(Value::as_array).and_then(|items| {
+                    items.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(id)).cloned()
+                });
+                let Some(mut item) = found else {
+                    eprintln!("Not found.");
+                    std::process::exit(1);
+                };
+                if control.get("readBack").and_then(Value::as_str) == Some("wrong")
+                    && let Some(Value::String(p)) = item.pointer_mut("/login/password")
+                {
+                    p.push('x');
+                }
+                writeln!(out, "{item}")?;
+                return Ok(());
+            }
             let Some(code) = control.pointer(&format!("/totp/{id}")).and_then(Value::as_str) else {
                 eprintln!("No TOTP available for this login.");
                 std::process::exit(1);

@@ -407,7 +407,7 @@ A dev-dependency of every crate with browser or service tests.
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (97)
+### Fixture pages (132)
 | Group | Keys |
 |---|---|
 | engine | `engine/basic`, `engine/dialogs`, `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
@@ -418,8 +418,9 @@ A dev-dependency of every crate with browser or service tests.
 | sign-in, walls | `passkey`, `passkey-ask`, `passkey-onload`, `captcha`, `captcha-frame`, `captcha-invisible`, `captcha-zero`, `captcha-hidden`, `captcha-offscreen`, `captcha-solved`, `captcha-unsolved`, `captcha-framed-solved`, `captcha-framed-unsolved`, `captcha-other-kind`, `captcha-shadow-solved`, `captcha-scrolled`, `captcha-shadow-scrolled`, `captcha-slotted-scrolled`, `captcha-rtl`, `captcha-inner-rtl`, `captcha-column-reverse`, `captcha-parked-long`, `captcha-parked-fixed`, `code-boxes`, `readonly`, `twobuttons`, `nobutton`, `otherform`, `ignores`, `aimframe`, `closedframe`, `overframe` |
 | verification | `verify/box`, `verify/shop`, `verify/wall`, `verify/autoclear`, `verify/never`, `verify/widget`, `verify/challenge-only`, `verify/captcha-word-title`, `verify/hold`, `verify/slider`, `verify/offscreen` |
 | sign-in, hazards | `leaves`, `plainhttp`, `getform`, `getshadow`, `echo`, `wrong`, `hides`, `moves`, `detaching`, `landsthendetaches`, `leak-dom`, `leak-hash`, `leak-url`, `clobber-base`, `clobber-id`, `clobber-get`, `clobber-doc`, `tamper`, `leak-clobber`, `unresolved`, `form-button`, `rerender` |
+| sign-up | `signup/basic`, `confirm`, `signin`, `change`, `card`, `pay`, `getform`, `elsewhere`, `crossframe`, `framed`, `shadow`, `maxlength`, `shortmax`, `rules`, `copy`, `copytext`, `reveal` |
 
-(The sign-in keys all start `sign-in/`.) The `verify/*` pages are stand-in checks only: a box, a wall,
+(The sign-in keys all start `sign-in/`, the sign-up keys `signup/`.) The `verify/*` pages are stand-in checks only: a box, a wall,
 a press-and-hold and a slider that clear on a person's input, and pages that look like a check but are
 not. No real third-party CAPTCHA is ever loaded.
 
@@ -530,7 +531,10 @@ Test files, by the short names used above:
 - Lane 3, sign-in over a scripted page (no Chrome): `signin_fake_page`, the fake provider and a CDP page
   whose frames answer each in-page function by its source. The cases a real page cannot stage on cue: a shown password or a code in a `tel` field held until blank, a frame that
   kept the password and does not answer, a code shown back in the page, a report the frame tree does not
-  match, and a frame the frame tree shows moving while the provider is asked.
+  match, and a frame the frame tree shows moving while the provider is asked. For sign-up (a
+  `MemorySource`): a frame that held a copy of the new password and then stops answering
+  holds the page and its screenshots until it goes, a frame that never held one does not, a page that
+  puts its copy back after each blank stays held, and a copy in the page's text ends the page.
 - Lane 3, echoed values through `phantab serve` (real Chrome): `signin_echo`, on the echo, leak-url,
   leak-dom, leak-hash and leak-clobber pages. The sign-in goes on, every answer is redacted, screenshots
   of the tab are refused, the account is not stopped, and a fresh attach to a tab of your own is still

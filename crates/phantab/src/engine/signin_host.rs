@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use super::Engine;
 use super::record::Rec;
 use crate::engine_api::{EngineError, Serializer};
-use crate::signin::{Echo, Host, Leftover, Options, Phase, SignInRecord};
+use crate::signin::{Echo, Host, Leftover, OnPage, Options, Phase, SignInRecord};
 
 #[async_trait]
 impl SignInRecord for Rec {
@@ -84,6 +84,14 @@ impl SignInRecord for Rec {
     fn set_account(&self, key: String) {
         self.lock().sign_in_account = Some((key, Instant::now()));
     }
+
+    fn on_page(&self) -> Option<Arc<OnPage>> {
+        self.lock().sign_up_on_page.clone()
+    }
+
+    fn set_on_page(&self, mark: Option<Arc<OnPage>>) {
+        self.lock().sign_up_on_page = mark;
+    }
 }
 
 impl Engine {
@@ -133,6 +141,14 @@ impl Host for Engine {
             Some(r) => self.lock_site(&r, None),
             None => Ok(()),
         }
+    }
+
+    async fn end_leak(&self, record: &dyn SignInRecord) {
+        let Some(r) = self.rec_of(record) else { return };
+        if r.lock().owned {
+            let _ = self.close_tab(&r).await;
+        }
+        self.forget(&r.id);
     }
 
     /// The echo is kept even when the record is no longer current: the value is on the site's page

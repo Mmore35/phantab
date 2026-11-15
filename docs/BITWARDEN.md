@@ -97,6 +97,42 @@ deadline: the provider budget (45 s) or what is left of the fill budget, whichev
 Timeouts are `busy`; a failed, oversized or unparseable run is `provider-failed`. Nothing `bw` prints
 reaches a label or an error.
 
+## Sign-up
+
+`browser_sign_up` (THREAT-MODEL SR-78, SR-79, SR-83) saves the new password here before
+anything is filled. Only this source creates: a command provider answers `no-provider-create` and
+starts nothing. `BitwardenSource::make` (`crates/phantab/src/signin/bitwarden/create.rs`), within the
+call's deadline as a sign-in is:
+
+1. The page's origin must be `https`, else `refused`. Its host on an ask-first site is `ask-first`,
+   before `bw` runs; a policy file that does not read is `refused`.
+2. Steps 3 to 5 of § One call: the stored session, `bw status`, `bw sync` when the copy is old.
+3. `bw list items --url <origin> --raw`, parsed at once and wiped when the call ends.
+4. The logins saved for this exact origin (one of the item's URIs has it as its origin) and this exact
+   username, of type login. A login for the parent domain, another origin or another username is not
+   this one. Two or more are `ambiguous` with the count. One with master-password reprompt is
+   `refused`; one with any URI on an ask-first site is `ask-first`.
+5. One, and no `regenerate`: its password is the answer (`existing`), and nothing is written. One with
+   no password is `refused`: the agent asks to regenerate.
+6. Otherwise phantab makes the password and sets it in the login: a copy of
+   the saved item (`regenerate`; every other field kept) or a new one shaped as `bw get template item`
+   makes it, named by the call, with one URI, the origin, at Bitwarden's default match, and `reprompt`
+   0.
+7. `bw create item` (new) or `bw edit item <id>` (`regenerate`), with the login's JSON, base64, on the
+   child's stdin, written whole and closed: never on its command line. Both buffers are allocated once
+   at their final size and zeroized. The output must carry an id (for an edit, the same id); the
+   printed item is wiped at once. A failure, a timeout or output that does not parse writes nothing
+   more and answers as § One call does.
+8. `bw get item <id>`: the read-back. Only a login for the same origin and username whose password is
+   the one made (compared in constant time) is answered; anything else is `provider-failed`, and
+   nothing is filled.
+9. `bw sync`, best effort: offline or refused, the write is already on the server or in the local copy
+   the next sign-in syncs.
+10. The answer is the password and `new` or `replaced`.
+
+A fill that fails after the save leaves the login saved: the next call with the same username answers
+`existing` and fills it.
+
 ## Matching
 
 `crates/phantab/src/signin/bitwarden/matching.rs`. Each saved URI is compared by its own match setting,
@@ -461,6 +497,17 @@ folder (macOS only), the secret variables kept apart from the copied environment
 keys as a pure function of the bytes or UTF-16 units typed (Enter, Ctrl+C, Ctrl+D and Ctrl+Z, Backspace
 over multi-byte characters and surrogate pairs, Ctrl+U, escape sequences and the keys that still act
 inside a cut-off one, Esc on Windows, the length limit). No test types at a real console.
+
+Sign-up (§ Sign-up) over the same fake: `create item` and `edit item <id>` read the encoded login on
+stdin (the fake logs only its length, `stdinBytes`) and write it into `fake-bw.json`; `get item <id>`
+prints it back, with another password when `readBack` is `"wrong"`. Covered: a new login saved, read back
+and synced, with the vault holding what is answered and nothing but the command and its flags on the
+command line; the saved login for this origin and username answering `existing` with no write, and a
+parent-domain login or another username giving a new one; `regenerate` editing the saved login in place
+and keeping its other fields; ambiguity, reprompt, ask-first (no `bw` at all for an ask-first host),
+locked and failed lists writing nothing; a failed or malformed write and a read-back that differs
+answering nothing; a failed sync after the write still answering; an `http` origin refused before any
+`bw`. No test prints a password: each is compared inside the test.
 
 ## Phase 2: native API client (design only)
 

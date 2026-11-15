@@ -11,6 +11,7 @@
 
 pub(crate) mod cli;
 pub(crate) mod config;
+mod create;
 pub(crate) mod matching;
 pub(crate) mod pin;
 pub(crate) mod policy;
@@ -30,7 +31,7 @@ use super::Outcome;
 use super::provider::Answer;
 use super::seal::Request;
 use super::secret::{Scrubbed, Secret, Values};
-use super::source::CredentialSource;
+use super::source::{CreateRequest, Created, CredentialSource};
 
 /// The least time left in which a call still runs `bw sync` before it lists: the list after it must fit.
 const SYNC_NEEDS: Duration = Duration::from_secs(20);
@@ -99,31 +100,7 @@ impl BitwardenSource {
         if hosts.iter().any(|o| sites.iter().any(|s| policy::host_on(o.host(), s))) {
             return Err(Outcome::of("ask-first"));
         }
-        // The load can wait on the owner: macOS may ask once for Keychain access after a binary update. It
-        // runs off the runtime's threads and within the call's deadline; one that runs out answers
-        // provider-failed while the prompt stays up for the owner, and a later call finds the key.
-        let vault = Arc::clone(&self.vault);
-        let load = tokio::task::spawn_blocking(move || vault.load());
-        let session = match tokio::time::timeout_at(deadline, load).await {
-            Ok(Ok(Ok(Some(key)))) => key,
-            Ok(Ok(Ok(None))) => return Err(Outcome::of("locked")),
-            _ => return Err(Outcome::of("provider-failed")),
-        };
-        let (state, last_sync) = status(c, Some(&session), None, deadline).await?;
-        if state != VaultState::Unlocked {
-            return Err(Outcome::of("locked"));
-        }
-        let old_copy = last_sync.is_none_or(|at| {
-            now_millis().saturating_sub(at) >= i64::try_from(c.sync_after.as_millis()).unwrap_or(i64::MAX)
-        });
-        if old_copy && deadline.saturating_duration_since(Instant::now()) > SYNC_NEEDS {
-            // Offline or refused, the local copy still answers; a sync that runs out the clock is `busy`.
-            match cli::run(c, &Call::new(&["sync"], Some(&session)), deadline).await {
-                Ran::TimedOut => return Err(Outcome::of("busy")),
-                Ran::Unpinned => return Err(Outcome::of("locked")),
-                Ran::Out(_) | Ran::Failed | Ran::TooBig => {}
-            }
-        }
+        let session = self.open_vault(deadline).await?;
         let page = request.urls[0].as_str();
         let raw = match cli::run(
             c,
@@ -186,6 +163,37 @@ impl BitwardenSource {
         Ok(Answer::Ok { values, account_key: matching::account_key(&id) })
     }
 
+    /// The stored session, used only on an unlocked vault, after a `bw sync` when the local copy is old.
+    async fn open_vault(&self, deadline: Instant) -> Result<SessionKey, Outcome> {
+        let c = &self.config;
+        // The load can wait on the owner: macOS may ask once for Keychain access after a binary update. It
+        // runs off the runtime's threads and within the call's deadline; one that runs out answers
+        // provider-failed while the prompt stays up for the owner, and a later call finds the key.
+        let vault = Arc::clone(&self.vault);
+        let load = tokio::task::spawn_blocking(move || vault.load());
+        let session = match tokio::time::timeout_at(deadline, load).await {
+            Ok(Ok(Ok(Some(key)))) => key,
+            Ok(Ok(Ok(None))) => return Err(Outcome::of("locked")),
+            _ => return Err(Outcome::of("provider-failed")),
+        };
+        let (state, last_sync) = status(c, Some(&session), None, deadline).await?;
+        if state != VaultState::Unlocked {
+            return Err(Outcome::of("locked"));
+        }
+        let old_copy = last_sync.is_none_or(|at| {
+            now_millis().saturating_sub(at) >= i64::try_from(c.sync_after.as_millis()).unwrap_or(i64::MAX)
+        });
+        if old_copy && deadline.saturating_duration_since(Instant::now()) > SYNC_NEEDS {
+            // Offline or refused, the local copy still answers; a sync that runs out the clock is `busy`.
+            match cli::run(c, &Call::new(&["sync"], Some(&session)), deadline).await {
+                Ran::TimedOut => return Err(Outcome::of("busy")),
+                Ran::Unpinned => return Err(Outcome::of("locked")),
+                Ran::Out(_) | Ran::Failed | Ran::TooBig => {}
+            }
+        }
+        Ok(session)
+    }
+
     async fn code(&self, id: &str, session: &SessionKey, deadline: Instant) -> Result<Secret, Outcome> {
         let out =
             match cli::run(&self.config, &Call::new(&["get", "totp", id], Some(session)), deadline).await {
@@ -226,6 +234,13 @@ fn take(item: &mut Value, pointer: &str) -> Option<Secret> {
 impl CredentialSource for BitwardenSource {
     async fn ask(&self, request: &Request, budget: Duration) -> Answer {
         self.decide(request, Instant::now() + budget).await.unwrap_or_else(Answer::Not)
+    }
+
+    async fn create(&self, request: &CreateRequest, budget: Duration) -> Created {
+        match self.make(request, Instant::now() + budget).await {
+            Ok((password, saved)) => Created::Ok { password, saved },
+            Err(why) => Created::Not(why),
+        }
     }
 }
 

@@ -69,10 +69,11 @@ pub enum EngineMethod {
     Screenshot,
     Wait,
     SignIn,
+    SignUp,
 }
 
 impl EngineMethod {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Pages,
         Self::Connect,
         Self::Open,
@@ -86,6 +87,7 @@ impl EngineMethod {
         Self::Screenshot,
         Self::Wait,
         Self::SignIn,
+        Self::SignUp,
     ];
 
     /// The method's name on the wire.
@@ -105,6 +107,7 @@ impl EngineMethod {
             Self::Screenshot => "screenshot",
             Self::Wait => "wait",
             Self::SignIn => "sign_in",
+            Self::SignUp => "sign_up",
         }
     }
 
@@ -117,7 +120,7 @@ impl EngineMethod {
     /// When in doubt a method is exclusive. A client's own calls never overlap, whatever their pages.
     ///
     /// - `wait` and `sign_in` run at once; `sign_in` queues its fill and click,
-    ///   exclusive, through [`Serializer::run`].
+    ///   exclusive, through [`Serializer::run`]. `sign_up` runs as `sign_in` does: its fill is queued.
     /// - `snapshot`, `screenshot` and `act` touch one page: its CDP session, its keyboard and mouse
     ///   state, its emulation, its site lease (an atomic check-and-take under the engine's state lock).
     ///   They wait for an exclusive call, that page's earlier calls and the client's earlier calls.
@@ -129,7 +132,7 @@ impl EngineMethod {
     #[must_use]
     pub fn turn(self, args: &Value, client: &str) -> Option<Turn> {
         match self {
-            Self::Wait | Self::SignIn => None,
+            Self::Wait | Self::SignIn | Self::SignUp => None,
             Self::Snapshot | Self::Screenshot | Self::Act => Some(Turn::page(client, page_id(args))),
             Self::Pages | Self::Connect | Self::Tabs => Some(Turn::shared(client)),
             Self::Open | Self::Attach | Self::Show | Self::Resume | Self::Close => Some(Turn::Exclusive),

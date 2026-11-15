@@ -121,6 +121,12 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
             &["pageId"],
         ),
         (
+            "sign_up",
+            "Make the site's new password for a sign-up the owner asked for: phantab creates and saves a strong password in the owner's Bitwarden for this site and fills it into the page's new-password fields, never showing it to you. Fill the form's other fields first; then press the site's own button yourself. Returns a status, never a secret. If a check appears after submit, use browser_wait/browser_show with verification true.",
+            json!({ "pageId": s(), "username": s(), "name": s(), "regenerate": { "type": "boolean" } }),
+            &["pageId", "username"],
+        ),
+        (
             "close",
             "Close only agent-created pages; detach from owner tabs without closing them. Refuses while owner takeover is active.",
             page(),
@@ -924,11 +930,14 @@ impl Server {
             }
             Err(e) => {
                 let message = e.to_string();
-                let old = message.contains("Invalid method or client") && name == "browser_sign_in";
-                failure(if old {
-                    "This browser service predates browser_sign_in: restart the browser service when its pages are drained."
-                } else {
+                let old = message.contains("Invalid method or client")
+                    && (name == "browser_sign_in" || name == "browser_sign_up");
+                failure(if !old {
                     &message
+                } else if name == "browser_sign_up" {
+                    "This browser service predates browser_sign_up: restart the browser service when its pages are drained."
+                } else {
+                    "This browser service predates browser_sign_in: restart the browser service when its pages are drained."
                 })
             }
         }
@@ -1042,9 +1051,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fourteen_tools_with_closed_schemas() {
+    fn fifteen_tools_with_closed_schemas() {
         let tools = tools().unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         assert!(tools.iter().all(|t| t.input_schema.get("additionalProperties") == Some(&json!(false))));
     }
 

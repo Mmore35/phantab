@@ -66,6 +66,12 @@ pub(crate) fn page_origin(url: &str) -> Option<Origin> {
     origin_of(&Url::parse(url).ok()?)
 }
 
+/// A saved entry's origin, read as [`entry_url`] reads it; `None` unless it is `https` without
+/// credentials. A sign-up reuses a login only when one of its entries is the page's exact origin.
+pub(crate) fn entry_origin(uri: &str) -> Option<Origin> {
+    origin_of(&entry_url(uri)?)
+}
+
 /// A saved URI as a URL: as written when it has a scheme, else as `https://` + it.
 fn entry_url(uri: &str) -> Option<Url> {
     let uri = uri.trim();

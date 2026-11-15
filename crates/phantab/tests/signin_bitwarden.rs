@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use phantab::bitwarden::test_seams;
-use phantab::signin::bitwarden_ask_for_test;
+use phantab::signin::{bitwarden_ask_for_test, bitwarden_create_for_test};
 use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -1002,4 +1002,206 @@ fn the_binary_never_opens_the_owners_session_store() {
             assert!(err.contains("a test never uses it"), "{err}");
         }
     }
+}
+
+// --- browser_sign_up's save (THREAT-MODEL SR-78 to SR-83) ---
+
+const ORIGIN: &str = "https://login.site.test";
+const NEW_USER: &str = "new-owner@example.test";
+const ITEM_NAME: &str = "login.site.test (sign-up 2026-11-10)";
+
+impl Fake {
+    async fn create_with(
+        &self,
+        extra: &Value,
+        username: &str,
+        regenerate: bool,
+    ) -> (Value, Option<(&'static str, String)>) {
+        bitwarden_create_for_test(
+            &provider(extra),
+            &self.bitwarden_dir(),
+            Some(&pinned(&provider(extra), &self.bitwarden_dir(), SESSION)),
+            ORIGIN,
+            username,
+            ITEM_NAME,
+            regenerate,
+            20_000,
+        )
+        .await
+    }
+
+    async fn create(&self, username: &str, regenerate: bool) -> (Value, Option<(&'static str, String)>) {
+        self.create_with(&json!({}), username, regenerate).await
+    }
+
+    /// The fake's items now: what a create or an edit wrote back.
+    fn items(&self) -> Vec<Value> {
+        let control: Value =
+            serde_json::from_str(&std::fs::read_to_string(self.data().join("fake-bw.json")).unwrap())
+                .unwrap();
+        control["items"].as_array().cloned().unwrap_or_default()
+    }
+}
+
+/// Neither `password` nor the master password in the fake's log, and no write's login on a command line.
+fn assert_not_logged(f: &Fake, password: &str) {
+    let log = f.log_text();
+    assert!(!password.is_empty() && !log.contains(password), "the new password reached the log");
+    assert!(!log.contains(MASTER));
+    for run in f.runs() {
+        let argv = run["argv"].as_array().unwrap();
+        assert!(argv.len() <= 6, "nothing but the command, the id and the flags: {argv:?}");
+    }
+}
+
+/// The new or replaced password, compared inside the test and never printed.
+fn same(a: &str, b: &str) -> bool {
+    a == b
+}
+
+#[tokio::test]
+async fn a_new_login_is_saved_read_back_and_synced() {
+    let f = Fake::new();
+    f.control(&json!({}));
+    let (label, made) = f.create(NEW_USER, false).await;
+    assert_eq!(label, json!({"status": "ok"}));
+    let (which, password) = made.unwrap();
+    assert_eq!(which, "new");
+    assert_eq!(password.len(), 20);
+    assert_eq!(f.commands(), ["status", "list", "create", "get", "sync"]);
+    let runs = f.runs();
+    assert_eq!(runs[1]["argv"], json!(["list", "items", "--url", ORIGIN, "--raw", "--nointeraction"]));
+    assert_eq!(runs[2]["argv"], json!(["create", "item", "--nointeraction"]));
+    assert!(runs[2]["stdinBytes"].as_u64().unwrap() > 0, "the login came on stdin");
+    assert_eq!(runs[3]["argv"], json!(["get", "item", "created-2", "--nointeraction"]));
+    for run in &runs {
+        assert_eq!(run["session"], "match");
+    }
+    let items = f.items();
+    let saved = items.iter().find(|i| i["id"] == "created-2").unwrap();
+    assert_eq!(saved["name"], ITEM_NAME);
+    assert_eq!(saved["type"], 1);
+    assert_eq!(saved["login"]["username"], NEW_USER);
+    assert_eq!(saved["login"]["uris"], json!([{"match": null, "uri": ORIGIN}]));
+    assert!(same(saved["login"]["password"].as_str().unwrap(), &password), "the vault holds what is filled");
+    assert_eq!(saved["reprompt"], 0);
+    assert_not_logged(&f, &password);
+}
+
+#[tokio::test]
+async fn the_saved_login_for_this_origin_and_username_answers_existing() {
+    let f = Fake::new();
+    f.control(&json!({}));
+    let (label, made) = f.create(USERNAME, false).await;
+    assert_eq!(label, json!({"status": "ok"}));
+    let (which, password) = made.unwrap();
+    assert_eq!(which, "existing");
+    assert!(same(&password, PASSWORD), "the saved password");
+    assert_eq!(f.commands(), ["status", "list"], "no write");
+    // A login for the parent domain is not this origin's: a new one is made.
+    let g = Fake::new();
+    g.control(&json!({"items": [login(ID1, "Parent", &json!([{"uri": "https://site.test"}]))]}));
+    assert_eq!(g.create(USERNAME, false).await.1.unwrap().0, "new");
+    // Nor is one for another username.
+    let h = Fake::new();
+    h.control(&json!({}));
+    assert_eq!(h.create(NEW_USER, false).await.1.unwrap().0, "new");
+}
+
+#[tokio::test]
+async fn regenerate_edits_the_saved_login() {
+    let f = Fake::new();
+    f.control(&json!({}));
+    let (label, made) = f.create(USERNAME, true).await;
+    assert_eq!(label, json!({"status": "ok"}));
+    let (which, password) = made.unwrap();
+    assert_eq!(which, "replaced");
+    assert!(!same(&password, PASSWORD));
+    assert_eq!(f.commands(), ["status", "list", "edit", "get", "sync"]);
+    assert_eq!(f.runs()[2]["argv"], json!(["edit", "item", ID1, "--nointeraction"]));
+    let items = f.items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "Site", "the rest of the login is kept");
+    assert!(same(items[0]["login"]["password"].as_str().unwrap(), &password));
+    assert_not_logged(&f, &password);
+}
+
+#[tokio::test]
+async fn the_vaults_refusals_write_nothing() {
+    let two = json!({"items": [
+        one_login(),
+        login(ID2, "Again", &json!([{"uri": "https://login.site.test/other"}])),
+    ]});
+    let mut reprompt = one_login();
+    reprompt["reprompt"] = json!(1);
+    let cases = [
+        (json!({}), two, json!({"status": "ambiguous", "count": 2})),
+        (json!({}), json!({"items": [reprompt]}), json!({"status": "refused"})),
+        (json!({"askFirst": ["site.test"]}), json!({}), json!({"status": "ask-first"})),
+        (json!({}), json!({"status": "locked"}), json!({"status": "locked"})),
+        (json!({}), json!({"fail": ["list"]}), json!({"status": "provider-failed"})),
+    ];
+    for (extra, control, want) in cases {
+        let f = Fake::new();
+        f.control(&control);
+        let (label, made) = f.create_with(&extra, USERNAME, true).await;
+        assert_eq!(label, want, "{control}");
+        assert!(made.is_none());
+        let commands = f.commands();
+        assert!(!commands.iter().any(|c| c == "create" || c == "edit"), "{commands:?}");
+    }
+}
+
+#[tokio::test]
+async fn ask_first_starts_no_bw_at_all() {
+    let f = Fake::new();
+    f.control(&json!({}));
+    let (label, _) = f.create_with(&json!({"askFirst": ["site.test"]}), NEW_USER, false).await;
+    assert_eq!(label, json!({"status": "ask-first"}));
+    assert!(f.commands().is_empty(), "{:?}", f.commands());
+}
+
+#[tokio::test]
+async fn a_failed_write_or_a_wrong_read_back_answers_nothing() {
+    let f = Fake::new();
+    f.control(&json!({"fail": ["create"]}));
+    let (label, made) = f.create(NEW_USER, false).await;
+    assert_eq!(label, json!({"status": "provider-failed"}));
+    assert!(made.is_none());
+    assert_eq!(f.commands(), ["status", "list", "create"]);
+    let g = Fake::new();
+    g.control(&json!({"readBack": "wrong"}));
+    let (label, made) = g.create(NEW_USER, false).await;
+    assert_eq!(label, json!({"status": "provider-failed"}));
+    assert!(made.is_none());
+    assert_eq!(g.commands(), ["status", "list", "create", "get"], "no sync after a read-back that differs");
+    let h = Fake::new();
+    h.control(&json!({"malformed": ["create"]}));
+    let (label, made) = h.create(NEW_USER, false).await;
+    assert_eq!(label, json!({"status": "provider-failed"}));
+    assert!(made.is_none());
+    // A sync that fails after the write still answers: the login is saved on the server.
+    let k = Fake::new();
+    k.control(&json!({"fail": ["sync"]}));
+    assert_eq!(k.create(NEW_USER, false).await.1.unwrap().0, "new");
+}
+
+#[tokio::test]
+async fn a_non_https_origin_is_refused_before_bw() {
+    let f = Fake::new();
+    f.control(&json!({}));
+    let out = bitwarden_create_for_test(
+        &provider(&json!({})),
+        &f.bitwarden_dir(),
+        Some(&pinned(&provider(&json!({})), &f.bitwarden_dir(), SESSION)),
+        "http://login.site.test",
+        NEW_USER,
+        ITEM_NAME,
+        false,
+        20_000,
+    )
+    .await;
+    assert_eq!(out.0, json!({"status": "refused"}));
+    assert!(out.1.is_none());
+    assert!(f.commands().is_empty());
 }

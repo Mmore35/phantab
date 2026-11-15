@@ -139,11 +139,12 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T46 | A provider's answer is replayed or rewritten. | SR-43 | L1, L6 |
 | T47 | The provider inherits secrets from the service's environment, or hangs, or floods. | SR-44 | L3 |
 | T48 | Any process asks the provider for a credential. | SR-11 (keep `pid`), SR-44 | L3 |
-| T49 | A credential is sent over HTTP, through a GET form, or into a pay or sign-up form. | SR-45 | L3, L4 |
+| T49 | A *saved* credential is sent over HTTP, through a GET form, or into a pay or sign-up form. | SR-45; `browser_sign_in` still refuses sign-up forms, and a sign-up's new password comes only from `browser_sign_up` (T90) | L3, L4 |
 | T50 | The page moves between lookup and fill, and the value lands on another site. | SR-45 | L3 |
 | T51 | Repeated sends lock the account or brute-force it. | SR-46 | L3 |
 | T52 | The site echoes the value into the URL or page text. | SR-45 | L3 |
 | T53 | Values cross native messaging and loopback in plain JSON. | SR-47; rest is residual R5 | L3 |
+| T90 | A sign-up's new password is exposed while it waits on the page: the agent invents it, it is filled before the vault holds it, it fills another site or a reused login, the page copies it into another field, its address or its text, a show-password toggle reveals it, a screenshot shows it, or a result, log or record holds it. | SR-78 to SR-83; SR-47 and residual R5 for the way to the page | L1, L3 |
 
 ### B8: installer, client configs and registry
 
@@ -893,8 +894,9 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `https_proxy`, as it does when the owner runs it; the service has them only if the client that
   started it did, SR-14, and a `proxy` in the Bitwarden config replaces them all) and never
   `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` or `NODE_TLS_REJECT_UNAUTHORIZED`, which would load code into
-  `bw` or weaken its certificate checks; `--nointeraction` (except `connect`'s `login`); stdin and
-  stderr null; no window; a job object or process group killed with the call; stdout capped at 4 MiB
+  `bw` or weaken its certificate checks; `--nointeraction` (except `connect`'s `login`); stdin null
+  (a sign-up's `create` and `edit` read the encoded login from a pipe, written whole and closed,
+  SR-83) and stderr null; no window; a job object or process group killed with the call; stdout capped at 4 MiB
   in a zeroized buffer; the call's deadline, then `busy`. The list output is parsed at once and its
   bytes wiped, the parsed list is wiped when the call ends, and only the chosen item's wanted fields
   become `Secret`s. No `bw` text reaches a label or an error. *L1: the allow-list holds the proxies
@@ -916,6 +918,51 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   else `refused`. A master-password-reprompt item is `refused`. *L1: matching rules, the suffix list's
   private section, IP and `localhost` hosts, `http` pages; L3: base domain against host, `http`,
   pattern and never entries, ambiguity, held keys, a form that posts elsewhere.*
+
+### Sign-up
+`browser_sign_up` (T90). The sign-in's requirements (SR-38 to SR-47) hold for it where
+they apply; these are its own.
+- **SR-78** The password is phantab's: 20 characters from `A-Z a-z 0-9 !@$%*-_`, one of each class,
+  each an unbiased draw from the OS's random source; cut to the form's `maxlength` and never below 12,
+  and narrowed by `minlength` and `passwordrules`; a form it cannot serve is refused before the vault
+  is asked. It is saved in the owner's vault and read back before any character reaches the page: only
+  a read-back that holds the same password and username, compared in constant time, is filled; a
+  failed write or a read-back that differs fills nothing. `regenerate` replaces the saved login's
+  password in place (its id unchanged), keeping the rest of the login. Ask-first applies to the
+  create. Only the built-in Bitwarden source creates; a command provider answers `no-provider-create`
+  and starts nothing. *L1: the generator's alphabet, classes, lengths and rules; L3: the fake `bw`'s
+  create, edit, read-back, failures and ask-first.*
+- **SR-79** It fills only the page's origin: every URL above the form and every place it sends to is
+  `https`, every ancestor frame is the form's origin, and every action goes to the page's host or a
+  host above or below it, never a sibling, another site or a bare top-level name. A saved password is
+  reused only from the login saved for this exact origin and this exact username; a login for the
+  parent domain or another username is not reused, more than one is `ambiguous`, and a
+  master-password-reprompt login is `refused`. *L1: the URL and site checks; L3: reuse, ambiguity and
+  reprompt over the fake; L4: the fixture pages' frames and actions.*
+- **SR-80** While the password is on the page, the record holds only its digests and the frames it
+  was filled into. A sweep runs after the fill and before and after every snapshot, screenshot, wait
+  and act on the page: a copy of the password, raw or in any leak form, in any field but a password
+  field is blanked and read again. The frames that matter are the main frame, the frames it was filled
+  into and every frame a sweep saw a copy in; one of them that does not answer holds the page until it
+  answers clean or goes. The mark clears only when every frame that matters reads without it. *L4: a
+  page that copies the password into a text field; the scripted page (`tests/signin_fake_page.rs`): a
+  frame that held a copy and then stops answering, a page that puts its copy back after each blank.*
+- **SR-81** A copy in a frame's address or text, where no blank reaches it, closes a tab phantab
+  opened and forgets the page (`leak-stopped`); a sign-in's echo goes on instead (SR-45), but a new
+  password the site has not yet taken is not left showing. A show-password toggle that makes a filled field `text` blanks it in the same
+  task, before the page paints it, and the next sweep blanks what is left. Leaving the page blanks the
+  fields; a form that sends by GET is refused, and a GET submit of the form is stopped. *L1: every
+  leak form, found in a field, an address and a text, with digests only on the record; L4: a copy in
+  the page's text, a reveal toggle, a GET form.*
+- **SR-82** While the mark holds, a screenshot of the page is refused (`secret-on-page`), after the
+  sweep. A snapshot never reads input values, so it still works. *L4: a screenshot before and after
+  the site's button.*
+- **SR-83** No result, error, log, record or file holds the password: the answer is a status and a
+  reason from a whitelist (and an `ambiguous` count); the generated password lives in a zeroized
+  `Secret` for the call; it reaches `bw` only on a child's stdin, never its command line or
+  environment, in a buffer allocated once at its final size and zeroized, and `bw`'s output of the
+  item is wiped once read. *L1: the label; L3: the fake's log and argv hold no password; L4: the
+  sentinel check on every result.*
 
 ### Installer
 - **SR-48** The binary that the service, MCP server and native host run from sits in a folder that

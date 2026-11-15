@@ -4,6 +4,8 @@
 //!
 //! - [`host`]: what the call needs from its engine ([`Host`], [`SignInRecord`]).
 //! - [`pipeline`]: the call itself, one function per step.
+//! - [`signup`]: `browser_sign_up`, which fills a sign-up form with a new password; [`generate`]: that
+//!   password.
 //! - [`source`]: which saved-login source the config picks ([`source::CredentialSource`]).
 //! - [`provider`], [`seal`]: the external provider command and its sealed answer.
 //! - [`bitwarden`]: the built-in Bitwarden source (docs/BITWARDEN.md).
@@ -12,6 +14,7 @@
 //! - [`options`]: time budgets and the test-only switches; the debug-logging check.
 
 pub(crate) mod bitwarden;
+mod generate;
 mod host;
 mod label;
 mod options;
@@ -21,6 +24,7 @@ mod pipeline;
 mod provider;
 mod seal;
 mod secret;
+mod signup;
 pub(crate) mod source;
 mod web;
 
@@ -36,15 +40,22 @@ pub use provider::ask_for_test;
 pub(crate) use provider::program_is_absolute;
 #[cfg(any(test, feature = "test-seams"))]
 pub use seal::{request_digest, seal};
-pub use secret::{Echo, Leftover};
+pub use secret::{Echo, Leftover, OnPage};
+#[cfg(test)]
+pub(crate) use secret::Secret;
 
 /// The [`Echo`] a sign-in that filled `password` and `code` leaves when the site shows it back, for the
 /// engine's tests.
 #[cfg(test)]
 pub(crate) fn echo_for_test(password: &str, code: Option<&str>) -> Echo {
-    let password = secret::Secret::new(password.to_owned());
-    let code = code.map(|c| secret::Secret::new(c.to_owned()));
+    let password = Secret::new(password.to_owned());
+    let code = code.map(|c| Secret::new(c.to_owned()));
     Echo::new(&web::echo_forms(Some(&password)), code.as_ref(), true).expect("a random key")
 }
 #[cfg(feature = "test-seams")]
-pub use source::bitwarden_ask_for_test;
+pub use signup::sign_up_with_source_for_test;
+pub use signup::{SECRET_ON_PAGE, before_screenshot, sign_up, sweep_sign_up};
+#[cfg(feature = "test-seams")]
+pub use source::MemorySource;
+#[cfg(feature = "test-seams")]
+pub use source::{bitwarden_ask_for_test, bitwarden_create_for_test};

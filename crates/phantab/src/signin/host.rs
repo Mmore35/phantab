@@ -9,7 +9,7 @@ use phantab_cdp::Page;
 use serde_json::Value;
 use tokio::time::Instant;
 
-use super::{Echo, Leftover, Options};
+use super::{Echo, Leftover, OnPage, Options};
 use crate::engine_api::{EngineError, Serializer};
 
 /// `r.signIn`: a sign-in is running, or ended without confirming it blanked the password field.
@@ -56,6 +56,10 @@ pub trait SignInRecord: Send + Sync {
     fn account(&self) -> Option<(String, Instant)>;
     /// `r.signInAccount={key,at:Date.now()}`.
     fn set_account(&self, key: String);
+    /// What `browser_sign_up` left while its password sits in the page (phantab's own).
+    fn on_page(&self) -> Option<Arc<OnPage>>;
+    /// Sets or clears [`SignInRecord::on_page`].
+    fn set_on_page(&self, mark: Option<Arc<OnPage>>);
 }
 
 /// The engine, as sign-in sees it.
@@ -83,6 +87,10 @@ pub trait Host: Send + Sync {
     /// Another page holds the site (`Another agent or human handoff holds this site for changes. Wait for
     /// its release or handback.`).
     fn lock(&self, record: &dyn SignInRecord) -> Result<(), EngineError>;
+    /// A sign-up's new password showed in the page's address or text, where blanking cannot reach it:
+    /// closes the tab when the engine opened it, then forgets the record. A sign-in's echo never comes
+    /// here; it goes on through [`Host::echoed`].
+    async fn end_leak(&self, record: &dyn SignInRecord);
     /// The site showed the password or code back on the record's page after the submit. The call
     /// goes on rather than closing the tab and stopping the account. From now on the host redacts `echo` from everything the agent receives, and refuses screenshots of the
     /// record's tab until it closes. Not async, and nothing to fail: the call goes on either way.

@@ -126,6 +126,117 @@ impl Leftover {
     }
 }
 
+/// What `browser_sign_up` leaves on the page's record while its password sits in the page
+/// (SR-79..SR-82): keyed digests of the password and of each form the sweep looks for (`sweep_forms`),
+/// under a random key of its own, never a value, and the frames it filled. While one is held a screenshot
+/// is refused, and the sweep blanks a copy anywhere but a password field and stops the page on a copy in
+/// its text or address. Dropped, with its key zeroized, when navigation takes the value away.
+pub struct OnPage {
+    /// `None` when no random key could be had: then nothing can be told, and the page stays held.
+    key: Option<Zeroizing<[u8; 32]>>,
+    /// The password itself, one per fill.
+    exact: Vec<[u8; 32]>,
+    /// Each sweep form's length in bytes, whether it is all ASCII-graphic, and its digest.
+    forms: Vec<(usize, bool, [u8; 32])>,
+    frames: Vec<FrameId>,
+}
+
+impl fmt::Debug for OnPage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OnPage([redacted])")
+    }
+}
+
+impl OnPage {
+    /// The mark for `password` filled into `frames`, joined to an earlier mark on the same page so a copy
+    /// of either value is still found.
+    pub(crate) fn new(password: &Secret, frames: Vec<FrameId>, earlier: Option<&OnPage>) -> Self {
+        let key = match earlier.and_then(|e| e.key.clone()) {
+            Some(key) => Some(key),
+            None if earlier.is_some() => None,
+            None => {
+                let mut key = Zeroizing::new([0u8; 32]);
+                getrandom::fill(&mut key[..]).is_ok().then_some(key)
+            }
+        };
+        let (mut exact, mut forms, mut all) =
+            earlier.map(|e| (e.exact.clone(), e.forms.clone(), e.frames.clone())).unwrap_or_default();
+        for f in frames {
+            if !all.contains(&f) {
+                all.push(f);
+            }
+        }
+        let Some(k) = &key else { return OnPage { key, exact, forms, frames: all } };
+        exact.extend(digest(k, password.expose()));
+        for form in super::web::sweep_forms(Some(password)) {
+            let v = form.expose();
+            let graphic = v.bytes().all(|b| b.is_ascii_graphic());
+            forms.extend(digest(k, v).map(|d| (v.len(), graphic, d)));
+        }
+        OnPage { key, exact, forms, frames: all }
+    }
+
+    /// The frames phantab filled, and every frame a sweep saw a copy in.
+    pub(crate) fn frames(&self) -> &[FrameId] {
+        &self.frames
+    }
+
+    /// The same mark with `more` frames that matter: a frame a sweep saw a copy in holds the page while it
+    /// does not answer, as a frame phantab filled does, until it answers clean or goes.
+    pub(crate) fn with_frames(&self, more: &[FrameId]) -> OnPage {
+        let mut frames = self.frames.clone();
+        for f in more {
+            if !frames.contains(f) {
+                frames.push(f.clone());
+            }
+        }
+        OnPage { key: self.key.clone(), exact: self.exact.clone(), forms: self.forms.clone(), frames }
+    }
+
+    /// Whether the sweep can tell a value at all (it has its key).
+    pub(crate) fn can_check(&self) -> bool {
+        self.key.is_some()
+    }
+
+    /// Whether `value` is exactly a password phantab filled, in constant time per digest.
+    pub(crate) fn holds(&self, value: &str) -> bool {
+        let Some(key) = &self.key else { return false };
+        if value.is_empty() {
+            return false;
+        }
+        let Some(seen) = digest(key, value) else { return false };
+        self.exact.iter().fold(false, |any, d| any | bool::from(d.ct_eq(&seen)))
+    }
+
+    /// Whether `text` holds a sweep form of a password phantab filled anywhere in it. A form that is all
+    /// ASCII-graphic can only sit inside a run of such bytes, so only those runs are cut into windows.
+    pub(crate) fn found_in(&self, text: &str) -> bool {
+        let Some(key) = &self.key else { return false };
+        let bytes = text.as_bytes();
+        let mut found = false;
+        for (len, graphic, want) in &self.forms {
+            let len = *len;
+            if len == 0 || len > bytes.len() {
+                continue;
+            }
+            let runs: Vec<&[u8]> = if *graphic {
+                bytes.split(|b| !b.is_ascii_graphic()).filter(|r| r.len() >= len).collect()
+            } else {
+                vec![bytes]
+            };
+            for run in runs {
+                for window in run.windows(len) {
+                    let Ok(mut mac) = HmacSha256::new_from_slice(&key[..]) else { return found };
+                    mac.update(window);
+                    let seen: [u8; 32] = mac.finalize().into_bytes().into();
+                    found |= bool::from(want.ct_eq(&seen));
+                }
+            }
+        }
+        found
+    }
+}
+
 fn digest(key: &[u8; 32], value: &str) -> Option<[u8; 32]> {
     digest_bytes(key, value.as_bytes())
 }
@@ -402,6 +513,25 @@ mod tests {
         assert_eq!(other.redact("Your code 914207"), None);
         // Nothing to look for: nothing redacted.
         assert_eq!(Echo::new(&[], None, false).unwrap().redact(PW), None);
+    }
+
+    #[test]
+    fn on_page_finds_a_copy_but_holds_no_value() {
+        let pw = Secret::new("Xy7!kq-Lm2@wPz9_aB3%".into());
+        let m = OnPage::new(&pw, vec![FrameId("F".into())], None);
+        assert!(m.can_check() && m.holds(pw.expose()) && !m.holds("Xy7!kq") && !m.holds(""));
+        assert!(m.found_in("before Xy7!kq-Lm2@wPz9_aB3% after"));
+        assert!(m.found_in("q=Xy7!kq-Lm2%40wPz9_aB3%25&x"));
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pw.expose());
+        assert!(m.found_in(&format!("data {b64} more")));
+        assert!(!m.found_in("Xy7!kq-Lm2@wPz9_aB3 nothing whole"));
+        assert_eq!(format!("{m:?}"), "OnPage([redacted])");
+        // A second fill joins the first: both are found, both frames kept.
+        let other = Secret::new("second pw with spaces".into());
+        let j = OnPage::new(&other, vec![FrameId("G".into()), FrameId("F".into())], Some(&m));
+        assert!(j.holds(pw.expose()) && j.holds(other.expose()));
+        assert!(j.found_in("x second pw with spaces y") && j.found_in("Xy7!kq-Lm2@wPz9_aB3%"));
+        assert_eq!(j.frames(), [FrameId("F".into()), FrameId("G".into())]);
     }
 
     #[test]

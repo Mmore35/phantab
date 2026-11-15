@@ -31,7 +31,8 @@ login. It runs on Windows and macOS. It is free and open source under the Apache
   the page and waits. Optional guardrails ask for your confirmation before payments, password changes
   and deletions.
 - **Passwords stay out of the conversation.** `browser_sign_in` fills a saved login from Bitwarden or
-  your own provider command, and the agent never sees the password.
+  your own provider command, and the agent never sees the password. `browser_sign_up` makes a new
+  account's password, saves it in Bitwarden and types it in, unseen too.
 
 ## Benchmark
 Measured on 2026-11-14 on a Windows PC: six agent tasks on local test pages (read an article, look up
@@ -157,9 +158,10 @@ Run the installer once first (with a Claude Code config, an empty `{}` file will
 profile, the extension and the native messaging host are set up. `phantab doctor` says what is set up
 and what is not.
 
-The 14 tools: `browser_status`, `browser_connect`, `browser_open`, `browser_pages`, `browser_tabs`,
+The 15 tools: `browser_status`, `browser_connect`, `browser_open`, `browser_pages`, `browser_tabs`,
 `browser_attach`, `browser_snapshot`, `browser_act`, `browser_wait`, `browser_show`, `browser_resume`,
-`browser_screenshot`, `browser_close` and `browser_sign_in`. Each tool describes itself to the agent.
+`browser_screenshot`, `browser_close`, `browser_sign_in` and `browser_sign_up`. Each tool describes
+itself to the agent.
 
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
@@ -200,6 +202,11 @@ A sign-in that meets a passkey request shows you the page at once, and the agent
 Confirm it in the pop-up (Bitwarden, Windows Hello or Touch ID); the page hides itself again once the site has
 its answer, and the agent goes on. phantab never answers a passkey request itself.
 
+## When an agent makes an account for you
+Ask it to, and it fills in the form; phantab makes the password, saves it in your Bitwarden first, then
+types it into the page. The agent never sees it, and it presses the site's own button itself. The new
+login is named after the site and the day, so you can find it in your vault.
+
 ## Another Chrome profile
 Agents use your usual profile unless you allow others. To allow one, run
 `phantab install --add-profile Work`, using Chrome's name for the profile or its folder (`Profile 1`).
@@ -224,7 +231,8 @@ changed.
 
 ## Saved logins
 `browser_sign_in` fills a saved login without the agent seeing it, from the built-in Bitwarden source
-(`docs/BITWARDEN.md`) or from a sign-in provider command you configure.
+(`docs/BITWARDEN.md`) or from a sign-in provider command you configure. `browser_sign_up` makes a new
+login in Bitwarden and fills a sign-up form with it (§ When an agent makes an account for you).
 
 ## Questions
 **Does the agent get my existing logins?** Yes. It works in your own Chrome profile, so any site you

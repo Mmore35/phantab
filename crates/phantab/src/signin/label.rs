@@ -64,6 +64,55 @@ pub(crate) fn reason(text: &str) -> Option<&'static str> {
     WALL_REASONS.iter().chain(OTHER_REASONS).chain(&["unknown"]).copied().find(|r| *r == text)
 }
 
+/// Every status `browser_sign_up` may answer (phantab's own).
+pub(crate) const SIGN_UP_STATUS: &[&str] = &[
+    "filled",
+    "filled-existing",
+    "not-a-sign-up",
+    "not-ready",
+    "no-provider",
+    "no-provider-create",
+    "ask-first",
+    "locked",
+    "provider-failed",
+    "refused",
+    "ambiguous",
+    "busy",
+    "stopped",
+    "owner-has-page",
+    "failed",
+    "leak-stopped",
+];
+
+/// The reasons a sign-up answer keeps.
+const SIGN_UP_REASONS: &[&str] = &[
+    "no-field",
+    "sign-in-form",
+    "change-password",
+    "pay-button",
+    "card-fields",
+    "get-form",
+    "not-https",
+    "third-party-frame",
+    "form-posts-elsewhere",
+    "password-too-short",
+    "password-rules",
+    "page-moved",
+    "not-taken",
+    "page-ended",
+    "debug-logging",
+    "blank-unconfirmed",
+    "rejected",
+    "guard-file",
+    "error",
+    "unknown",
+];
+
+/// A sign-up reason as a literal; `None` for any other text, which the label drops.
+pub(crate) fn sign_up_reason(text: &str) -> Option<&'static str> {
+    SIGN_UP_REASONS.iter().copied().find(|r| *r == text)
+}
+
 /// One answer before it is labelled. Every field is a literal: nothing a page or provider wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Outcome {
@@ -106,6 +155,9 @@ pub(crate) fn label(v: &Outcome) -> Value {
     {
         out.insert("count".into(), n.into());
     }
+    if v.status == "not-a-sign-in" && v.reason.is_some_and(|r| SIGN_UP_SHAPED.contains(&r)) {
+        out.insert("next".into(), "browser_sign_up".into());
+    }
     if let Some(echoed) = v.echoed {
         out.insert("echoed".into(), true.into());
         let note = match echoed {
@@ -113,6 +165,29 @@ pub(crate) fn label(v: &Outcome) -> Value {
             Echoed::Code => ECHOED_CODE,
         };
         out.insert("note".into(), note.into());
+    }
+    Value::Object(out)
+}
+
+/// The not-a-sign-in reasons that mean the page asks for a new password: the answer names the tool that
+/// makes one (`next`), so the agent need not guess.
+const SIGN_UP_SHAPED: &[&str] = &["new-password", "two-passwords", "sign-up"];
+
+/// `browser_sign_up`'s label: the status when it is one, the reason when it is one, the count of an
+/// `ambiguous`; anything else is `failed/error`.
+pub(crate) fn label_sign_up(v: &Outcome) -> Value {
+    if !SIGN_UP_STATUS.contains(&v.status) {
+        return label_sign_up(&Outcome::FAILED);
+    }
+    let mut out = Map::new();
+    out.insert("status".into(), v.status.into());
+    if let Some(r) = v.reason.and_then(sign_up_reason) {
+        out.insert("reason".into(), r.into());
+    }
+    if v.status == "ambiguous"
+        && let Some(n) = v.count
+    {
+        out.insert("count".into(), n.into());
     }
     Value::Object(out)
 }
@@ -163,5 +238,27 @@ mod tests {
         assert_eq!(reason("Rejected"), None);
         assert_eq!(reason("pay-button"), Some("pay-button"));
         assert_eq!(reason("code-boxes"), Some("code-boxes"));
+        // A sign-up-shaped refusal names the tool that makes a new password.
+        assert_eq!(
+            label(&Outcome::with("not-a-sign-in", "two-passwords")).to_string(),
+            r#"{"status":"not-a-sign-in","reason":"two-passwords","next":"browser_sign_up"}"#
+        );
+        assert_eq!(label(&Outcome::with("not-a-sign-in", "card-fields"))["next"], Value::Null);
+    }
+
+    #[test]
+    fn sign_up_answers_only_literals() {
+        assert_eq!(label_sign_up(&Outcome::of("filled")), json!({"status": "filled"}));
+        assert_eq!(
+            label_sign_up(&Outcome::with("not-a-sign-up", "password-too-short")),
+            json!({"status": "not-a-sign-up", "reason": "password-too-short"})
+        );
+        assert_eq!(label_sign_up(&Outcome::with("filled", "made-up")), json!({"status": "filled"}));
+        assert_eq!(label_sign_up(&Outcome::of("submitted")), json!({"status": "failed", "reason": "error"}));
+        let many = Outcome { count: Some(2), ..Outcome::of("ambiguous") };
+        assert_eq!(label_sign_up(&many), json!({"status": "ambiguous", "count": 2}));
+        for s in SIGN_UP_STATUS {
+            assert_eq!(label_sign_up(&Outcome::of(s))["status"], json!(s));
+        }
     }
 }

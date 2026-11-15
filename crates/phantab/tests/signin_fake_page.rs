@@ -1,7 +1,7 @@
-//! Sign-in over a scripted page, without Chrome: the cases a real page cannot stage on cue
-//! (THREAT-MODEL SR-45). The page answers each in-page function by its source, so
-//! a test decides what a field's type is now, which frame holds a value and which call never answers.
-//! The provider is the fake provider; no browser, no vault.
+//! Sign-in and sign-up over a scripted page, without Chrome: the cases a real page cannot stage on cue
+//! (THREAT-MODEL SR-45 and the sign-up sweep's rules). The page answers each in-page function by its
+//! source, so a test decides what a field's type is now, which frame holds a value and which call never
+//! answers. The provider is the fake provider, the sign-up source one held in memory; no browser, no vault.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use phantab::engine_api::{EngineError, Serializer};
-use phantab::signin::{Echo, Host, Leftover, Options, Phase, SignInRecord};
+use phantab::signin::{
+    Echo, Host, Leftover, MemorySource, OnPage, Options, Phase, SECRET_ON_PAGE, SignInRecord, before_screenshot,
+    sign_up_with_source_for_test, sweep_sign_up,
+};
 use phantab_cdp::{Page, PageOptions, RelayTransport, TransportEvent};
 use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
 use serde_json::{Value, json};
@@ -24,10 +27,15 @@ const FIND_SIGN_IN: &str = include_str!("../src/page_js/signin_find.js");
 const FILL_FIELDS: &str = include_str!("../src/page_js/signin_fill.js");
 const READ_INPUTS: &str = include_str!("../src/page_js/signin_read_inputs.js");
 const BLANK_INPUTS: &str = include_str!("../src/page_js/signin_blank_inputs.js");
+const FIND_SIGN_UP: &str = include_str!("../src/page_js/signup_find.js");
+const FILL_SIGN_UP: &str = include_str!("../src/page_js/signup_fill.js");
+const READ_SIGN_UP: &str = include_str!("../src/page_js/signup_read.js");
+const BLANK_SIGN_UP: &str = include_str!("../src/page_js/signup_blank.js");
 const HREF: &str = "()=>location.href";
 
 const LOGIN: &str = "https://example.test/login";
 const WIDGET: &str = "https://example.test/widget";
+const JOIN: &str = "https://example.test/join";
 /// A visible reCAPTCHA checkbox's frame (`web::captcha_frame`).
 const CHECK: &str = "https://www.google.com/recaptcha/api2/anchor?k=x";
 
@@ -166,6 +174,29 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
     let Some(at) = s.docs.iter().position(|d| d.ctx == ctx) else { return by_value(Value::Null) };
     match js {
         _ if js == FIND_SIGN_IN => Reply::Now(json!({"result": {"type": "object", "objectId": "sign-in"}})),
+        _ if js == FIND_SIGN_UP => Reply::Now(json!({"result": {"type": "object", "objectId": "sign-up"}})),
+        // One value into every password field of the frame, as signup_fill.js writes it.
+        _ if js == FILL_SIGN_UP => {
+            let value = args.get(2).and_then(|a| a["value"].as_str()).unwrap_or_default().to_owned();
+            s.docs[at].inputs.iter_mut().filter(|i| i.kind == "password").for_each(|i| i.value.clone_from(&value));
+            by_value(json!("filled"))
+        }
+        _ if js == READ_SIGN_UP => {
+            let d = &s.docs[at];
+            if d.read == Mode::Hang {
+                return Reply::Hang;
+            }
+            let values: Vec<&str> = d.inputs.iter().map(|i| i.value.as_str()).collect();
+            let types: Vec<&str> = d.inputs.iter().map(|i| i.kind).collect();
+            by_value(json!({"href": d.url, "text": d.text, "values": values, "types": types}))
+        }
+        _ if js == BLANK_SIGN_UP => {
+            let wanted = args.first().and_then(|a| a["value"].as_array().cloned()).unwrap_or_default();
+            if blank_at(&mut s.docs[at], &wanted) {
+                return Reply::Hang;
+            }
+            by_value(Value::Null)
+        }
         "o=>o.report" => by_value(if s.submitted { json!({}) } else { s.report.clone() }),
         _ if js == HREF => by_value(json!(s.docs[at].url)),
         "o=>o.submitByForm" => by_value(json!(true)),
@@ -200,17 +231,11 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
                 Value::String(w) if w == "passwords" => {
                     d.inputs.iter_mut().filter(|i| i.kind == "password").for_each(|i| i.value.clear());
                 }
-                Value::Array(wanted) => match d.blank {
-                    Mode::Hang => return Reply::Hang,
-                    Mode::Ignore => {}
-                    Mode::Answer => {
-                        for i in wanted.iter().filter_map(Value::as_u64) {
-                            if let Some(i) = usize::try_from(i).ok().and_then(|i| d.inputs.get_mut(i)) {
-                                i.value.clear();
-                            }
-                        }
+                Value::Array(wanted) => {
+                    if blank_at(d, wanted) {
+                        return Reply::Hang;
                     }
-                },
+                }
                 _ => {}
             }
             by_value(Value::Null)
@@ -218,6 +243,22 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
         // `blank`, a frame's box (none, so a child frame is not read for a form), anything else.
         _ => by_value(Value::Null),
     }
+}
+
+/// A blank of the inputs at `wanted`, as the frame's mode has it: `true` when it never answers.
+fn blank_at(d: &mut Doc, wanted: &[Value]) -> bool {
+    match d.blank {
+        Mode::Hang => return true,
+        Mode::Ignore => {}
+        Mode::Answer => {
+            for i in wanted.iter().filter_map(Value::as_u64) {
+                if let Some(i) = usize::try_from(i).ok().and_then(|i| d.inputs.get_mut(i)) {
+                    i.value.clear();
+                }
+            }
+        }
+    }
+    false
 }
 
 fn frame_tree(s: &Script) -> Value {
@@ -234,9 +275,11 @@ fn frame_tree(s: &Script) -> Value {
 struct RecState {
     sign_in: Option<Phase>,
     leftover: Option<Arc<Leftover>>,
+    on_page: Option<Arc<OnPage>>,
     blanking: bool,
     account: Option<(String, Instant)>,
     echo: Option<Arc<Echo>>,
+    leaked: bool,
 }
 
 struct Rec {
@@ -303,6 +346,14 @@ impl SignInRecord for Rec {
     fn set_account(&self, key: String) {
         self.st.lock().unwrap().account = Some((key, Instant::now()));
     }
+
+    fn on_page(&self) -> Option<Arc<OnPage>> {
+        self.st.lock().unwrap().on_page.clone()
+    }
+
+    fn set_on_page(&self, mark: Option<Arc<OnPage>>) {
+        self.st.lock().unwrap().on_page = mark;
+    }
 }
 
 /// The engine as sign-in sees it: one page, `p1`, of agent `a`.
@@ -346,6 +397,10 @@ impl Host for Lane {
 
     fn echoed(&self, _record: &dyn SignInRecord, echo: Arc<Echo>) {
         self.rec.st.lock().unwrap().echo = Some(echo);
+    }
+
+    async fn end_leak(&self, _record: &dyn SignInRecord) {
+        self.rec.st.lock().unwrap().leaked = true;
     }
 }
 
@@ -437,6 +492,22 @@ impl Lane {
 
     async fn sign(&self) -> Value {
         phantab::signin::sign_in(self, "a", &json!({"pageId": "p1"})).await.unwrap()
+    }
+
+    /// `browser_sign_up {pageId: p1, username}` with `src` as the owner's vault.
+    async fn sign_up(&self, src: &MemorySource) -> Value {
+        let args = json!({"pageId": "p1", "username": NEW_USER});
+        sign_up_with_source_for_test(self, "a", &args, src).await.unwrap()
+    }
+
+    /// The sign-up sweep any later call on the page runs: whether the password is still on it.
+    async fn sweep(&self) -> bool {
+        sweep_sign_up(self, &(Arc::clone(&self.rec) as Arc<dyn SignInRecord>)).await.unwrap()
+    }
+
+    /// What a screenshot would answer now: `Ok` or the refusal's text.
+    async fn screenshot(&self) -> Result<(), String> {
+        before_screenshot(self, &(Arc::clone(&self.rec) as Arc<dyn SignInRecord>)).await.map_err(|e| e.0)
     }
 
     /// A call on an unblanked page: answers `blank-unconfirmed` and re-blanks; returns once that ends.
@@ -637,6 +708,122 @@ async fn a_frame_that_moves_while_the_provider_is_asked_gets_nothing() {
     assert_eq!(lane.value("F", "username"), "");
     assert_eq!(lane.value("F", "password"), "");
     assert_eq!(lane.phase(), None);
+}
+
+// --- browser_sign_up's sweep (THREAT-MODEL SR-80 to SR-82) ---
+
+const NEW_USER: &str = "new-owner@example.test";
+
+/// A main-frame sign-up report: one new-password field, a form that posts to its own page.
+fn sign_up_report() -> Value {
+    json!({"fields": 1, "maxLength": null, "minLength": null, "rules": null,
+        "href": JOIN, "ancestors": [], "actions": [JOIN]})
+}
+
+fn sign_up_form() -> Vec<Input> {
+    vec![input("email", "email"), input("password", "pw"), input("text", "echo")]
+}
+
+impl Lane {
+    /// The filled value, read from the scripted page inside the test: compared, never printed.
+    fn filled(&self) -> String {
+        let v = self.value("F", "pw");
+        assert_eq!(v.len(), 20, "the fill did not reach the password field");
+        v
+    }
+}
+
+/// The page copies the new password into a child frame, which blanks it once and then stops answering.
+/// A frame that held a copy matters from then on, as the filled one does: while it does not answer the
+/// page stays held and a screenshot is refused, until Chrome removes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_up_frame_that_held_a_copy_then_stops_answering_holds_the_page() {
+    let main = doc("F", 1, JOIN, sign_up_form());
+    let widget = doc("C", 2, WIDGET, vec![input("text", "note")]);
+    let lane = Lane::new(Script::new(vec![main, widget], sign_up_report())).await;
+    let src = MemorySource::default();
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "filled"}));
+    let password = lane.filled();
+    assert!(src.saved_matches("https://example.test", NEW_USER, &password), "the page holds the saved value");
+    assert_eq!(lane.screenshot().await, Err(SECRET_ON_PAGE.to_owned()));
+
+    lane.set("C", |d| d.inputs[0].value.clone_from(&password));
+    assert!(lane.sweep().await);
+    assert_eq!(lane.value("C", "note"), "", "the copy was blanked");
+
+    // The site takes the password (the field is cleared); the frame that had the copy goes quiet.
+    lane.set("F", |d| d.inputs[1].value.clear());
+    lane.set("C", |d| d.read = Mode::Hang);
+    assert!(lane.sweep().await, "a frame that held a copy did not answer");
+    assert!(lane.rec.on_page().is_some());
+    assert_eq!(lane.screenshot().await, Err(SECRET_ON_PAGE.to_owned()));
+
+    lane.detach("C").await;
+    assert!(!lane.sweep().await);
+    assert!(lane.rec.on_page().is_none(), "the mark is cleared once nothing can hold the password");
+    assert_eq!(lane.screenshot().await, Ok(()));
+    assert!(!lane.rec.st.lock().unwrap().leaked);
+}
+
+/// A child frame that never held a copy and stops answering does not hold the page: only the main frame,
+/// the filled frame and a frame a copy was seen in matter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_up_frame_that_never_held_a_copy_does_not_hold_the_page() {
+    let main = doc("F", 1, JOIN, sign_up_form());
+    let widget = doc("C", 2, WIDGET, vec![input("text", "note")]);
+    let lane = Lane::new(Script::new(vec![main, widget], sign_up_report())).await;
+    let src = MemorySource::default();
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "filled"}));
+    lane.filled();
+    lane.set("C", |d| d.read = Mode::Hang);
+    assert!(lane.sweep().await, "the password field still holds it");
+    lane.set("F", |d| d.inputs[1].value.clear());
+    assert!(!lane.sweep().await);
+    assert!(lane.rec.on_page().is_none());
+}
+
+/// The page puts a copy back in a text field each time it is blanked: the page stays held, a screenshot
+/// stays refused, even after the password field itself is clear. Once the blank holds, the mark goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_up_page_that_holds_on_to_a_copy_stays_held() {
+    let lane = Lane::new(Script::new(vec![doc("F", 1, JOIN, sign_up_form())], sign_up_report())).await;
+    let src = MemorySource::default();
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "filled"}));
+    let password = lane.filled();
+    lane.set("F", |d| {
+        d.blank = Mode::Ignore;
+        d.inputs[2].value.clone_from(&password);
+    });
+    assert!(lane.sweep().await);
+    assert!(lane.value("F", "echo") == password, "the page kept its copy");
+    lane.set("F", |d| d.inputs[1].value.clear());
+    assert!(lane.sweep().await, "a copy outside a password field still holds the page");
+    assert_eq!(lane.screenshot().await, Err(SECRET_ON_PAGE.to_owned()));
+
+    lane.set("F", |d| d.blank = Mode::Answer);
+    assert!(!lane.sweep().await);
+    assert_eq!(lane.value("F", "echo"), "");
+    assert!(lane.rec.on_page().is_none());
+    assert_eq!(lane.screenshot().await, Ok(()));
+}
+
+/// A copy that blanking cannot reach (the page's text, after the fill) ends the page; the error names no
+/// value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_up_copy_in_the_page_text_ends_the_page() {
+    let lane = Lane::new(Script::new(vec![doc("F", 1, JOIN, sign_up_form())], sign_up_report())).await;
+    let src = MemorySource::default();
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "filled"}));
+    let password = lane.filled();
+    lane.set("F", |d| d.text = format!("Your new password is {password}"));
+    let e = sweep_sign_up(&lane, &(Arc::clone(&lane.rec) as Arc<dyn SignInRecord>)).await.unwrap_err();
+    assert!(e.0.starts_with("leak-stopped"));
+    assert!(!e.0.contains(&password));
+    assert!(lane.rec.st.lock().unwrap().leaked);
 }
 
 /// A visible check's frame keeps the wall unless it answers that it shows nothing: one that never

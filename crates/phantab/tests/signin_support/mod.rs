@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use phantab::engine_api::{EngineError, EngineResult, Serializer};
-use phantab::signin::{Echo, Host, Leftover, Options, Phase, SignInRecord};
+use phantab::signin::{Echo, Host, Leftover, OnPage, Options, Phase, SignInRecord};
 use phantab_cdp::{Browser, LaunchOptions, Page, PageOptions, Transport as _};
 use phantab_testkit::FixtureServer;
 use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
@@ -54,6 +54,7 @@ struct RecState {
     paused: bool,
     sign_in: Option<Phase>,
     leftover: Option<Arc<Leftover>>,
+    on_page: Option<Arc<OnPage>>,
     blanking: bool,
     account: Option<(String, Instant)>,
     current: bool,
@@ -80,6 +81,16 @@ impl Rec {
 
     pub fn set_phase(&self, phase: Option<Phase>) {
         self.st.lock().unwrap().sign_in = phase;
+    }
+
+    /// Whether a sign-up's password is marked on the page.
+    pub fn marked(&self) -> bool {
+        self.st.lock().unwrap().on_page.is_some()
+    }
+
+    /// The record's sign-up mark as its `Debug` prints it (the no-leak check).
+    pub fn mark_debug(&self) -> String {
+        format!("{:?}", self.st.lock().unwrap().on_page)
     }
 
     pub fn phase(&self) -> Option<Phase> {
@@ -213,6 +224,14 @@ impl SignInRecord for Rec {
     fn set_account(&self, key: String) {
         self.st.lock().unwrap().account = Some((key, Instant::now()));
     }
+
+    fn on_page(&self) -> Option<Arc<OnPage>> {
+        self.st.lock().unwrap().on_page.clone()
+    }
+
+    fn set_on_page(&self, mark: Option<Arc<OnPage>>) {
+        self.st.lock().unwrap().on_page = mark;
+    }
 }
 
 type Records = Arc<Mutex<HashMap<String, Arc<Rec>>>>;
@@ -260,6 +279,23 @@ impl Host for Lane {
 
     fn echoed(&self, _record: &dyn SignInRecord, echo: Arc<Echo>) {
         self.echoes.lock().unwrap().push(echo);
+    }
+
+    async fn end_leak(&self, record: &dyn SignInRecord) {
+        let found = {
+            let at = std::ptr::from_ref(record).cast::<()>();
+            self.records
+                .lock()
+                .unwrap()
+                .values()
+                .find(|r| std::ptr::eq(Arc::as_ptr(r).cast::<()>(), at))
+                .cloned()
+        };
+        let Some(r) = found else { return };
+        if r.owned {
+            let _ = record.page().close().await;
+        }
+        self.forget(&r.id);
     }
 }
 
@@ -430,6 +466,10 @@ impl Fixture {
 
     pub fn url(&self, page: &str) -> String {
         self.server.url(&format!("/sign-in/{page}"))
+    }
+
+    pub fn signup_url(&self, page: &str) -> String {
+        self.server.url(&format!("/signup/{page}"))
     }
 
     pub fn control(&self, fields: &Value) {

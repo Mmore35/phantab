@@ -34,6 +34,16 @@ pub(crate) const INPUT_SEEN: &str = "o=>{const s=o.inputSeen===true;if(s)o.stopW
 /// Ends the watch when the wait gave up on it.
 pub(crate) const STOP_WATCH: &str = "o=>{o.stopWatch?.()}";
 
+/// phantab's page functions for `browser_sign_up`. `findSignUp`: the sign-up form's new-password fields,
+/// with a report safe to bring back.
+pub(crate) const FIND_SIGN_UP: &str = include_str!("../page_js/signup_find.js");
+/// `fillSignUp(o, asked, value)`: `moved`, `not-taken` or `filled`. Never ticks a box or submits.
+pub(crate) const FILL_SIGN_UP: &str = include_str!("../page_js/signup_fill.js");
+/// The sign-up sweep's read: `{href, text, values, types}` of a frame's inputs and textareas.
+pub(crate) const READ_SIGN_UP: &str = include_str!("../page_js/signup_read.js");
+/// The sign-up sweep's blank: an index list into [`READ_SIGN_UP`]'s.
+pub(crate) const BLANK_SIGN_UP: &str = include_str!("../page_js/signup_blank.js");
+
 /// Every page function and lambda the call runs on a handle, pinned by [`tests`].
 #[cfg(test)]
 pub(crate) const SOURCES: &[(&str, &str)] = &[
@@ -49,6 +59,10 @@ pub(crate) const SOURCES: &[(&str, &str)] = &[
     ("submitByForm", SUBMIT_BY_FORM),
     ("requestSubmit", REQUEST_SUBMIT),
     ("control", CONTROL),
+    ("signup_find.js", FIND_SIGN_UP),
+    ("signup_fill.js", FILL_SIGN_UP),
+    ("signup_read.js", READ_SIGN_UP),
+    ("signup_blank.js", BLANK_SIGN_UP),
 ];
 
 /// The hardened reads, each `(file, the plain read, phantab's text)`: reads through

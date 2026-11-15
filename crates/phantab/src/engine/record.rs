@@ -13,7 +13,7 @@ use tokio::time::Instant;
 use super::Engine;
 use super::relay::Link;
 use crate::bridge::{Profile, TabId};
-use crate::signin::{Leftover, Phase};
+use crate::signin::{Leftover, OnPage, Phase};
 use crate::util::lock;
 
 /// `r.detached`: why Chrome detached the page and who did it.
@@ -84,6 +84,8 @@ pub(crate) struct RecState {
     /// `r.signInAccount`: the account key a sign-in used, and when.
     pub sign_in_account: Option<(String, Instant)>,
     pub sign_in_blanking: bool,
+    /// While a sign-up's password sits in the page: digests, never a value.
+    pub sign_up_on_page: Option<Arc<OnPage>>,
     /// Viewer actions in the last second (SR-8).
     pub viewer_actions: VecDeque<Instant>,
     /// Viewer pointer moves in the last second, counted apart: a drag sends many.
@@ -262,6 +264,7 @@ impl Rec {
                 sign_in_leftover: None,
                 sign_in_account: None,
                 sign_in_blanking: false,
+                sign_up_on_page: None,
                 viewer_actions: VecDeque::new(),
                 viewer_moves: VecDeque::new(),
                 pointer_held: None,

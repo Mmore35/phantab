@@ -457,9 +457,17 @@ impl Engine {
         crate::engine_api::page_id(args)
     }
 
+    /// The sign-up sweep (SR-80, SR-81) on a page a sign-up filled: a copy of the new password is
+    /// blanked, or the page ended, before the call reads or acts. Nothing on any other page.
+    async fn sweep_sign_up(&self, r: &Arc<Rec>) -> EngineResult<()> {
+        let held: Arc<dyn SignInRecord> = Arc::clone(r) as Arc<dyn SignInRecord>;
+        crate::signin::sweep_sign_up(self, &held).await.map(drop)
+    }
+
     /// `snapshot(owner, {pageId})`.
     pub(crate) async fn snapshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
+        self.sweep_sign_up(&r).await?;
         let data =
             self.cdp(&r, None, |page, _| async move { read_page(&page).await.map_err(Failed::from) }).await?;
         let mut out = Self::describe_reporting(&r);
@@ -520,6 +528,9 @@ impl Engine {
         if self.echo_marked(&r) {
             return Err(EngineError(super::echo::SCREENSHOT_REFUSED.to_owned()));
         }
+        // While a sign-up's new password is on the page, no picture of it (SR-82).
+        let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
+        crate::signin::before_screenshot(self, &held).await?;
         let data = self
             .cdp(&r, None, |page, _| async move {
                 capture(&page, 80).await.map_err(|e| {
@@ -541,6 +552,7 @@ impl Engine {
     pub(crate) async fn wait(&self, owner: &str, args: &Value) -> EngineResult {
         let id = Self::page_id(args);
         let r = self.get(&id, owner, false)?;
+        self.sweep_sign_up(&r).await?;
         if arg(args, "verification").is_some_and(truthy) {
             let within = arg(args, "seconds")
                 .and_then(Value::as_f64)
@@ -588,6 +600,7 @@ impl Engine {
     pub(crate) async fn act(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, true)?;
         self.lock_site(&r, None)?;
+        self.sweep_sign_up(&r).await?;
         let action = act_action(args)?;
         let what =
             if action == "press" { format!("press {}", js_string(arg(args, "key"))) } else { action.clone() };
@@ -682,6 +695,9 @@ impl Engine {
                 }
             })
             .await;
+        // The action may have put the new password somewhere else (a copy, a reveal): swept again first,
+        // so a page that leaked it is ended whatever the action answered.
+        self.sweep_sign_up(&r).await?;
         if let Err(e) = acted {
             return Err(self.explain(&r, e).await);
         }
