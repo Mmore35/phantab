@@ -1,5 +1,7 @@
 //! The decisions behind window control, kept free of OS calls so they are unit-tested on every OS.
 
+use std::fmt::Write as _;
+
 use crate::{Result, TOKEN_PREFIX, WindowError, WindowSpec};
 
 /// The flag Chrome reads only from the command line that starts its browser process.
@@ -64,6 +66,260 @@ pub fn browser_args_lines<'a>(ps_output: &'a str, chrome_path: &str) -> Vec<&'a 
             line.strip_prefix(chrome_path).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
         })
         .collect()
+}
+
+/// A shortcut's arguments with [`QUIET_FLAG`] first (`on`), or with every whole-word copy of it taken out
+/// (`!on`), and nothing else changed: off after on gives back the original exactly. Idempotent; a flag
+/// already there stays where it is. A copy inside quotes is part of another argument and is left alone.
+pub fn rewrite_shortcut_args(args: &str, on: bool) -> String {
+    let found = flag_spans(args);
+    if on {
+        return match (found.is_empty(), args.is_empty()) {
+            (false, _) => args.to_owned(),
+            (true, true) => QUIET_FLAG.to_owned(),
+            (true, false) => format!("{QUIET_FLAG} {args}"),
+        };
+    }
+    let mut out = String::with_capacity(args.len());
+    let mut at = 0;
+    for (start, end) in found {
+        // The space after the flag goes with it, or, for one at the end, the space before it.
+        let (cut_start, cut_end) = if args[end..].starts_with(' ') {
+            (start, end + 1)
+        } else if start > at && args[..start].ends_with(' ') {
+            (start - 1, end)
+        } else {
+            (start, end)
+        };
+        out.push_str(&args[at..cut_start]);
+        at = cut_end;
+    }
+    out.push_str(&args[at..]);
+    out
+}
+
+/// The byte spans of [`QUIET_FLAG`] as a whole argument of `args`, outside quotes.
+fn flag_spans(args: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut quoted = false;
+    let mut word_start = None;
+    for (i, c) in args.char_indices().chain(std::iter::once((args.len(), ' '))) {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if (c.is_whitespace() && !quoted) || i == args.len() {
+            if let Some(start) = word_start.take()
+                && &args[start..i] == QUIET_FLAG
+            {
+                spans.push((start, i));
+            }
+        } else if word_start.is_none() {
+            word_start = Some(i);
+        }
+    }
+    spans
+}
+
+/// The arguments of a Windows command line, split as `CommandLineToArgvW` does: whitespace outside quotes
+/// separates them, quotes group, and backslashes are literal except before a quote (2n of them and a quote:
+/// n backslashes and the quote groups; 2n+1: n backslashes and a literal quote).
+pub fn windows_args(command_line: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_arg = false;
+    let mut quoted = false;
+    let mut chars = command_line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let mut n = 1;
+                while chars.peek() == Some(&'\\') {
+                    chars.next();
+                    n += 1;
+                }
+                in_arg = true;
+                if chars.peek() == Some(&'"') {
+                    current.extend(std::iter::repeat_n('\\', n / 2));
+                    if n % 2 == 1 {
+                        chars.next();
+                        current.push('"');
+                    }
+                } else {
+                    current.extend(std::iter::repeat_n('\\', n));
+                }
+            }
+            '"' => {
+                in_arg = true;
+                // Two quotes inside a quoted part are one literal quote, as the C runtime reads them.
+                if quoted && chars.peek() == Some(&'"') {
+                    chars.next();
+                    current.push('"');
+                } else {
+                    quoted = !quoted;
+                }
+            }
+            c if c.is_whitespace() && !quoted => {
+                if in_arg {
+                    args.push(std::mem::take(&mut current));
+                    in_arg = false;
+                }
+            }
+            c => {
+                in_arg = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_arg {
+        args.push(current);
+    }
+    args
+}
+
+/// The `--user-data-dir` a browser command line names (the last one, as Chrome takes the last), or `None`.
+/// `windows`: the line is a Windows command line, split by [`windows_args`], where Chrome takes the switch
+/// after `--`, `-` or `/` in any case. Otherwise it is `ps -o args=` output, the argv joined by single
+/// spaces with no quoting, so the value runs to the next ` -` that starts another switch, or the end.
+pub fn user_data_dir_of(command_line: &str, windows: bool) -> Option<String> {
+    const NAME: &str = "user-data-dir=";
+    if windows {
+        return windows_args(command_line).into_iter().skip(1).rev().find_map(|arg| {
+            let body = arg.strip_prefix("--").or_else(|| arg.strip_prefix(['-', '/']))?;
+            let at = prefix_len_ignore_case(body, NAME)?;
+            Some(body[at..].to_owned())
+        });
+    }
+    let switch = " --user-data-dir=";
+    let start = command_line.rfind(switch)? + switch.len();
+    let rest = &command_line[start..];
+    let end = rest.find(" -").unwrap_or(rest.len());
+    Some(rest[..end].to_owned())
+}
+
+/// Whether a browser command line runs on the configured user-data dir. One that names none runs on
+/// Chrome's default, so it matches only when `default_dir`; one that names a dir matches when it is
+/// `user_data_dir` (ignoring case and the separator's direction on Windows, and a trailing separator).
+pub fn on_user_data_dir(command_line: &str, user_data_dir: &str, default_dir: bool, windows: bool) -> bool {
+    match user_data_dir_of(command_line, windows) {
+        None => default_dir,
+        Some(named) => same_dir(&named, user_data_dir, windows),
+    }
+}
+
+fn same_dir(a: &str, b: &str, windows: bool) -> bool {
+    let trim = |s: &str| s.trim_end_matches(['/', '\\']).to_owned();
+    let (a, b) = (trim(a), trim(b));
+    if a.is_empty() {
+        return false;
+    }
+    if windows { a.replace('/', "\\").to_lowercase() == b.replace('/', "\\").to_lowercase() } else { a == b }
+}
+
+/// macOS: the arguments after `chrome_path` in one `ps -o args=` line. `ps` joins argv with single spaces
+/// and no quoting, so each ` -` starts another argument; one with `=` keeps its whole value (a path with
+/// spaces), one without keeps only its first word (what follows is a URL or another positional, which a
+/// restart does not need). Empty when the line is not `chrome_path`'s.
+pub fn ps_switches(args_line: &str, chrome_path: &str) -> Vec<String> {
+    let Some(rest) = args_line.trim_start().strip_prefix(chrome_path) else { return Vec::new() };
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return Vec::new();
+    }
+    rest.split(" -")
+        .skip(1)
+        .map(|piece| {
+            let piece = piece.trim_end();
+            let word = piece.split(' ').next().unwrap_or_default();
+            format!("-{}", if word.contains('=') { piece } else { word })
+        })
+        .collect()
+}
+
+/// Whether a command line is a browser process, not one of its helpers (`--type=renderer` and the rest).
+pub fn is_browser_process(command_line: &str) -> bool {
+    !command_line.contains("--type=")
+}
+
+/// macOS: `ps -axww -o pid=,args=` output as `(pid, args)` per process.
+pub fn ps_processes(ps_output: &str) -> Vec<(u32, &str)> {
+    ps_output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, args) = line.split_once(' ').unwrap_or((line, ""));
+            Some((pid.parse().ok()?, args.trim_start()))
+        })
+        .collect()
+}
+
+/// macOS: the `.app` bundle that holds `chrome_path` (`/Applications/Google Chrome.app`), which `open -a`
+/// starts.
+pub fn app_bundle(chrome_path: &str) -> Option<&str> {
+    let at = chrome_path.find(".app/Contents/MacOS/")?;
+    Some(&chrome_path[..at + ".app".len()])
+}
+
+/// macOS: the label of phantab's `LaunchAgent`, and its file's name (`.plist` added) in
+/// `~/Library/LaunchAgents`.
+pub const LAUNCH_AGENT_LABEL: &str = "dev.phantab.chrome";
+
+/// macOS: the `LaunchAgent` that starts Chrome with [`QUIET_FLAG`] at login (docs/MAC.md Q4):
+/// `/usr/bin/open -a <bundle> --args <flag> [--user-data-dir=<dir>]`, run once at load. `open --args`
+/// reaches Chrome only when it is not yet running, so it never restarts one.
+pub fn launch_agent_plist(bundle: &str, user_data_dir: Option<&str>) -> String {
+    let escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let mut args = vec!["/usr/bin/open".to_owned(), "-a".to_owned(), bundle.to_owned(), "--args".to_owned()];
+    args.push(QUIET_FLAG.to_owned());
+    if let Some(dir) = user_data_dir {
+        args.push(format!("--user-data-dir={dir}"));
+    }
+    let strings = args.iter().fold(String::new(), |mut all, a| {
+        let _ = writeln!(all, "\t\t<string>{}</string>", escape(a));
+        all
+    });
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \t<key>Label</key>\n\
+         \t<string>{LAUNCH_AGENT_LABEL}</string>\n\
+         \t<key>ProgramArguments</key>\n\
+         \t<array>\n\
+         {strings}\
+         \t</array>\n\
+         \t<key>RunAtLoad</key>\n\
+         \t<true/>\n\
+         </dict>\n\
+         </plist>\n"
+    )
+}
+
+/// Whether the file at phantab's `LaunchAgent` path is phantab's own: it carries the label. Anything else
+/// there is left alone.
+pub fn is_our_launch_agent(text: &str) -> bool {
+    text.contains(&format!("<string>{LAUNCH_AGENT_LABEL}</string>"))
+}
+
+/// Expands `%NAME%` in a registry path (a `REG_EXPAND_SZ` value) from `var`; an unknown name stays as it
+/// was, as `ExpandEnvironmentStrings` leaves it.
+pub fn expand_env(value: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(open) = rest.find('%') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let known =
+            after.find('%').filter(|&close| close > 0).and_then(|close| Some((close, var(&after[..close])?)));
+        if let Some((close, v)) = known {
+            out.push_str(&v);
+            rest = &after[close + 1..];
+        } else {
+            out.push('%');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The byte length of `value`'s prefix that equals `prefix` ignoring case (per char, like .NET's
@@ -219,5 +475,150 @@ mod tests {
         assert!(hkcu_subkey(r"HKLM\Software\X").is_err());
         assert!(hkcu_subkey(r"HKCU\").is_err());
         assert!(hkcu_subkey(r"Software\X").is_err());
+    }
+
+    #[test]
+    fn shortcut_args_round_trip_exactly() {
+        for original in [
+            "",
+            "--profile-directory=Default",
+            "--profile-directory=\"Profile 1\"  --new-window",
+            " leading and trailing ",
+            "https://example.com/?q=--silent-debugger-extension-api",
+        ] {
+            let on = rewrite_shortcut_args(original, true);
+            assert!(on.starts_with(QUIET_FLAG), "{on:?}");
+            assert_eq!(rewrite_shortcut_args(&on, true), on, "on is idempotent: {original:?}");
+            assert_eq!(rewrite_shortcut_args(&on, false), original, "off undoes on: {original:?}");
+            assert_eq!(rewrite_shortcut_args(original, false), original, "off is idempotent");
+        }
+        assert_eq!(rewrite_shortcut_args("", true), QUIET_FLAG);
+        assert_eq!(rewrite_shortcut_args("--x", true), format!("{QUIET_FLAG} --x"));
+    }
+
+    #[test]
+    fn shortcut_args_off_takes_every_whole_word_copy_only() {
+        let args = format!("--a {QUIET_FLAG} --b {QUIET_FLAG}");
+        assert_eq!(rewrite_shortcut_args(&args, false), "--a --b");
+        assert_eq!(rewrite_shortcut_args(&args, true), args, "a flag already there stays where it is");
+        let longer = format!("{QUIET_FLAG}x --y");
+        assert_eq!(rewrite_shortcut_args(&longer, false), longer, "another switch that starts the same");
+        let quoted = format!("\"{QUIET_FLAG}\" \"a {QUIET_FLAG} b\"");
+        assert_eq!(rewrite_shortcut_args(&quoted, false), quoted, "quoted copies belong to other arguments");
+        assert_eq!(rewrite_shortcut_args(QUIET_FLAG, false), "");
+    }
+
+    #[test]
+    fn windows_args_split_as_command_line_to_argv() {
+        assert_eq!(windows_args(r#""C:\a b\c.exe" --x="y z" w"#), [r"C:\a b\c.exe", "--x=y z", "w"]);
+        assert_eq!(windows_args(r#"a\\"b c" d"#), [r"a\b c", "d"]);
+        assert_eq!(windows_args(r#"a\"b c"#), [r#"a"b"#, "c"]);
+        assert_eq!(windows_args(r"a\b\\ c"), [r"a\b\\", "c"]);
+        assert_eq!(windows_args(r#""" x"#), ["", "x"]);
+        assert_eq!(windows_args("   "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn user_data_dir_from_a_windows_command_line() {
+        let line = format!(r#""{CHROME}" --user-data-dir="C:\Data\Chrome Two" --flag"#);
+        assert_eq!(user_data_dir_of(&line, true).as_deref(), Some(r"C:\Data\Chrome Two"));
+        let last = format!(r"{CHROME} --user-data-dir=C:\a /User-Data-Dir=C:\b");
+        assert_eq!(user_data_dir_of(&last, true).as_deref(), Some(r"C:\b"), "the last one, in any case");
+        assert_eq!(user_data_dir_of(&format!(r#""{CHROME}" --no-startup-window"#), true), None);
+        // argv[0] is the program, never a switch.
+        assert_eq!(user_data_dir_of(r"--user-data-dir=C:\x", true), None);
+    }
+
+    #[test]
+    fn user_data_dir_from_ps_output() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let line = format!("{chrome} --user-data-dir=/Users/a/Library/Application Support/X Y --flag");
+        assert_eq!(
+            user_data_dir_of(&line, false).as_deref(),
+            Some("/Users/a/Library/Application Support/X Y")
+        );
+        assert_eq!(user_data_dir_of(&format!("{chrome} --user-data-dir=/d"), false).as_deref(), Some("/d"));
+        assert_eq!(user_data_dir_of(chrome, false), None);
+    }
+
+    #[test]
+    fn only_the_configured_user_data_dir_matches() {
+        let default = format!(r#""{CHROME}" --no-startup-window"#);
+        let named =
+            format!(r#""{CHROME}" --user-data-dir="C:/Users/A/AppData/Local/Google/Chrome/User Data""#);
+        let other = format!(r#""{CHROME}" --user-data-dir=C:\Temp\scratch"#);
+        let dir = r"c:/users/a/appdata/local/google/chrome/user data";
+        assert!(on_user_data_dir(&default, dir, true, true));
+        assert!(!on_user_data_dir(&default, r"C:\Temp\scratch", false, true));
+        assert!(on_user_data_dir(&named, dir, true, true), "case and the separators' direction are ignored");
+        assert!(!on_user_data_dir(&other, dir, true, true));
+        assert!(on_user_data_dir(&other, r"C:\Temp\scratch\", false, true));
+        assert!(!on_user_data_dir(&format!("{CHROME} --user-data-dir="), "", false, true), "an empty dir");
+        assert!(!on_user_data_dir("/c --user-data-dir=/A", "/a", false, false), "macOS keeps case");
+        assert!(on_user_data_dir("/c --user-data-dir=/a/", "/a", false, false));
+    }
+
+    #[test]
+    fn ps_switches_keep_whole_values_and_drop_positionals() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let line = format!(
+            "{chrome} --user-data-dir=/Users/a/My Chrome --proxy-server=127.0.0.1:8080 --restore-last-session \
+             https://example.com/"
+        );
+        assert_eq!(
+            ps_switches(&line, chrome),
+            ["--user-data-dir=/Users/a/My Chrome", "--proxy-server=127.0.0.1:8080", "--restore-last-session"]
+        );
+        assert_eq!(ps_switches(chrome, chrome), Vec::<String>::new());
+        assert_eq!(ps_switches(&format!("{chrome} https://x -y"), chrome), ["-y"]);
+        assert_eq!(ps_switches(&format!("{chrome}X --a"), chrome), Vec::<String>::new(), "another program");
+    }
+
+    #[test]
+    fn browser_processes_are_the_ones_without_a_type() {
+        assert!(is_browser_process(r#""chrome.exe" --no-startup-window"#));
+        assert!(!is_browser_process(r#""chrome.exe" --type=renderer"#));
+    }
+
+    #[test]
+    fn ps_output_gives_pids_and_args() {
+        let ps = "    1 /sbin/launchd\n  412 /Applications/A B.app/Contents/MacOS/A B --x\nbad line\n 7\n";
+        assert_eq!(
+            ps_processes(ps),
+            [(1, "/sbin/launchd"), (412, "/Applications/A B.app/Contents/MacOS/A B --x"), (7, "")]
+        );
+    }
+
+    #[test]
+    fn launch_agent_starts_the_bundle_with_the_flag() {
+        let chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(app_bundle(chrome), Some("/Applications/Google Chrome.app"));
+        assert_eq!(app_bundle("/usr/bin/chrome"), None);
+        let plist = launch_agent_plist("/Applications/Google Chrome.app", None);
+        assert!(plist.contains("<string>dev.phantab.chrome</string>"), "{plist}");
+        assert!(
+            plist.contains(
+                "<string>/usr/bin/open</string>\n\t\t<string>-a</string>\n\t\t<string>/Applications/Google \
+                 Chrome.app</string>\n\t\t<string>--args</string>\n\t\t<string>--silent-debugger-extension-api\
+                 </string>\n\t</array>"
+            ),
+            "{plist}"
+        );
+        assert!(plist.contains("<key>RunAtLoad</key>\n\t<true/>"), "{plist}");
+        assert!(is_our_launch_agent(&plist));
+        assert!(!is_our_launch_agent("<string>com.example.other</string>"));
+        let named = launch_agent_plist("/A&B.app", Some("/Users/a/<dir>"));
+        assert!(named.contains("<string>/A&amp;B.app</string>"), "{named}");
+        assert!(named.contains("<string>--user-data-dir=/Users/a/&lt;dir&gt;</string>"), "{named}");
+    }
+
+    #[test]
+    fn registry_paths_expand_known_names_only() {
+        let var = |name: &str| (name == "USERPROFILE").then(|| r"C:\Users\a".to_owned());
+        assert_eq!(expand_env(r"%USERPROFILE%\Desktop", var), r"C:\Users\a\Desktop");
+        assert_eq!(expand_env(r"%NOPE%\x", var), r"%NOPE%\x");
+        assert_eq!(expand_env(r"%NOPE%%USERPROFILE%", var), r"%NOPE%C:\Users\a");
+        assert_eq!(expand_env("50% done %%", var), "50% done %%");
+        assert_eq!(expand_env(r"D:\plain", var), r"D:\plain");
     }
 }

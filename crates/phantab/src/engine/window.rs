@@ -172,7 +172,7 @@ impl Engine {
     }
 
     /// Closes the spare window, when `which` picks it.
-    async fn close_spare(&self, which: impl Fn(&Spare) -> bool) {
+    pub(crate) async fn close_spare(&self, which: impl Fn(&Spare) -> bool) {
         if let Some(s) = self.take_spare(which) {
             s.blanked.abort();
             self.close_link(&s.linked.link);

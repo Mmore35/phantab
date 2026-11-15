@@ -755,6 +755,35 @@ impl Bridge {
         tokio::time::timeout(within, rx.wait_for(|c| c.contains(profile))).await.is_ok_and(|r| r.is_ok())
     }
 
+    /// The id of `profile`'s link now, `None` when it has none. Each connection gets a new id, so a link
+    /// that replaced another has a different one.
+    #[must_use]
+    pub fn link_id_in(&self, profile: &str) -> Option<u64> {
+        lock(&self.state).links.get(profile).map(|link| link.conn.id)
+    }
+
+    /// True once `profile` has a link other than `before` (an id [`Self::link_id_in`] gave earlier),
+    /// waiting up to `within`. The link that was up before a restart is not a reconnect, however long it
+    /// takes to drop.
+    pub async fn wait_new_link_in(&self, profile: &str, before: Option<u64>, within: Duration) -> bool {
+        let mut rx = self.connected.subscribe();
+        let fresh = || self.link_id_in(profile).is_some_and(|id| Some(id) != before);
+        if fresh() {
+            return true;
+        }
+        // Every link added or dropped notifies `connected`, a replacement twice.
+        tokio::time::timeout(within, async {
+            while rx.changed().await.is_ok() {
+                if fresh() {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Takes a new connection from the native host (the upgraded `/bridge` socket). It becomes the link
     /// once its hello is accepted.
     pub fn accept<S>(self: &Arc<Self>, stream: S)

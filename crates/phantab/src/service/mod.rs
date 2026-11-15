@@ -271,6 +271,9 @@ enum Method {
     Shutdown,
     /// `check_wait {watch}`: the wake command's wait for a verification hand-off to end.
     CheckWait,
+    /// `restart_quiet`: the owner's Chrome restarts with the quiet-debugging flag (`phantab chrome
+    /// restart-quiet`).
+    RestartQuiet,
     Engine(EngineMethod),
 }
 
@@ -283,6 +286,7 @@ impl Method {
             "heartbeat" => Self::Heartbeat,
             "shutdown" => Self::Shutdown,
             "check_wait" => Self::CheckWait,
+            "restart_quiet" => Self::RestartQuiet,
             other => Self::Engine(EngineMethod::from_name(other)?),
         })
     }
@@ -296,7 +300,8 @@ impl Method {
         match self {
             Self::Status | Self::Heartbeat | Self::CheckWait => None,
             Self::Disconnect => Some(Turn::shared(client)),
-            Self::Release | Self::Shutdown => Some(Turn::Exclusive),
+            // A restart ends the browser every page runs in: nothing else may run meanwhile.
+            Self::Release | Self::Shutdown | Self::RestartQuiet => Some(Turn::Exclusive),
             Self::Engine(m) => m.turn(args, client),
         }
     }
@@ -390,6 +395,7 @@ impl Service {
                     Method::Disconnect => Ok(json!({ "retainedForResume": true })),
                     Method::Release => svc.engine.release(&client).await,
                     Method::Shutdown => svc.shutdown(),
+                    Method::RestartQuiet => svc.engine.restart_quiet().await,
                     Method::CheckWait => {
                         let watch = args.get("watch").and_then(Value::as_str).unwrap_or("");
                         Ok(svc.engine.check_wait(watch).await)
@@ -583,7 +589,7 @@ mod tests {
         for m in ["pages", "connect", "tabs", "disconnect"] {
             assert_eq!(turn(m), Some(Turn::Shared { client: "mcp:a".into() }), "{m}");
         }
-        for m in ["open", "attach", "show", "resume", "close", "release", "shutdown"] {
+        for m in ["open", "attach", "show", "resume", "close", "release", "shutdown", "restart_quiet"] {
             assert_eq!(turn(m), Some(Turn::Exclusive), "{m}");
         }
         // The engine's `String(args.pageId)`: an absent id is one page, "undefined", that no record has.

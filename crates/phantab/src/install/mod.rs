@@ -17,7 +17,7 @@ mod fsops;
 mod host;
 mod quiet;
 
-use std::io::Write;
+use std::io::{BufRead, IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -40,6 +40,8 @@ const HOST_RECORD: &str = "native-host";
 const BINARY_RECORD: &str = "binary";
 pub(crate) const CONFIG: &str = "config.json";
 pub(crate) const QUIET_MARKER: &str = "quiet-debugging.on";
+/// The owner answered no to the quiet-debugging question, so later installs neither ask nor change it.
+pub(crate) const QUIET_OFF_MARKER: &str = "quiet-debugging.off";
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,18 +64,43 @@ impl Target {
 }
 
 /// `phantab install …` (`uninstall` for `phantab uninstall …`). Returns the exit code.
+///
+/// At a terminal, an install that has no answer about quiet debugging yet asks it.
 pub fn run(words: &[String], uninstall: bool) -> Result<i32> {
     let exe = std::env::current_exe().context("Could not locate the running phantab binary")?;
-    run_as(words, uninstall, &exe, &mut std::io::stdout().lock(), true)
+    let stdin = std::io::stdin();
+    let mut lock = stdin.lock();
+    let terminal: Option<&mut dyn BufRead> =
+        if stdin.is_terminal() && std::io::stdout().is_terminal() { Some(&mut lock) } else { None };
+    run_as(words, uninstall, &exe, &mut std::io::stdout().lock(), true, terminal)
 }
 
 /// [`run`] with the binary to install and the output named, for tests. It installs `exe` whatever it
 /// was built with: the test-build refusal (SR-73) is about the running binary, which [`run`] installs.
+/// No terminal: nothing is asked.
 pub fn run_with(words: &[String], uninstall: bool, exe: &Path, out: &mut dyn Write) -> Result<i32> {
-    run_as(words, uninstall, exe, out, false)
+    run_as(words, uninstall, exe, out, false, None)
 }
 
-fn run_as(words: &[String], uninstall: bool, exe: &Path, out: &mut dyn Write, running: bool) -> Result<i32> {
+/// [`run_with`] at a terminal that types `terminal`, for tests of the quiet-debugging question.
+pub fn run_at_terminal(
+    words: &[String],
+    uninstall: bool,
+    exe: &Path,
+    out: &mut dyn Write,
+    terminal: &mut dyn BufRead,
+) -> Result<i32> {
+    run_as(words, uninstall, exe, out, false, Some(terminal))
+}
+
+fn run_as(
+    words: &[String],
+    uninstall: bool,
+    exe: &Path,
+    out: &mut dyn Write,
+    running: bool,
+    terminal: Option<&mut dyn BufRead>,
+) -> Result<i32> {
     let mut args = match args::parse(words) {
         Ok(args) => args,
         Err(message) => {
@@ -89,7 +116,7 @@ fn run_as(words: &[String], uninstall: bool, exe: &Path, out: &mut dyn Write, ru
     if running {
         refuse_a_test_build(&args)?;
     }
-    execute(&args, exe, out)?;
+    execute(&args, exe, out, terminal)?;
     Ok(0)
 }
 
@@ -162,13 +189,24 @@ struct Change {
     rendered: Vec<u8>,
 }
 
-fn execute(args: &args::Args, exe: &Path, out: &mut dyn Write) -> Result<()> {
+fn execute(
+    args: &args::Args,
+    exe: &Path,
+    out: &mut dyn Write,
+    terminal: Option<&mut dyn BufRead>,
+) -> Result<()> {
     if !cfg!(any(windows, target_os = "macos")) {
         bail!("phantab install supports Windows and macOS only.");
     }
     let runtime = fsops::resolve(&args.runtime.clone().unwrap_or_else(paths::runtime_dir));
-    if let Some(on) = args.quiet_debugging {
-        return quiet::set(&runtime, on, args.run_key.as_deref(), out);
+    let places = args.quiet_places();
+    // With no client named, `--quiet-debugging` changes only that, on the installed runtime.
+    if let Some(on) = args.quiet_debugging
+        && !args.uninstall
+        && args.codex_configs.is_empty()
+        && args.claude_configs.is_empty()
+    {
+        return quiet::set(&runtime, on, &places, out);
     }
     let targets = targets(args)?;
     let record_path = runtime.join(RECORD);
@@ -222,8 +260,13 @@ fn execute(args: &args::Args, exe: &Path, out: &mut dyn Write) -> Result<()> {
                 .with_context(|| format!("{}", target.path.display()))?,
         );
     }
-    let quiet_off = if args.uninstall && cfg!(windows) && runtime.join(QUIET_MARKER).exists() {
-        Some(quiet::chrome_of(&runtime)?)
+    // Uninstall takes the flag off again, before any other write: a failed off then leaves everything,
+    // the answer included, as it was, so the next uninstall tries again. The answer goes only once it is off.
+    let quiet_off = if args.uninstall && quiet::answered(&runtime) == Some(true) {
+        let browser = quiet::browser_of(&runtime)?;
+        Some(quiet::apply(false, browser, &places).context(
+            "Quiet debugging could not be turned off, so nothing was uninstalled; run phantab uninstall again",
+        )?)
     } else {
         None
     };
@@ -242,9 +285,9 @@ fn execute(args: &args::Args, exe: &Path, out: &mut dyn Write) -> Result<()> {
         if let (Some(saved), Some(site)) = (&host_saved, &site) {
             site.write(saved["original"].as_str())?;
         }
-        if let Some(chrome) = quiet_off {
-            quiet::remove_marker(&runtime)?;
-            quiet::apply(false, &chrome, args.run_key.as_deref())?;
+        quiet::remove_markers(&runtime)?;
+        if let Some(state) = &quiet_off {
+            quiet::report(false, state, out)?;
         }
     } else {
         if cfg!(windows) {
@@ -256,7 +299,36 @@ fn execute(args: &args::Args, exe: &Path, out: &mut dyn Write) -> Result<()> {
             site.write(Some(&host_value))?;
         }
     }
-    report(out, &name, targets.len(), &runtime, prepared.as_ref())
+    report(out, &name, targets.len(), &runtime, prepared.as_ref())?;
+    if !args.uninstall {
+        install_quiet(args, &runtime, &places, out, terminal)?;
+    }
+    Ok(())
+}
+
+/// After an install: `--quiet-debugging`, else the owner's earlier answer (on is applied again, as the
+/// install may have changed the browser), else the question at a terminal, else how to turn it on.
+fn install_quiet(
+    args: &args::Args,
+    runtime: &Path,
+    places: &quiet::Places,
+    out: &mut dyn Write,
+    terminal: Option<&mut dyn BufRead>,
+) -> Result<()> {
+    let on = match (args.quiet_debugging, quiet::answered(runtime), terminal) {
+        (Some(on), _, _) | (None, Some(on @ true), _) => on,
+        (None, Some(false), _) => return Ok(()),
+        (None, None, Some(terminal)) => quiet::ask(terminal, out)?,
+        (None, None, None) => {
+            writeln!(
+                out,
+                "Chrome's debugging bar shows on agent pages. To hide it, run phantab install \
+                 --quiet-debugging on; every extension that uses Chrome's debugger then attaches silently."
+            )?;
+            return Ok(());
+        }
+    };
+    quiet::set(runtime, on, places, out)
 }
 
 fn report(

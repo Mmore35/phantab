@@ -343,6 +343,44 @@ fn sign_in_clear_needs_the_target_typed_back() {
     assert!(rt.endpoint().is_none(), "sign-in-clear started a service");
 }
 
+/// THREAT-MODEL SR-49: closing the owner's Chrome is the owner's. `chrome restart-quiet` needs a terminal
+/// and a typed y, and the service's `restart_quiet` is never called by name. With quiet debugging off,
+/// the service refuses and touches no Chrome.
+#[test]
+fn chrome_restart_quiet_is_the_owners_at_a_terminal() {
+    let rt = Runtime::new();
+    let restart = |env: &[(&str, &str)]| run(&rt, &["chrome", "restart-quiet"], env);
+    let (code, _, err) = run(&rt, &["chrome"], &[]);
+    assert_eq!((code, err.trim()), (1, "Usage: phantab chrome restart-quiet"));
+    let (code, _, err) = run(&rt, &["chrome", "restart-quiet", "--yes"], &[]);
+    assert_eq!((code, err.trim()), (1, "Usage: phantab chrome restart-quiet"));
+    let (code, out, err) = restart(&[("PHANTAB_TEST_TERMINAL", "0")]);
+    assert_eq!(
+        (code, out.as_str(), err.trim()),
+        (
+            1,
+            "",
+            "chrome restart-quiet closes your Chrome, which is yours to do: run it yourself in a terminal window."
+        )
+    );
+    for said in ["", "n", "no", "maybe"] {
+        let (code, out, err) = restart(&[("PHANTAB_TEST_TERMINAL", "1"), ("PHANTAB_TEST_TYPED", said)]);
+        // The prompt and the answer share a line here: nothing typed echoes the Enter.
+        assert_eq!((code, out.as_str()), (1, ""), "{said:?}");
+        assert!(
+            err.contains("Restart Chrome now? [y/N] ") && err.trim().ends_with("Nothing was restarted."),
+            "{err}"
+        );
+    }
+    let (code, _, err) = run(&rt, &["restart_quiet"], &[]);
+    assert_eq!((code, err.trim()), (1, "Run phantab chrome restart-quiet."));
+    assert!(rt.endpoint().is_none(), "nothing reached a service");
+
+    let (code, out, err) = restart(&[("PHANTAB_TEST_TERMINAL", "1"), ("PHANTAB_TEST_TYPED", "y")]);
+    assert_eq!((code, out.as_str()), (1, ""), "{err}");
+    assert!(err.contains("[y/N] Quiet debugging is off, so a restart would not hide the bar."), "{err}");
+}
+
 #[test]
 fn the_native_host_serves_only_our_extension() {
     let rt = Runtime::new();

@@ -233,12 +233,40 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     let c = lane.open("c", "/forms/controls").await;
     lane.act("c", &c, json!({ "action": "fill", "selector": "#text", "text": "typed words" })).await.unwrap();
     lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "two" })).await.unwrap();
+    // A select also takes the label a person sees, and one that matches no option fails, naming them; a
+    // snapshot shows the option a select shows and which boxes are ticked.
+    lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "One" })).await.unwrap();
+    let wrong =
+        lane.act("c", &c, json!({ "action": "select", "selector": "#choice", "text": "Three" })).await;
+    let wrong = wrong.unwrap_err();
+    assert!(
+        wrong.starts_with("#choice: no option has the value or label \"Three\"")
+            && wrong.contains("\"Two\" (value \"two\")"),
+        "{wrong}"
+    );
+    lane.act("c", &c, json!({ "action": "click", "selector": "#agree" })).await.unwrap();
+    let snap = lane.snap("c", &c).await;
+    let control =
+        |id: &str| snap["elements"].as_array().unwrap().iter().find(|e| e["id"] == json!(id)).cloned();
+    assert_eq!(control("choice").unwrap()["selected"], json!("One"), "{snap}");
+    assert_eq!(control("agree").unwrap()["checked"], json!(true), "{snap}");
+    assert!(control("radio-a").unwrap().get("checked").is_none(), "{snap}");
+    assert!(control("filled").unwrap().get("selected").is_none() && !snap.to_string().contains("never-read"));
     lane.act("c", &c, json!({ "action": "click", "selector": "#text" })).await.unwrap();
     lane.act("c", &c, json!({ "action": "press", "key": "Enter" })).await.unwrap();
     assert!(text(&lane.snap("c", &c).await).contains("submitted typed words"));
     lane.act("c", &c, json!({ "action": "scroll", "deltaY": 400 })).await.unwrap();
     let missing = lane.act("c", &c, json!({ "action": "click", "selector": "#disabled" })).await.unwrap_err();
     assert!(missing.starts_with("#disabled: disabled after"), "{missing}");
+    // A selector the loaded page has no element for fails once the page has stopped changing, not after
+    // the full 10 s.
+    let t = Instant::now();
+    let absent = lane.act("c", &c, json!({ "action": "click", "selector": "#nowhere" })).await.unwrap_err();
+    assert!(
+        absent.starts_with("#nowhere: not found after ") && absent.contains("stopped changing"),
+        "{absent}"
+    );
+    assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
     let bad = lane.act("c", &c, json!({ "action": "click", "selector": "a >> nth=0" })).await.unwrap_err();
     assert!(bad.contains("not a valid selector"), "{bad}");
     let twin = lane.fixtures.twin_url("/engine/basic");
@@ -357,11 +385,24 @@ async fn snapshots_read_shadow_roots_and_website_frames_and_click_xy_reaches_the
     assert_eq!(element(&snap, "light").unwrap()["offscreen"], Value::Null);
     assert_eq!(element(&snap, "shadow").unwrap()["inShadow"], json!(true));
     assert_eq!(element(&snap, "otherframe").unwrap()["frame"], json!(lane.fixtures.twin_origin()));
+    // A fill for an open shadow root's element fails saying where click_xy reaches it; a click goes there.
+    let inside = element(&snap, "shadow").unwrap();
+    let told =
+        lane.act("a", &a, json!({ "action": "fill", "selector": "#shadow", "text": "x" })).await.unwrap_err();
+    let place = format!("an open shadow root has it at {},{}: click_xy reaches it", inside["x"], inside["y"]);
+    assert!(told.starts_with("#shadow: not found in the document (") && told.contains(&place), "{told}");
+    let r = lane.act("a", &a, json!({ "action": "click", "selector": "#shadow" })).await;
+    assert!(r.is_ok(), "{r:?}");
     for id in ["light", "shadow", "sameframe", "otherframe"] {
         let e = element(&snap, id).unwrap();
         let r = lane.act("a", &a, json!({ "action": "click_xy", "x": e["x"], "y": e["y"] })).await;
         assert!(r.is_ok(), "click_xy on {id} at {},{}: {r:?}", e["x"], e["y"]);
     }
+    // A click with a point and no selector clicks there; one with neither says what it needs.
+    let r = lane.act("a", &a, json!({ "action": "click", "x": inside["x"], "y": inside["y"] })).await;
+    assert!(r.is_ok(), "{r:?}");
+    let told = lane.act("a", &a, json!({ "action": "click" })).await.unwrap_err();
+    assert!(told.starts_with("Supply a selector to click, or x and y to click at a point."), "{told}");
     // A cross-site frame that has just loaded can miss its first synthetic click in headless Chrome
     // (the browser's hit test does not route to it yet), so a
     // miss is clicked again, and the repeats are counted.
@@ -544,10 +585,39 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         let said = stopped["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with("Step 2 of 3 (navigate) failed, the 1 before it was done: "), "{said}");
         assert!(said.contains("Only HTTP(S) website URLs are accepted."), "{said}");
-        let shot = call("browser_screenshot", json!({ "pageId": page }));
+        // `steps` writes each action as a list, and its snapshot comes unasked.
+        let listed =
+            call("browser_act", json!({ "steps": [["fill", "#name", "by steps"], ["click", "#go"]] }));
+        assert_eq!(listed["isError"], Value::Null, "{listed}");
+        let said = listed["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")) && said.contains("by steps"), "{said}");
+        let quiet =
+            call("browser_act", json!({ "steps": [["fill", "#name", "from mcp"]], "snapshot": false }));
+        assert_eq!(quiet["isError"], Value::Null, "{quiet}");
+        assert!(!quiet["content"][0]["text"].as_str().unwrap_or_default().contains("CONTROLS"), "{quiet}");
+        // With snapshot true, the snapshot follows the failure.
+        let missed = call(
+            "browser_act",
+            json!({ "pageId": page, "action": "click", "selector": "#nowhere", "snapshot": true }),
+        );
+        assert_eq!(missed["isError"], json!(true), "{missed}");
+        let said = missed["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with("#nowhere: not found after ") && said.contains("\nCONTROLS"), "{said}");
+        // A call that leaves pageId out reaches the page the last one named.
+        let shot = call("browser_screenshot", json!({}));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
+        let read = call("browser_snapshot", json!({ "full": true }));
+        let said = read["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")), "{said}");
         let closed = call("browser_close", json!({ "pageId": page }));
         assert_eq!(closed["isError"], Value::Null, "{closed}");
+        // Once that page is closed, there is none to default to.
+        let none = call("browser_act", json!({ "action": "click", "selector": "#go" }));
+        assert_eq!(none["isError"], json!(true), "{none}");
+        assert!(
+            none["content"][0]["text"].as_str().unwrap_or_default().starts_with("No page yet to default to"),
+            "{none}"
+        );
         drop(stdin);
         let _ = child.wait();
         (text_of, page)

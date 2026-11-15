@@ -153,7 +153,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T55 | A rewritten config loses its permissions (an owner-only `~/.claude.json` becomes world-readable). | SR-50 | L1 |
 | T56 | Stale extension files stay loaded after an update. | SR-51 | L1 |
 | T57 | Paths or provider commands inject into a generated script or config. | SR-52 | L1 |
-| T58 | The Run-key edit touches values that are not Chrome's. | SR-49 | L1 |
+| T58 | The quiet edit touches Run values, shortcuts or a LaunchAgent that are not Chrome's or phantab's, or changes more than the flag. | SR-49 | L1 |
 | T59 | A same-user process repoints the native host registration or the service binary. | SR-48, SR-53; rest is residual R1 | L1, L3 |
 
 ### B9: update path and supply chain
@@ -919,10 +919,25 @@ Each requirement is a release blocker, and each is tested in the lanes named.
 - **SR-48** The binary that the service, MCP server and native host run from sits in a folder that
   only the owner (and SYSTEM/administrators) can write, checked like SR-10 at install and at service
   start. The native host manifest `path` is that binary, absolute. *L1.*
-- **SR-49** Quiet debugging edits only HKCU Run values whose command starts with the quoted
-  configured Chrome path, adds or removes only `--silent-debugger-extension-api`, and is on only by
-  explicit `install --quiet-debugging on`. Install output states the trade-off: every debugger
-  extension then attaches silently. *L1: round-trip on a scratch Run key, other values untouched.*
+- **SR-49** Quiet debugging adds or removes only `--silent-debugger-extension-api`, and only where
+  the configured Chrome starts: HKCU Run values whose command starts with the quoted configured Chrome
+  path, and on Windows this user's own `.lnk` shortcuts that target that path (on, only those on the
+  configured user-data dir); on macOS only the `dev.phantab.chrome` LaunchAgent, never a plist without
+  that label. phantab never changes another account's Chrome: all users' shortcuts (the `ProgramData`
+  Start menu, the Public Desktop) are only reported, as are `OneDrive` Desktop shortcuts, whose change
+  would sync to the owner's other PCs. Uninstall takes the flag off before any other write and forgets
+  the answer only once that succeeded.
+  It is on only by the owner's answer at an install terminal (the question states the trade-off: every
+  debugger extension then attaches silently) or explicit `install --quiet-debugging on`; an install
+  with neither changes nothing. `off`, and uninstall, take it away again. Restarting Chrome to pick the
+  flag up is the owner's: `phantab chrome restart-quiet` runs only at a terminal on a typed y (no
+  `--yes`, no MCP tool, no automatic restart), refuses while agent pages are open, and quits only the
+  browser process on the configured user-data dir, by pid (the Restart Manager's shutdown on Windows,
+  `SIGTERM` on macOS, after reading the pid's arguments again), never by image name and never forced.
+  The restart keeps the switches the browser ran with. *L1: round-trips on a scratch Run key, a scratch
+  shortcut folder (install's `--shortcut-dir` too) and a scratch LaunchAgents dir, other values,
+  shortcuts and plists untouched; shared and synced shortcuts reported and never written; the CLI
+  refusals; L5: the quit of the lane's own Chrome only.*
 - **SR-50** Client configs are written atomically with the expected-bytes check, keep their original
   mode and owner (macOS) or explicit DACL (Windows), refuse when unrelated config would change, and
   uninstall keeps later edits. *L1: a `0600` config stays `0600`; concurrent edit refused.*
@@ -1258,7 +1273,7 @@ These remain after every requirement holds. The README must say them in plain wo
 - **R7 Other extensions.** An extension with debugger or all-sites access can do anything phantab can
   in the profile. Quiet debugging hides its debugger use too (SR-49). An extension drawing into an
   open shadow root is read as page content.
-- **R8 Third-party frames are read.** Snapshots read website frames, a payment frame included. Values in inputs stay unread; displayed text does not.
+- **R8 Third-party frames are read.** Snapshots read website frames, a payment frame included. Typed values in inputs stay unread; displayed text does not, and neither does whether a box or radio is ticked or which option a select shows.
 - **R9 Viewer fragment.** The viewer token sits in the `/view` URL fragment until the page strips it. An extension with access to that tab can read it first.
 - **R10 Provider parent check.** A provider that checks its parent process must expect
   `phantab serve`; one written for another parent fails closed, and sign-in answers `refused`.

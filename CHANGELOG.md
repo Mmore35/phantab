@@ -5,7 +5,45 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 
 ## Unreleased
 
+### Changed
+- A `browser_act` click, fill or select whose selector matches nothing on a loaded page now fails once
+  the page has stopped changing for 1.5 s, instead of after the full 10 s: `#x: not found after 1.6 s,
+  and the page had stopped changing`. A page that is still loading or changing keeps the 10 s. In an
+  agent benchmark, a guessed selector cost the app and shop tasks about 9 s each.
+- A `browser_act` select also matches an option by the label a person sees (`March`), not only by its
+  value (`3`), and one that matches no option fails and lists the options; before, it succeeded with
+  nothing chosen. A snapshot marks a ticked checkbox or radio `checked` and shows a select's chosen
+  option as `selected="March"`; typed values are still never read. In an agent benchmark's sign-up
+  task, every run took two screenshots to check what the form held.
+- A `browser_act` selector that matches nothing in the document but does match an element in an open
+  shadow root, which selectors never reach, now fails saying where: `(an open shadow root has it at
+  32,192: click_xy reaches it, a selector does not)`.
+- A `browser_act` with `snapshot` true now ends a failed step with the page's snapshot too, so an agent
+  whose step failed need not read the page in a call of its own.
+- `browser_act`, `browser_snapshot`, `browser_screenshot` and `browser_wait` may leave `pageId` out for
+  the page the agent's last call named or opened. In an agent benchmark, wall time followed the agent's
+  output tokens, and nearly every call named the one page it had open.
+
+### Added
+- `browser_act` takes `steps`, each action written as a list: `[["fill", "#qty", "2"], ["click",
+  "#add"]]`. With `steps` the page's snapshot comes unless `snapshot` is false. `action` with its fields
+  and `then` still work as before. Each field an agent named cost it about 20 output tokens, and a
+  five-step act named `action` and `selector` five times.
+- Quiet debugging: install at a terminal asks once, **Hide Chrome's debugging bar?** (Enter is yes),
+  and keeps the answer; `--quiet-debugging on|off` answers it without asking. On adds Chrome's
+  `--silent-debugger-extension-api` to Chrome's Windows sign-in entry and your own Chrome shortcuts, or
+  on macOS installs a LaunchAgent that opens Chrome with it at login. Shared and OneDrive shortcuts are
+  named, never changed. The trade-off, which the question states: every extension that uses Chrome's
+  debugger then attaches silently. Uninstall takes it off again.
+- `phantab chrome restart-quiet`, at a terminal on a typed y: closes the Chrome phantab is set up for as
+  a system restart does, its tabs saved, and opens it again with its own switches, the quiet flag and
+  its tabs. It refuses while agent pages are open; phantab never restarts Chrome on its own.
+
 ### Fixed
+- A `browser_act` click given `x` and `y` but no selector clicks at that point, as `click_xy` does; it
+  failed with `undefined: not found`. A click, fill or select with neither now says it needs a selector.
+  A click whose selector matches only an element in an open shadow root clicks it at its point; a fill or
+  select there still fails saying where `click_xy` reaches it, now at once rather than after 1.5 s.
 - The release workflow's draft job no longer fails after both builds pass: it copied the two halves in one
   `cp`, which refuses to overwrite the shared `extension.zip` it had just copied. v0.4.0's files were
   uploaded by hand from the same workflow run.

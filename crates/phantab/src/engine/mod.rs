@@ -14,6 +14,7 @@ mod echo;
 mod guardrails;
 mod ops;
 mod profiles;
+mod quiet;
 mod read;
 mod record;
 mod recover;
@@ -49,7 +50,6 @@ use relay::Route;
 
 pub(crate) const RELOAD: &str =
     "Reload the phantab bridge at chrome://extensions so it reports why Chrome detached it.";
-const QUIET_PENDING: &str = "Chrome's debugging bar is still on, because the Chrome now running started without the flag, and its X or Cancel ends agent pages. A new window doesn't change that: hidden agent windows keep the same Chrome running. The next Windows sign-in should pick the flag up.";
 /// SR-32: page-controlled text in an error is cut to this many characters.
 pub(crate) const PAGE_TEXT_LIMIT: usize = 300;
 
@@ -417,33 +417,9 @@ impl Engine {
         }
         m.insert("connectionPolicy".into(), Value::String(CONNECTION_POLICY.to_owned()));
         if let Some(Value::Object(q)) = &st.quiet {
-            let mut q = q.clone();
-            if q.get("runValue") == Some(&Value::Bool(true)) && q.get("running") == Some(&Value::Bool(false))
-            {
-                q.insert("note".into(), Value::String(QUIET_PENDING.to_owned()));
-            }
-            m.insert("quietDebugging".into(), Value::Object(q));
+            m.insert("quietDebugging".into(), Value::Object(Engine::quiet_status(q)));
         }
         m
-    }
-
-    // Chrome may rewrite its own sign-in entry when it starts, so the flag goes back on at each connect while
-    // the owner has it on.
-    fn apply_quiet(&self) {
-        if !self.setup.quiet_marker.is_file() {
-            self.st().quiet = None;
-            return;
-        }
-        let Some(me) = self.arc() else { return };
-        let chrome =
-            self.setup.config.chrome_executable.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-        tokio::spawn(async move {
-            let q = match me.windows.quiet(true, &chrome, None).await {
-                Ok(q) => serde_json::to_value(q).unwrap_or(Value::Null),
-                Err(e) => json!({ "error": e.to_string() }),
-            };
-            me.st().quiet = Some(q);
-        });
     }
 
     fn verify(&self, profile: &Profile) -> ProfileCheck {
@@ -584,6 +560,11 @@ impl PageService for Engine {
 
     async fn check_wait(&self, watch: &str) -> Value {
         let result = self.wait_watch(watch).await;
+        self.redacted(result, false)
+    }
+
+    async fn restart_quiet(&self) -> EngineResult {
+        let result = Engine::restart_quiet(self).await;
         self.redacted(result, false)
     }
 

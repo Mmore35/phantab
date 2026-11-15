@@ -12,6 +12,7 @@ use std::time::Duration;
 use phantab_cdp::Arg;
 use serde_json::Value;
 
+use super::ops::shadow_point;
 use super::record::Rec;
 use super::{Engine, until};
 use crate::engine_api::{EngineError, EngineResult};
@@ -111,12 +112,19 @@ impl Engine {
         };
         let asked = self
             .cdp(r, None, |p, signal| {
-                let (how, selector) = (how.clone(), selector.clone());
+                let (mut how, selector) = (how.clone(), selector.clone());
                 async move {
                     if action == "click" {
                         let sel = Value::String(selector.clone());
-                        until(&p, &selector, ACTIONABLE, &[sel], Duration::from_secs(10), Some(&signal))
-                            .await?;
+                        let waited =
+                            until(&p, &selector, ACTIONABLE, &[sel], Duration::from_secs(10), Some(&signal))
+                                .await;
+                        // The act clicks an element only an open shadow root has at its point, so that point
+                        // is what is checked.
+                        if let Err(e) = waited {
+                            let Some((x, y)) = shadow_point(&e.0) else { return Err(e) };
+                            how = vec!["point".into(), x.into(), y.into()];
+                        }
                     }
                     let Ok(frame) = p.main_frame() else { return Ok(None) };
                     let said = p.evaluate(&frame, SENSITIVE, how.into_iter().map(Arg::Value).collect()).await;

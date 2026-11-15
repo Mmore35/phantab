@@ -15,7 +15,7 @@
   const elements=kept.map(({el,box,inShadow})=>{
     const x=Math.round(box.x+box.width/2),y=Math.round(box.y+box.height/2);
     const tag=tagOf.call(el);
-    return {tag:tag.toLowerCase(),id:idOf.call(el)||undefined,name:attr.call(el,'name')||undefined,type:attr.call(el,'type')||undefined,text:((tag==='TEXTAREA'?'':inner(el))||attr.call(el,'aria-label')||attr.call(el,'placeholder')||'').slice(0,160),href:tag==='A'?el.href:undefined,x,y,...(inShadow?{inShadow:true}:{}),...(x<0||y<0||x>=innerWidth||y>=innerHeight?{offscreen:true}:{})};
+    return {tag:tag.toLowerCase(),id:idOf.call(el)||undefined,name:attr.call(el,'name')||undefined,type:attr.call(el,'type')||undefined,text:((tag==='TEXTAREA'?'':inner(el))||attr.call(el,'aria-label')||attr.call(el,'placeholder')||'').slice(0,160),href:tag==='A'?el.href:undefined,...(el instanceof HTMLInputElement&&get(HTMLInputElement.prototype,'checked').call(el)?{checked:true}:{}),...(el instanceof HTMLSelectElement?{selected:Array.prototype.map.call(get(HTMLSelectElement.prototype,'selectedOptions').call(el),o=>get(HTMLOptionElement.prototype,'label').call(o)).join(', ')}:{}),x,y,...(inShadow?{inShadow:true}:{}),...(x<0||y<0||x>=innerWidth||y>=innerHeight?{offscreen:true}:{})};
   });
   return {title:doc('title'),text:text.join('\n').slice(0,18000),elements,omitted:found.length-kept.length,view:[innerWidth,innerHeight],shadowRoots:roots.length-1};
 }

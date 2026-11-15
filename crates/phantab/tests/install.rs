@@ -314,7 +314,145 @@ fn quiet_debugging_round_trip_on_a_scratch_key() {
     assert_eq!(world.keys.run_value("Browser"), browser);
     assert_eq!(world.keys.run_value("Other"), other);
     assert!(!world.runtime.join("quiet-debugging.on").exists());
+    assert!(world.runtime.join("quiet-debugging.off").exists(), "off is an answer too");
     assert!(!world.runtime.join("registration-v2.json").exists(), "quiet mode registers nothing");
+}
+
+/// The shortcuts a Windows install edits, on a scratch folder (`--shortcut-dir`): on adds the flag, off
+/// and uninstall restore the arguments as they were, and a shortcut to another program is never touched.
+/// An uninstall whose off fails keeps the answer, so the next uninstall takes the flag off.
+#[cfg(windows)]
+#[test]
+fn quiet_debugging_round_trip_on_scratch_shortcuts() {
+    let world = Fixture::new("quiet-shortcuts").with_runtime("1");
+    let dir = world.root.join("shortcuts");
+    std::fs::create_dir_all(&dir).unwrap();
+    let plain = format!(r#"--user-data-dir="{}" --profile-directory=Default"#, world.browser.display());
+    let flagged = format!("--silent-debugger-extension-api {plain}");
+    let (ours, other) = (dir.join("Chrome.lnk"), dir.join("Other.lnk"));
+    lnk::make(&ours, &world.chrome, &plain);
+    lnk::make(&other, &world.exe, "--silent-debugger-extension-api");
+    let mut argv = world.argv(&["--shortcut-dir"]);
+    argv.push(dir.display().to_string());
+    let with = |extra: &[&str]| {
+        let mut words = argv.clone();
+        words.extend(extra.iter().map(|s| (*s).to_owned()));
+        words
+    };
+
+    let on = world.run(&with(&["--quiet-debugging", "on"])).unwrap();
+    assert!(on.contains("1 shortcut start Chrome with the flag (1 changed now)"), "{on}");
+    assert_eq!(lnk::arguments(&ours), flagged);
+    let again = world.run(&with(&["--quiet-debugging", "on"])).unwrap();
+    assert!(again.contains("(0 changed now)"), "{again}");
+    let off = world.run(&with(&["--quiet-debugging", "off"])).unwrap();
+    assert!(off.contains("phantab took the flag off 1 shortcut."), "{off}");
+    assert_eq!(lnk::arguments(&ours), plain);
+    assert_eq!(lnk::arguments(&other), "--silent-debugger-extension-api", "another program's shortcut");
+
+    world.run(&with(&["--quiet-debugging", "on"])).unwrap();
+    assert_eq!(lnk::arguments(&ours), flagged);
+    let refused = with(&["--run-key", r"HKLM\Software\phantab-test-refused"]);
+    let failed = phantab::install::run_with(&refused, true, &world.exe, &mut Vec::new());
+    assert!(failed.is_err(), "an off the run key refuses fails the uninstall");
+    assert!(format!("{:#}", failed.unwrap_err()).contains("nothing was uninstalled"));
+    assert!(world.runtime.join("quiet-debugging.on").exists(), "the answer stays for the next uninstall");
+    let gone = world.run_as(&argv, true).unwrap();
+    assert!(gone.contains("phantab took the flag off 1 shortcut."), "{gone}");
+    assert_eq!(lnk::arguments(&ours), plain);
+    assert_eq!(world.answer(), (false, false));
+}
+
+#[cfg(windows)]
+mod lnk {
+    //! Scratch `.lnk` shortcuts through Windows' own `WScript.Shell`, the shell link files Explorer makes.
+    use std::path::Path;
+    use std::process::Command;
+
+    fn powershell(script: &str, envs: &[(&str, &str)]) -> String {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        let out = Command::new(format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .envs(envs.iter().copied())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim_end_matches(['\r', '\n']).to_owned()
+    }
+
+    pub fn make(path: &Path, target: &Path, args: &str) {
+        powershell(
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK); $s.TargetPath = $env:TARGET; \
+             $s.Arguments = $env:ARGS; $s.Save()",
+            &[
+                ("LNK", &path.display().to_string()),
+                ("TARGET", &target.display().to_string()),
+                ("ARGS", args),
+            ],
+        );
+    }
+
+    pub fn arguments(path: &Path) -> String {
+        powershell(
+            "(New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK).Arguments",
+            &[("LNK", &path.display().to_string())],
+        )
+    }
+}
+
+const QUESTION: &str = "Hide Chrome's debugging bar?";
+
+impl Fixture {
+    /// [`Fixture::run`] at a terminal where the owner types `typed`.
+    fn run_typing(&self, words: &[String], typed: &str) -> String {
+        let mut out = Vec::new();
+        let code =
+            phantab::install::run_at_terminal(words, false, &self.exe, &mut out, &mut typed.as_bytes())
+                .unwrap();
+        assert_eq!(code, 0, "{words:?}");
+        String::from_utf8(out).unwrap()
+    }
+
+    fn answer(&self) -> (bool, bool) {
+        (self.runtime.join("quiet-debugging.on").exists(), self.runtime.join("quiet-debugging.off").exists())
+    }
+}
+
+/// An install at a terminal asks once, Enter being yes; later installs keep the answer and never ask.
+#[test]
+fn an_install_at_a_terminal_asks_about_quiet_debugging_once() {
+    let world = Fixture::new("ask-yes").with_runtime("1");
+    let said = world.run_typing(&world.argv(&[]), "\n");
+    assert!(said.contains(QUESTION), "{said}");
+    assert!(said.contains("every extension that uses Chrome's debugger attaches silently"), "{said}");
+    assert!(said.contains("Quiet debugging on"), "{said}");
+    assert_eq!(world.answer(), (true, false));
+    let again = world.run_typing(&world.argv(&[]), "n\n");
+    assert!(!again.contains(QUESTION), "{again}");
+    assert!(again.contains("Quiet debugging on"), "on is applied again: {again}");
+    assert_eq!(world.answer(), (true, false));
+    let flag = world.run(&world.argv(&["--quiet-debugging", "off"])).unwrap();
+    assert!(flag.contains("Quiet debugging off"), "{flag}");
+    assert_eq!(world.answer(), (false, true));
+    world.run_as(&world.argv(&[]), true).unwrap();
+    assert_eq!(world.answer(), (false, false), "uninstall forgets the answer");
+}
+
+/// No is kept too: later installs neither ask nor change anything. Without a terminal nothing is asked.
+#[test]
+fn a_no_is_kept_and_without_a_terminal_nothing_is_asked() {
+    let world = Fixture::new("ask-no").with_runtime("1");
+    let quiet = world.run(&world.argv(&[])).unwrap();
+    assert!(!quiet.contains(QUESTION), "{quiet}");
+    assert!(quiet.contains("run phantab install --quiet-debugging on"), "{quiet}");
+    assert_eq!(world.answer(), (false, false));
+    let said = world.run_typing(&world.argv(&[]), "no\n");
+    assert!(said.contains(QUESTION), "{said}");
+    assert!(said.contains("Quiet debugging off"), "{said}");
+    assert_eq!(world.answer(), (false, true));
+    let again = world.run_typing(&world.argv(&[]), "\n");
+    assert!(!again.contains(QUESTION) && !again.contains("Quiet debugging"), "{again}");
+    assert_eq!(world.answer(), (false, true));
 }
 
 #[cfg(windows)]

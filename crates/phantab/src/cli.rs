@@ -1,6 +1,7 @@
 //! `phantab <method> ['<json>']` (cli.mjs): one service call from a shell, its result on stdout.
 //! `doctor` is `status`; `sign-in-clear <host|all>` edits the guard file without the service;
-//! `check-wait <token>` is a verification hand-off's wake command.
+//! `check-wait <token>` is a verification hand-off's wake command; `chrome restart-quiet` restarts the
+//! owner's Chrome with the quiet-debugging flag.
 
 use std::time::Duration;
 
@@ -106,6 +107,54 @@ fn owner_confirms(target: &str) -> Result<(), i32> {
     }
 }
 
+/// What `chrome restart-quiet` asks before it closes the owner's Chrome.
+const RESTART_QUESTION: &str = "Chrome closes and opens again with the flag that hides its debugging bar. It saves every window and tab as it closes and reopens them; agent pages must be closed first. Restart Chrome now? [y/N] ";
+
+/// The owner's answer to a yes/no question, as typed. A test build (`test-seams`) takes
+/// `PHANTAB_TEST_TYPED` as the line.
+fn answer_line() -> std::io::Result<String> {
+    #[cfg(feature = "test-seams")]
+    if let Ok(line) = std::env::var("PHANTAB_TEST_TYPED") {
+        return Ok(line);
+    }
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line)
+}
+
+/// `phantab chrome restart-quiet`: the owner's Chrome, running without the quiet-debugging flag, restarts
+/// with it (the service's `restart_quiet`). Closing the owner's Chrome is the owner's to do, as lifting a
+/// sign-in stop is: only at a terminal, and only on a typed y, so a plain non-interactive shell (an agent's
+/// included) cannot, and nothing restarts Chrome by accident (THREAT-MODEL SR-49).
+#[allow(clippy::print_stdout)] // stdout is the result
+async fn chrome(args: &[String]) -> i32 {
+    if !matches!(args, [only] if only == "restart-quiet") {
+        eprintln!("Usage: phantab chrome restart-quiet");
+        return 1;
+    }
+    if !at_terminal() {
+        eprintln!(
+            "chrome restart-quiet closes your Chrome, which is yours to do: run it yourself in a terminal window."
+        );
+        return 1;
+    }
+    eprint!("{RESTART_QUESTION}");
+    if !answer_line().is_ok_and(|a| matches!(a.trim().to_ascii_lowercase().as_str(), "y" | "yes")) {
+        eprintln!("Nothing was restarted.");
+        return 1;
+    }
+    match rpc("restart_quiet", json!({}), "operator", true).await {
+        Ok(result) => {
+            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
 /// Runs the CLI with the arguments after the program name. Returns the exit code.
 #[allow(clippy::print_stdout)] // stdout is the result
 pub async fn run(args: &[String]) -> i32 {
@@ -149,6 +198,14 @@ pub async fn run(args: &[String]) -> i32 {
                 1
             }
         };
+    }
+    if method == "chrome" {
+        return chrome(&args[1..]).await;
+    }
+    // Only through `chrome restart-quiet`, which asks first.
+    if method == "restart_quiet" {
+        eprintln!("Run phantab chrome restart-quiet.");
+        return 1;
     }
     // A plain token, not JSON; acts on no page, so it needs no client id.
     if method == "check-wait" {

@@ -4,7 +4,11 @@
 //! [`tests`] pins every file to its SHA-256, so a change to what a page runs is always a deliberate one,
 //! and checks each of [`PATCHES`] (the hardened reads) is in place.
 
-/// `actionable`: true when the selector's element can be acted on, else why not.
+/// `actionable`: true when the selector's element can be acted on, else why not. Why not is a string, except
+/// that a selector with no element on a loaded page answers `['not found', <the page's element count>]`, so
+/// an action's wait can tell a page that has stopped changing (`read::poll`). When an open shadow root has
+/// the selector's element, which selectors never reach, the answer says where to `click_xy` it instead,
+/// with a null mark, so the wait ends there.
 pub const ACTIONABLE: &str = include_str!("actionable.js");
 /// `present`: the selector exists and the text is on the page (either may be absent).
 pub const PRESENT: &str = include_str!("present.js");
@@ -14,6 +18,9 @@ pub const READ_FRAME: &str = include_str!("read_frame.js");
 pub const TITLE_IS: &str = include_str!("title_is.js");
 /// `act`'s click in a hidden workspace window: a DOM click, since hidden targets paint no frames.
 pub const CLICK: &str = include_str!("click.js");
+/// `act`'s select: each `[value, label]` of a `<select>`'s options, or null for any other element, so a
+/// select can be matched by the label a person sees as well as by its value.
+pub const SELECT_OPTIONS: &str = include_str!("select_options.js");
 
 /// What the main frame says about a
 /// verification check. It only reads. It counts the provider response fields by value length and never
@@ -28,6 +35,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("read_frame.js", READ_FRAME),
     ("title_is.js", TITLE_IS),
     ("click.js", CLICK),
+    ("select_options.js", SELECT_OPTIONS),
 ];
 
 /// The hardened reads, each `(file, the plain read, phantab's text)`: reads through
@@ -52,6 +60,16 @@ pub(crate) const PATCHES: &[(&str, &str, &str)] = &[
         "actionable.js",
         r"const b=e.getBoundingClientRect();",
         r"const b=Element.prototype.getBoundingClientRect.call(e);",
+    ),
+    (
+        "actionable.js",
+        r"document.readyState",
+        r"Object.getOwnPropertyDescriptor(Document.prototype,'readyState').get.call(document)",
+    ),
+    (
+        "actionable.js",
+        r"document.getElementsByTagName('*')",
+        r"Document.prototype.getElementsByTagName.call(document,'*')",
     ),
     ("present.js", r"!document.querySelector(s)", r"!Document.prototype.querySelector.call(document,s)"),
     (
@@ -109,11 +127,12 @@ pub(crate) mod tests {
     /// SHA-256 of each of [`SOURCES`], in its order. A deliberate change to a page function updates its
     /// line here (the failure prints the new list).
     const GOLDEN: &[(&str, &str)] = &[
-        ("actionable.js", "901527d21bd174f27b15b51bb6a9b37f49a7261a17a87a02b7629ea0c3f2a55c"),
+        ("actionable.js", "71c60b44c08c94c9387c27c5309d9491f9fad99b4a81a00be13da7b7c1d43aed"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
-        ("read_frame.js", "aa26da5a270d0f7db10c63fdcda2087a1d19865cf3249dd0227fe73af256bf16"),
+        ("read_frame.js", "7afc0a457a986c1a41c9fd93e42d091c0f45e020ed02e6ece8e4fed7ebd28176"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),
         ("click.js", "67034e2d21ed6407789dba9496c5cfff6baf6e589fb6527f37d45b26b8de654a"),
+        ("select_options.js", "00a830ec9a4699ccc585f0855d24b786e8e438e7760061384886436e3a6b2d1a"),
     ];
 
     /// `(name, SHA-256)` of each `(name, body)`, after checking each body is one expression's text.
