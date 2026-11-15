@@ -40,9 +40,9 @@ pub use provider::ask_for_test;
 pub(crate) use provider::program_is_absolute;
 #[cfg(any(test, feature = "test-seams"))]
 pub use seal::{request_digest, seal};
-pub use secret::{Echo, Leftover, OnPage};
 #[cfg(test)]
 pub(crate) use secret::Secret;
+pub use secret::{Echo, Leftover, OnPage};
 
 /// The [`Echo`] a sign-in that filled `password` and `code` leaves when the site shows it back, for the
 /// engine's tests.

@@ -740,7 +740,11 @@ async fn a_form_sign_up_filled_is_not_a_password_change() {
     assert!(err(e.confirm_first(&r, &click(&r), "click").await).starts_with("Confirm first"));
     for word in ["payment", "delete"] {
         let r = e.record(fake_page_judging(word).await, "a", Fields::default()).unwrap();
-        r.set_on_page(Some(Arc::new(OnPage::new(&Secret::new("Aa1!aaaaaaaaaaaaaaaa".into()), Vec::new(), None))));
+        r.set_on_page(Some(Arc::new(OnPage::new(
+            &Secret::new("Aa1!aaaaaaaaaaaaaaaa".into()),
+            Vec::new(),
+            None,
+        ))));
         assert!(err(e.confirm_first(&r, &click(&r), "click").await).starts_with("Confirm first"), "{word}");
     }
 }

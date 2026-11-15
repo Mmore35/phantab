@@ -339,7 +339,7 @@ async fn browser_sign_up_against_a_real_chrome_and_a_memory_source() {
             let r = cx.open(page).await;
             assert_eq!(cx.up(&r, &src).await, status_reason("not-a-sign-up", reason));
             assert_eq!(src.creates(), 0);
-            assert!(typed(&r).await.is_empty());
+            assert!(typed(&r).await.is_empty(), "the page still holds what was typed");
             assert!(!r.marked());
             cx.lane.close(&r).await;
         });
@@ -394,7 +394,7 @@ async fn browser_sign_up_against_a_real_chrome_and_a_memory_source() {
             let r = cx.open("basic").await;
             assert_eq!(cx.up(&r, &src).await, status(refusal));
             assert_eq!(src.creates(), 1);
-            assert!(typed(&r).await.is_empty());
+            assert!(typed(&r).await.is_empty(), "the page still holds what was typed");
             assert!(!r.marked());
             cx.lane.close(&r).await;
         }
@@ -413,7 +413,7 @@ async fn browser_sign_up_against_a_real_chrome_and_a_memory_source() {
         cx.note(&result);
         assert_eq!(result, status("no-provider-create"));
         assert!(cx.fx.requests().is_empty(), "the command provider was run");
-        assert!(typed(&r).await.is_empty());
+        assert!(typed(&r).await.is_empty(), "the page still holds what was typed");
         cx.lane.close(&r).await;
     });
 

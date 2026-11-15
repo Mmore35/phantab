@@ -1203,5 +1203,5 @@ async fn a_non_https_origin_is_refused_before_bw() {
     .await;
     assert_eq!(out.0, json!({"status": "refused"}));
     assert!(out.1.is_none());
-    assert!(f.commands().is_empty());
+    assert!(f.commands().is_empty(), "the vault was asked: {:?}", f.commands().len());
 }

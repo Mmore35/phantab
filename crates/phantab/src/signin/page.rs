@@ -268,6 +268,10 @@ mod tests {
         ("submitByForm", "806a324fac2dcc263d0d850d12f7e5577260a64b38c948ddd41268c52acac600"),
         ("requestSubmit", "02b6832b1295c98cbf4e5249fbd2a62f421e9b82c9e38d876dddf0ff48eef12c"),
         ("control", "504307c47b1fd7a301c2d7b3e6f2a31d7c9ac2a2642665d3404c6c52bf065d5f"),
+        ("signup_find.js", "4204b95c3da275f0c86dfde32d21658bad32f23331a0ea248f7c96e09ffc8c99"),
+        ("signup_fill.js", "9c9f75d77c444be775b61ea609c6976645e67d083806a55f7916e6d891145bf0"),
+        ("signup_read.js", "b042a0caf1f40d8ad8dbe50d57a585b93e4732e3557f762d9be6e47982e9c920"),
+        ("signup_blank.js", "bc462e20340cf6043960f0e5c71d6b5c469d03571e0ece5643bb5ee87aeec7ed"),
     ];
 
     #[test]

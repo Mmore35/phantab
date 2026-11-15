@@ -270,9 +270,8 @@ async fn run(
         return why;
     }
     // A page that copies what is typed into another field or its text: caught before the call answers.
-    match timeout(ms(12000), sweep_sign_up(host, r)).await {
-        Ok(Err(_)) => return Outcome::of("leak-stopped"),
-        Ok(Ok(_)) | Err(_) => {}
+    if let Ok(Err(_)) = timeout(ms(12000), sweep_sign_up(host, r)).await {
+        return Outcome::of("leak-stopped");
     }
     Outcome::of(if saved == Saved::Existing { "filled-existing" } else { "filled" })
 }

@@ -70,7 +70,7 @@ fn encoded(item: &Value, password_len: usize) -> Option<Zeroizing<String>> {
     let mut text = Zeroizing::new(Vec::with_capacity(without + password_len * 6 + 16));
     serde_json::to_writer(&mut *text, item).ok()?;
     let mut out = Zeroizing::new(String::with_capacity(base64::encoded_len(text.len(), true)?));
-    base64::engine::general_purpose::STANDARD.encode_string(&*text, &mut *out);
+    base64::engine::general_purpose::STANDARD.encode_string(&*text, &mut out);
     Some(out)
 }
 

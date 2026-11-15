@@ -23,6 +23,7 @@ pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 
 /// `(method, description, properties, required)`, in the order `tools/list` gives them (ARCHITECTURE §
 /// Names and constants; `tests/mcp.rs` checks the list byte for byte against its golden file).
+#[allow(clippy::too_many_lines)] // One entry per tool, so the whole list reads in one place.
 fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
     let s = || json!({ "type": "string" });
     let page = || json!({ "pageId": s() });

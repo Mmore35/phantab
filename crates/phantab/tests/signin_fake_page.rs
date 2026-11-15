@@ -11,8 +11,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use phantab::engine_api::{EngineError, Serializer};
 use phantab::signin::{
-    Echo, Host, Leftover, MemorySource, OnPage, Options, Phase, SECRET_ON_PAGE, SignInRecord, before_screenshot,
-    sign_up_with_source_for_test, sweep_sign_up,
+    Echo, Host, Leftover, MemorySource, OnPage, Options, Phase, SECRET_ON_PAGE, SignInRecord,
+    before_screenshot, sign_up_with_source_for_test, sweep_sign_up,
 };
 use phantab_cdp::{Page, PageOptions, RelayTransport, TransportEvent};
 use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
@@ -178,7 +178,11 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
         // One value into every password field of the frame, as signup_fill.js writes it.
         _ if js == FILL_SIGN_UP => {
             let value = args.get(2).and_then(|a| a["value"].as_str()).unwrap_or_default().to_owned();
-            s.docs[at].inputs.iter_mut().filter(|i| i.kind == "password").for_each(|i| i.value.clone_from(&value));
+            s.docs[at]
+                .inputs
+                .iter_mut()
+                .filter(|i| i.kind == "password")
+                .for_each(|i| i.value.clone_from(&value));
             by_value(json!("filled"))
         }
         _ if js == READ_SIGN_UP => {
@@ -231,11 +235,7 @@ fn call(script: &Mutex<Script>, params: &Value) -> Reply {
                 Value::String(w) if w == "passwords" => {
                     d.inputs.iter_mut().filter(|i| i.kind == "password").for_each(|i| i.value.clear());
                 }
-                Value::Array(wanted) => {
-                    if blank_at(d, wanted) {
-                        return Reply::Hang;
-                    }
-                }
+                Value::Array(wanted) if blank_at(d, wanted) => return Reply::Hang,
                 _ => {}
             }
             by_value(Value::Null)
