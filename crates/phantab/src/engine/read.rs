@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use super::recover::Failed;
 use super::{PAGE_TEXT_LIMIT, cut};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::{ACTIONABLE, READ_FRAME};
+use crate::page_js::{ACTIONABLE, ATTACHED, READ_FRAME};
 use crate::util::js_string;
 
 /// A frame that doesn't answer in this long is left out rather than holding up the page.
@@ -115,6 +115,18 @@ pub(crate) async fn poll_actionable(
 ) -> Result<FrameId, Failed> {
     let args = [Value::String(selector.to_owned())];
     poll(page, selector, ACTIONABLE, &args, within, signal, quick, true).await
+}
+
+/// [`poll_actionable`]'s wait for an element that need not be shown: an upload's file input, which pages often
+/// hide behind a styled label. Answers the frame that has it, as that wait does.
+pub(crate) async fn poll_attached(
+    page: &Page,
+    selector: &str,
+    within: Duration,
+    signal: Option<&watch::Receiver<bool>>,
+) -> Result<FrameId, Failed> {
+    let args = [Value::String(selector.to_owned())];
+    poll(page, selector, ATTACHED, &args, within, signal, true, true).await
 }
 
 /// `actionable`'s answer for an element the document does not have: `'not found'` while it loads, or

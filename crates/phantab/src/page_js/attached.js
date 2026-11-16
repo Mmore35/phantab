@@ -1,0 +1,1 @@
+s=>{if(Document.prototype.querySelector.call(document,s))return true;if(Object.getOwnPropertyDescriptor(Document.prototype,'readyState').get.call(document)!=='complete')return 'not found';return ['not found',Document.prototype.getElementsByTagName.call(document,'*').length];}

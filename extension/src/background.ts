@@ -75,6 +75,8 @@ interface Args {
   height?: number;
   shown?: boolean;
   state?: string;
+  accept?: boolean;
+  promptText?: string;
 }
 interface ServiceMessage { welcome?: unknown; events?: unknown; refused?: unknown; id?: unknown; op?: string; args?: Args }
 /** The CDP event params this worker reads itself; everything else is passed through untouched. */
@@ -91,6 +93,10 @@ type AgentWindows = Record<string, boolean>;
 // Kept in memory too, so a dialog in a hidden window is answered without a storage read (answerHiddenDialog).
 // One storage read fills both this and minimizedKnown.
 let known: AgentWindows | null = null;
+// The agent's answer for a hidden tab's next dialog (answerNextDialog): used once, by the next dialog
+// answerHiddenDialog answers in that tab, then the usual answers again. Dropped when the tab detaches or
+// its window is shown, as the owner answers dialogs there.
+const nextAnswers = new Map<number, { accept: boolean; promptText?: string }>();
 let minimizedKnown: number[] | null = null;
 async function loadSession(): Promise<void> {
   if (known && minimizedKnown) return;
@@ -470,12 +476,21 @@ const ops: Record<string, (args: Args) => unknown> = {
   async markShown({ windowId, shown }) {
     if (!(String(windowId) in await agentWindows())) return {};
     await setAgentWindow(windowId, !!shown);
+    if (shown) for (const t of await chrome.tabs.query({ windowId })) nextAnswers.delete(t.id!);
     if (shown) await setMinimized(windowId, false);
     for (const t of await chrome.tabs.query({ windowId })) hush(t.id!, !shown).catch(() => {});
     // The owner's own autofill menu works again in a window handed to them.
     // Chrome serialises func into each frame: it must close over nothing. Own property only, as in
     // clearForeignFrames: <div id=phantabForeignFrames> is otherwise what the name reads.
     if (shown) for (const t of await chrome.tabs.query({ windowId })) chrome.scripting.executeScript({ target: { tabId: t.id!, allFrames: true }, func: () => { if (Object.hasOwn(globalThis, 'phantabForeignFrames')) globalThis.phantabForeignFrames!.stop(); } }).catch(() => {});
+    return {};
+  },
+  // The answer for the next dialog in a hidden agent window's tab (`["dialog", ...]` steps). Dialogs the
+  // owner can see are his to answer, so any other tab is refused.
+  async answerNextDialog({ tabId, accept, promptText }) {
+    const t = await chrome.tabs.get(tabId);
+    if ((await agentWindows())[t.windowId] !== false) throw Error(`Tab ${tabId} is not in a hidden agent window; its dialogs are the owner's to answer.`);
+    nextAnswers.set(tabId, typeof promptText === 'string' ? { accept: !!accept, promptText } : { accept: !!accept });
     return {};
   },
   // Removes other extensions' frames, never their host elements, and only where the owner
@@ -573,7 +588,10 @@ async function answerHiddenDialog(source: chrome.debugger.DebuggerSession, type:
   if ((await agentWindows())[windowId] !== false) return;
   const kept = (await minimizedWindows()).has(windowId) ? keepMinimized(windowId) : Promise.resolve();
   const target = source.sessionId ? { tabId: source.tabId, sessionId: source.sessionId } : { tabId: source.tabId };
-  await chrome.debugger.sendCommand(target, 'Page.handleJavaScriptDialog', { accept: type === 'beforeunload' || type === 'alert' });
+  const next = nextAnswers.get(source.tabId!);
+  nextAnswers.delete(source.tabId!);
+  const answer = next ?? { accept: type === 'beforeunload' || type === 'alert' };
+  await chrome.debugger.sendCommand(target, 'Page.handleJavaScriptDialog', answer);
   await kept;
 }
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -591,7 +609,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.debugger.onDetach.addListener((source, reason) => {
   const tabId = source.tabId!, at = Date.now();
   const held = temporary.delete(tabId);
-  attached.delete(tabId); casting.delete(tabId); showWorking();
+  attached.delete(tabId); casting.delete(tabId); nextAnswers.delete(tabId); showWorking();
   if (held) { foreign.delete(tabId); return; } // not the service's: nothing to report
   // A closing tab detaches first; its removal usually follows within a few ms.
   setTimeout(async () => {

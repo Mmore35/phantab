@@ -208,6 +208,12 @@ file is replaced only with `overwrite: true`. When the agent's work is done and 
 yourself, `browser_show` with `release: true` gives you the tab for good: it stays open as your
 ordinary tab and leaves the agent's list.
 
+`browser_act` does what a person does on a page: click, fill, select, press a key or a combination
+(`Control+A`), type, scroll, hover (a menu that opens on hover), drag (a sortable list), upload a file
+from your computer into a file input, answer the page's next dialog (`["dialog", "accept"]`, with a
+prompt's text), and go back, forward or reload. With guardrails `light` or `full`, every upload and
+every dialog accept waits for your yes (`docs/GUARDRAILS.md`).
+
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
 a page it reads, it can do as you, on every site you are signed in to. Read this before you install.

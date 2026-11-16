@@ -3,20 +3,29 @@
 <div id="host"></div>
 <script>
 // `?shadow`: `#go` (a pay button) and `#field` sit only inside an open shadow root. `?plain`: the same
-// ids sit in the document, and `#go` shows details. Each says in its parent which frame was acted on.
+// ids sit in the document, and `#go` shows details. `#pick` is a file input. A click, a hover on `#go`,
+// a drop on `#field`, a fill and an upload each say in the parent which frame was acted on.
 (() => {
   const shadow = location.search === '?shadow';
   const which = shadow ? 'the shadow frame' : 'the plain frame';
   const root = shadow ? document.getElementById('host').attachShadow({ mode: 'open' }) : document.body;
   const box = document.createElement('div');
   box.innerHTML = (shadow ? '<button id="go">Pay now</button>' : '<button id="go">Show details</button>') +
-    ' <input id="field">';
+    ' <input id="field"> <input id="pick" type="file">';
   root.appendChild(box);
   const top = parent.document;
   box.addEventListener('click', (e) => {
     if (e.target.id === 'go') top.getElementById('said').textContent = 'pressed in ' + which;
   });
-  box.addEventListener('input', () => { top.getElementById('said').textContent = 'filled in ' + which; });
+  box.addEventListener('mouseover', (e) => {
+    if (e.target.id === 'go') top.getElementById('said').textContent = 'hovered in ' + which;
+  });
+  box.addEventListener('mouseup', (e) => {
+    if (e.target.id === 'field') top.getElementById('said').textContent = 'dropped in ' + which;
+  });
+  box.addEventListener('input', (e) => {
+    top.getElementById('said').textContent = (e.target.id === 'pick' ? 'uploaded in ' : 'filled in ') + which;
+  });
   top.getElementById('ready').textContent += which + ' is ready. ';
 })();
 </script>

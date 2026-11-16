@@ -47,6 +47,14 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 
 ### Added
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
+- `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
+  (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);
+  `dialog` (accept or dismiss the page's next dialog, once, with a prompt's text; a page you can see
+  answers its own); `back`, `forward` and `reload`; and `press` with a combination such as `Control+A`.
+  A dialog answered during a step is reported in its result, as before. With guardrails `light` or
+  `full`, every upload and every dialog accept is asked about first, and so is a `back`, `forward` or
+  `reload` onto a page a form sent; a drop and a combination are checked as a click and a press are.
+  Reload the extension at `chrome://extensions` for `dialog` on a hidden page.
 - phantab no longer starts a closed profile where the bridge was never loaded, nor waits for you to
   open one under `guardrails: full`: the call says how to load it. A call naming a profile that is left
   out, or one made since the last install, says so and names the install command that changes it.

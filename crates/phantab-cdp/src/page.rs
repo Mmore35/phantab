@@ -209,6 +209,24 @@ pub struct Dialog {
     pub accepted: Option<bool>,
 }
 
+/// A tab's history, as [`Page::history`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct History {
+    /// The index of the current entry in `entries`.
+    pub current: usize,
+    pub entries: Vec<HistoryEntry>,
+}
+
+/// One entry of a [`History`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// What [`Page::go_to_history_entry`] takes.
+    pub id: i64,
+    pub url: String,
+    /// Chrome's `transitionType`: `form_submit` for a page a form sent, which loading again may send again.
+    pub transition: String,
+}
+
 /// Dialogs kept until [`Page::take_dialogs`]; a page that opens more loses the oldest.
 const DIALOG_MEMORY: usize = 10;
 
@@ -331,8 +349,9 @@ struct IsolatedContext {
 pub(crate) enum Action {
     InitFrameSession(SessionId),
     Resume(SessionId),
-    /// A dialog opened on this session; with `answer_dialogs`, answer it (accept or dismiss).
-    Dialog(Option<SessionId>, bool),
+    /// A dialog opened on this session; with `answer_dialogs`, answer it (accept or dismiss, and a
+    /// prompt's text when one was set).
+    Dialog(Option<SessionId>, bool, Option<String>),
 }
 
 #[derive(Debug, Default)]
@@ -351,6 +370,8 @@ pub(crate) struct State {
     /// Frames added so far, for `Frame::order`.
     added: u64,
     dialogs: VecDeque<Dialog>,
+    /// The answer [`Page::answer_next_dialog`] set for the next dialog: accept, and a prompt's text.
+    next_dialog: Option<(bool, Option<String>)>,
     /// Frames whose isolated world a call is creating; other calls wait for it instead of sending their
     /// own.
     worlds_creating: HashSet<FrameId>,
@@ -537,13 +558,14 @@ impl State {
         if self.dialogs.len() == DIALOG_MEMORY {
             self.dialogs.pop_front();
         }
-        let accept = matches!(kind.as_str(), "beforeunload" | "alert");
+        let (accept, text) =
+            self.next_dialog.take().unwrap_or((matches!(kind.as_str(), "beforeunload" | "alert"), None));
         self.dialogs.push_back(Dialog {
             kind,
             message: message.chars().take(DIALOG_MESSAGE_LIMIT).collect(),
             accepted: None,
         });
-        Some(Action::Dialog(session.cloned(), accept))
+        Some(Action::Dialog(session.cloned(), accept, text))
     }
 
     /// A frame's new main-world context, or an [`ISOLATED_WORLD`] one, noted for the call that made it.
@@ -809,12 +831,14 @@ impl Inner {
                     let _ = me.send(Some(&sid), "Runtime.runIfWaitingForDebugger", json!({})).await;
                 });
             }
-            Some(Action::Dialog(sid, accept)) if self.opts.answer_dialogs => {
+            Some(Action::Dialog(sid, accept, text)) if self.opts.answer_dialogs => {
                 let me = self.clone();
+                let mut answer = json!({ "accept": accept });
+                if let Some(text) = text {
+                    answer["promptText"] = json!(text);
+                }
                 tokio::spawn(async move {
-                    let _ = me
-                        .send(sid.as_ref(), "Page.handleJavaScriptDialog", json!({ "accept": accept }))
-                        .await;
+                    let _ = me.send(sid.as_ref(), "Page.handleJavaScriptDialog", answer).await;
                 });
             }
             Some(Action::Dialog(..)) | None => {}
@@ -1151,6 +1175,13 @@ impl Page {
 
     pub fn options(&self) -> &PageOptions {
         &self.inner.opts
+    }
+
+    /// Sets the answer for the next dialog the page opens, once: accept or dismiss, and the text a
+    /// `prompt()` gets when accepted. The dialogs after it get the usual answers again (`answer_dialogs`),
+    /// and so does that one on a page that does not answer its own dialogs.
+    pub fn answer_next_dialog(&self, accept: bool, prompt_text: Option<String>) {
+        self.inner.state.lock().next_dialog = Some((accept, prompt_text));
     }
 
     /// The dialogs opened since the last call, oldest first, and forgets the answered ones. One still open
@@ -1522,6 +1553,106 @@ impl Page {
         }
     }
 
+    /// The tab's history (`Page.getNavigationHistory`): its entries, oldest first, and which is current.
+    pub async fn history(&self) -> Result<History, CdpError> {
+        let h = self.send("Page.getNavigationHistory", json!({})).await?;
+        let current = h.get("currentIndex").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok());
+        let entries = h
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| {
+                        Some(HistoryEntry {
+                            id: e.get("id")?.as_i64()?,
+                            url: e.get("url").and_then(Value::as_str).unwrap_or("").to_owned(),
+                            transition: e
+                                .get("transitionType")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(History { current: current.unwrap_or(0), entries })
+    }
+
+    /// Goes to history entry `id` ([`Page::history`]), as Back and Forward do, and waits as
+    /// [`Page::goto`] does: for the document it loads, a page kept in the back-forward cache coming back,
+    /// or a move within the document.
+    pub async fn go_to_history_entry(&self, id: i64, timeout: Duration) -> Result<(), CdpError> {
+        let session = self.main_session()?;
+        let sent = self.inner.send(session.as_ref(), "Page.navigateToHistoryEntry", json!({"entryId": id}));
+        self.navigated_by(sent, timeout).await
+    }
+
+    /// Loads the page anew (`Page.reload`) and waits for its new document, as [`Page::goto`] does.
+    pub async fn reload(&self, timeout: Duration) -> Result<(), CdpError> {
+        let session = self.main_session()?;
+        let sent = self.inner.send(session.as_ref(), "Page.reload", json!({}));
+        self.navigated_by(sent, timeout).await
+    }
+
+    fn main_session(&self) -> Result<Option<SessionId>, CdpError> {
+        let frame = self.inner.main_frame()?;
+        let st = self.inner.state.lock();
+        let f = st.frames.get(&frame).ok_or_else(|| CdpError::Other("Page has no main frame".into()))?;
+        Ok(f.session.clone())
+    }
+
+    /// Sends `sent`, a command that navigates the main frame, then waits until the frame has a new
+    /// document that has loaded (its loader changed and its lifecycle is complete), came back from the
+    /// back-forward cache, or moved within its document. A zero `timeout` waits forever.
+    async fn navigated_by(
+        &self,
+        sent: impl Future<Output = Result<Value, CdpError>>,
+        timeout: Duration,
+    ) -> Result<(), CdpError> {
+        let inner = &self.inner;
+        let mut changed = inner.changed.subscribe();
+        let frame = inner.main_frame()?;
+        let (loader, same_doc, swaps) = {
+            let st = inner.state.lock();
+            let f = st.frames.get(&frame).ok_or_else(|| CdpError::Other("Page has no main frame".into()))?;
+            (f.loader_id.clone(), f.same_document_navigations, f.swaps)
+        };
+        let work = async {
+            let res = sent.await?;
+            if let Some(error) = res.get("errorText").and_then(Value::as_str).filter(|e| !e.is_empty()) {
+                return Err(CdpError::Navigation(error.to_owned()));
+            }
+            loop {
+                changed.borrow_and_update();
+                if let Some(r) = inner.closed_reason() {
+                    return Err(CdpError::Closed(r));
+                }
+                {
+                    let st = inner.state.lock();
+                    let Some(f) = st.frames.get(&frame) else {
+                        return Err(CdpError::Navigation("Navigating frame was detached".into()));
+                    };
+                    let moved =
+                        f.loader_id != loader || f.swaps != swaps || f.same_document_navigations != same_doc;
+                    if moved && st.lifecycle_complete(&frame) {
+                        return Ok(());
+                    }
+                }
+                if changed.changed().await.is_err() {
+                    return Err(CdpError::Closed("Target closed".into()));
+                }
+            }
+        };
+        if timeout.is_zero() {
+            return work.await;
+        }
+        match tokio::time::timeout(timeout, work).await {
+            Ok(r) => r,
+            Err(_) => Err(CdpError::NavigationTimeout(millis(timeout))),
+        }
+    }
+
     /// Sends the main frame to `about:blank` by script in the page (phantab's isolated world, as every
     /// [`Page::evaluate`]) and waits for that document. A navigation the renderer starts stays in its
     /// process, where one the browser starts (`goto`) can move it to a new one, which then the next
@@ -1691,6 +1822,52 @@ impl Page {
     pub async fn key_up(&self, key: &str) -> Result<(), CdpError> {
         let params = self.inner.keyboard.lock().up(key)?;
         self.send("Input.dispatchKeyEvent", params).await.map(drop)
+    }
+
+    /// Presses a key or a combination ([`crate::combo_keys`]: `Enter`, `Control+A`, `Shift+Tab`): each
+    /// key down in order, then each up in reverse. Control+A and Meta+A also ask Chrome to select all
+    /// ([`crate::input::selects_all`]). A key whose down or up failed, and every key held with it, is
+    /// released in the background: a held key the next press would send as a repeat, and a held
+    /// modifier would change every later key.
+    pub async fn press_combo(&self, combo: &str) -> Result<(), CdpError> {
+        let keys = crate::input::combo_keys(combo)?;
+        let select_all = crate::input::selects_all(&keys);
+        let mut held: Vec<String> = Vec::new();
+        let mut pressed = Ok(());
+        for (i, key) in keys.iter().enumerate() {
+            let mut params = match self.inner.keyboard.lock().down(key) {
+                Ok(p) => p,
+                Err(e) => {
+                    pressed = Err(e);
+                    break;
+                }
+            };
+            held.push(key.clone());
+            if select_all && i + 1 == keys.len() {
+                params["commands"] = json!(["selectAll"]);
+            }
+            if let Err(e) = self.send("Input.dispatchKeyEvent", params).await {
+                pressed = Err(e);
+                break;
+            }
+        }
+        while pressed.is_ok()
+            && let Some(key) = held.pop()
+        {
+            if let Err(e) = self.key_up(&key).await {
+                held.push(key);
+                pressed = Err(e);
+            }
+        }
+        if !held.is_empty() {
+            let page = self.clone();
+            tokio::spawn(async move {
+                for key in held.iter().rev() {
+                    let _ = page.key_up(key).await;
+                }
+            });
+        }
+        pressed
     }
 
     /// Down then up. Like puppeteer, a failed down skips the up (the engine releases the key itself).

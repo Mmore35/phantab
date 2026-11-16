@@ -12,6 +12,9 @@
 pub const ACTIONABLE: &str = include_str!("actionable.js");
 /// `present`: the selector exists and the text is on the page (either may be absent).
 pub const PRESENT: &str = include_str!("present.js");
+/// `attached`: true when the selector has an element, shown or not (a file input is often hidden behind
+/// its label); answers as [`ACTIONABLE`] does for one it lacks, without the search of open shadow roots.
+pub const ATTACHED: &str = include_str!("attached.js");
 /// `readFrame`: one frame's text and controls, through open shadow roots.
 pub const READ_FRAME: &str = include_str!("read_frame.js");
 /// The workspace window's title check: the new window's page carries its token.
@@ -32,6 +35,7 @@ pub const VERIFY_STATE: &str = include_str!("verify_state.js");
 pub const SOURCES: &[(&str, &str)] = &[
     ("actionable.js", ACTIONABLE),
     ("present.js", PRESENT),
+    ("attached.js", ATTACHED),
     ("read_frame.js", READ_FRAME),
     ("title_is.js", TITLE_IS),
     ("click.js", CLICK),
@@ -129,6 +133,7 @@ pub(crate) mod tests {
     const GOLDEN: &[(&str, &str)] = &[
         ("actionable.js", "71c60b44c08c94c9387c27c5309d9491f9fad99b4a81a00be13da7b7c1d43aed"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
+        ("attached.js", "edfafc9a50abcc12b3d0bcbc015e178d3b25350f530a667029222c8fac9ff01c"),
         ("read_frame.js", "a40eefd4242dc11bb91485ba02f284a8c47473da508a3e28b09fb0584ec851dc"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),
         ("click.js", "67034e2d21ed6407789dba9496c5cfff6baf6e589fb6527f37d45b26b8de654a"),

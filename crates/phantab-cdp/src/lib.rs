@@ -27,8 +27,9 @@ pub use dom::{COVERED_PREFIX, ClickError};
 pub use error::CdpError;
 pub use events::{EVENTS, reads_event};
 pub use handle::{Arg, JsHandle};
+pub use input::combo_keys;
 pub use page::{
-    BoundingBox, DIALOG_MESSAGE_LIMIT, Dialog, FrameId, FrameInfo, PASSKEY_WATCH, Page, PageOptions,
-    PasskeyAsks,
+    BoundingBox, DIALOG_MESSAGE_LIMIT, Dialog, FrameId, FrameInfo, History, HistoryEntry, PASSKEY_WATCH,
+    Page, PageOptions, PasskeyAsks,
 };
 pub use transport::{RelayFuture, RelaySendFn, RelayTransport, SessionId, Transport, TransportEvent};

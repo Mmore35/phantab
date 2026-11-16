@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>A menu that opens on hover</title>
+<style>
+#menu { display: inline-block; position: relative; padding: 8px; }
+#items { display: none; margin: 0; padding: 8px; list-style: none; }
+#menu:hover #items { display: block; }
+</style></head>
+<body>
+<div id="menu"><button id="account">Account</button>
+<ul id="items"><li><a id="sign-out" href="#signed-out">Sign out everywhere</a></li></ul></div>
+<p>Hover the Account button to open its menu.</p>
+</body></html>

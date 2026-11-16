@@ -1805,7 +1805,123 @@ impl Page {
         el.dispose().await;
         r
     }
+
+    /// The point a press on the element `selector` names goes to ([`Page::press_point`]), in `frame`
+    /// alone when given, with the locator's retries; with `scroll`, once it is scrolled into view.
+    async fn element_point_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        scroll: bool,
+    ) -> Result<(f64, f64), CdpError> {
+        let point = Mutex::new(None);
+        self.with_located(frame, selector, |h| {
+            let point = &point;
+            async move {
+                let r = async {
+                    if scroll {
+                        self.scroll_into_view_if_needed(&h).await?;
+                    }
+                    self.press_point(&h).await
+                }
+                .await;
+                (h, r.map(|p| *point.lock() = Some(p)))
+            }
+        })
+        .await?;
+        point
+            .lock()
+            .take()
+            .ok_or_else(|| CdpError::Other(format!("No element found for selector: {selector}")))
+    }
+
+    /// Moves the pointer onto the element `selector` names, in `frame` alone when given, scrolled into
+    /// view first, as a person hovers it: the page's `:hover`, `mouseover` and `mouseenter` follow.
+    /// Nothing is pressed, so nothing checks what is on top there.
+    pub async fn hover_in(&self, frame: Option<&FrameId>, selector: &str) -> Result<(), CdpError> {
+        let (x, y) = self.element_point_in(frame, selector, true).await?;
+        self.mouse_move(x, y).await
+    }
+
+    /// Drags with the left button from `from` to `to`, page points: the press, [`DRAG_MOVES`] moves on
+    /// the way and the release, as a list widget that sorts by mouse events expects. A failure on the way
+    /// releases the button, so a later click is not refused as already pressed.
+    pub async fn drag(&self, from: (f64, f64), to: (f64, f64)) -> Result<(), CdpError> {
+        let dragged = async {
+            self.mouse_down(from.0, from.1).await?;
+            for i in 1..=DRAG_MOVES {
+                let t = f64::from(i) / f64::from(DRAG_MOVES);
+                self.mouse_move(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t).await?;
+            }
+            self.mouse_up(to.0, to.1).await
+        }
+        .await;
+        if dragged.is_err() {
+            let page = self.clone();
+            tokio::spawn(async move {
+                let _ = page.mouse_reset().await;
+            });
+        }
+        dragged
+    }
+
+    /// [`Page::drag`] from the element `from` names to the one `to` names, both in `frame` alone when
+    /// given. `to` is scrolled into view, then `from`, and `to`'s point is read again after that scroll,
+    /// so a drop target the start's scroll moved is still hit; both ends must fit in one view.
+    pub async fn drag_in(&self, frame: Option<&FrameId>, from: &str, to: &str) -> Result<(), CdpError> {
+        self.element_point_in(frame, to, true).await?;
+        let start = self.element_point_in(frame, from, true).await?;
+        let end = self.element_point_in(frame, to, false).await?;
+        self.drag(start, end).await
+    }
+
+    /// Sets `files` (paths on this computer) on the `<input type=file>` `selector` names, in `frame` alone
+    /// when given, as choosing them in a file chooser would (`DOM.setFileInputFiles`; the page gets `input`
+    /// and `change`). No file chooser opens. Refused, saying why, unless the element is a file input that
+    /// is enabled and takes that many files. Whether each path is a file the caller may send is the
+    /// caller's to check.
+    pub async fn set_input_files_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        files: &[String],
+    ) -> Result<(), CdpError> {
+        let el = self
+            .locate(frame, selector)
+            .await?
+            .ok_or_else(|| CdpError::Other(format!("No element found for selector: {selector}")))?;
+        let set = async {
+            let why = el.evaluate(JS_FILE_INPUT, vec![Arg::Value(json!(files.len()))]).await?;
+            if let Some(why) = why.as_str() {
+                return Err(CdpError::Other(format!("upload: {selector} {why}")));
+            }
+            let id =
+                el.object_id().ok_or_else(|| CdpError::Other("upload: the element has no object".into()))?;
+            let session = el.context().session.clone();
+            self.inner
+                .send(session.as_ref(), "DOM.setFileInputFiles", json!({"files": files, "objectId": id}))
+                .await
+                .map(drop)
+        }
+        .await;
+        el.dispose().await;
+        set
+    }
 }
+
+/// The moves a [`Page::drag`] makes between its press and its release.
+const DRAG_MOVES: u32 = 5;
+
+/// Why the element cannot take `n` files, or `null` when it can: a file input, enabled, and `multiple`
+/// for more than one.
+const JS_FILE_INPUT: &str = r"(el, n) => {
+  const name = el.localName;
+  if (name !== 'input') return 'is not a file input (<input type=file>): it is a <' + name + '>.';
+  if (el.type !== 'file') return 'is not a file input (<input type=file>): it is an <input type=' + el.type + '>.';
+  if (el.disabled) return 'is a disabled file input.';
+  if (n > 1 && !el.multiple) return 'takes one file (it has no multiple attribute), and ' + n + ' were given.';
+  return null;
+}";
 
 #[cfg(test)]
 mod tests {

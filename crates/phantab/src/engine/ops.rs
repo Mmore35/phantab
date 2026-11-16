@@ -5,22 +5,22 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use phantab_cdp::{BoundingBox, Browser, CdpError, FrameId, LaunchOptions, Page, PageOptions};
+use phantab_cdp::{BoundingBox, Browser, CdpError, LaunchOptions, Page, PageOptions};
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
-use super::read::{Abort, capture, on_abort, poll_actionable, poll_until, read_page};
+use super::read::{Abort, capture, on_abort, poll_until, read_page};
 use super::record::{Fields, Rec};
 use super::recover::Failed;
 use super::{Engine, PAGE_TEXT_LIMIT, cut};
 use crate::bridge::{Profile, TabId};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::{CLICK, PRESENT, SELECT_OPTIONS};
+use crate::page_js::PRESENT;
 use crate::signin::{Phase, SignInRecord};
 use crate::util::{js_string, random_hex, same_secret, truthy};
 
 const UNKNOWN_PAGE: &str = "Unknown page or page belongs to another agent session.";
-const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(30);
 /// SR-8: viewer actions per token per second.
 pub(crate) const VIEWER_ACTIONS_PER_SECOND: usize = 20;
 /// Pointer moves per second, counted apart from the actions: a drag across a slider sends a stream of
@@ -83,12 +83,12 @@ async fn viewer_frame(page: &Page, checking: bool, passkey: bool, args: &Value) 
     }))
 }
 
-fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
+pub(super) fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
     args.get(key).filter(|v| !v.is_null())
 }
 
 /// A `fill` or `type` step's text, which must be a string: `Supply text to <verb>.` otherwise.
-fn text_to(args: &Value, verb: &str) -> Result<String, Failed> {
+pub(super) fn text_to(args: &Value, verb: &str) -> Result<String, Failed> {
     match arg(args, "text") {
         Some(Value::String(text)) => Ok(text.clone()),
         _ => Err(Failed::Settled(EngineError(format!("Supply text to {verb}.")))),
@@ -128,7 +128,7 @@ fn act_action(args: &Value) -> EngineResult<String> {
 
 /// A mouse click at a point. If only the release times out, the button stays recorded as pressed and every
 /// later click refuses, so a failed click resets the mouse.
-async fn click_at(p: &Page, x: f64, y: f64) -> Result<(), CdpError> {
+pub(super) async fn click_at(p: &Page, x: f64, y: f64) -> Result<(), CdpError> {
     let clicked = p.mouse_click(x, y).await;
     if clicked.is_err() {
         let page = p.clone();
@@ -139,12 +139,12 @@ async fn click_at(p: &Page, x: f64, y: f64) -> Result<(), CdpError> {
     clicked
 }
 
-fn arg_str(args: &Value, key: &str) -> Option<String> {
+pub(super) fn arg_str(args: &Value, key: &str) -> Option<String> {
     arg(args, key).map(|v| js_string(Some(v)))
 }
 
 /// JavaScript's `typeof` of a JSON value (absent is `undefined`).
-fn type_of(v: Option<&Value>) -> &'static str {
+pub(super) fn type_of(v: Option<&Value>) -> &'static str {
     match v {
         None => "undefined",
         Some(Value::Bool(_)) => "boolean",
@@ -154,14 +154,14 @@ fn type_of(v: Option<&Value>) -> &'static str {
     }
 }
 
-fn is_website(url: &str) -> bool {
+pub(super) fn is_website(url: &str) -> bool {
     url.starts_with("http:") || url.starts_with("https:")
 }
 
 /// `unconfirmed(e, what)`: a slow page can outlast the protocol timeout on an input event and still apply
 /// it, and a resend then types twice. phantab: a covered click is left as it is: nothing was sent, and
 /// its text names what covers the element, which the page chose (an `id` can read "timed out").
-fn unconfirmed(e: EngineError, what: &str) -> EngineError {
+pub(super) fn unconfirmed(e: EngineError, what: &str) -> EngineError {
     if !e.0.starts_with(phantab_cdp::COVERED_PREFIX) && e.0.to_lowercase().contains("timed out") {
         EngineError(format!(
             "{what}: the page did not confirm in time, but it may still have landed. Screenshot before repeating it."
@@ -172,39 +172,13 @@ fn unconfirmed(e: EngineError, what: &str) -> EngineError {
 }
 
 /// Runs `f` unless `signal` aborts first (a locator's `{signal}`).
-async fn abortable<T>(signal: &Abort, f: impl Future<Output = Result<T, CdpError>>) -> EngineResult<T> {
+pub(super) async fn abortable<T>(
+    signal: &Abort,
+    f: impl Future<Output = Result<T, CdpError>>,
+) -> EngineResult<T> {
     tokio::select! {
         r = f => r.map_err(EngineError::from),
         () = on_abort(Some(signal)) => Err(EngineError("The operation was aborted.".to_owned())),
-    }
-}
-
-/// A step's wait before it acts: `Some` of the frame to act in, `None` once a click is done here.
-///
-/// A `click`, `fill` or `select` waits for its element to be ready and answers that element's frame. The
-/// act finds its element in that frame alone, so the element waited for (and, with guardrails on,
-/// checked) is the one acted on, never another frame's match. Any other action waits for nothing and has
-/// no frame. A click whose element only an open shadow root has goes to that element's point, as the
-/// failure would tell the agent to do with `click_xy` (a turn more for it); with guardrails on,
-/// `confirm_first` has checked that point.
-async fn ready_in(
-    p: &Page,
-    selector: &str,
-    action: &str,
-    signal: &Abort,
-    what: &str,
-) -> Result<Option<Option<FrameId>>, Failed> {
-    if !["click", "fill", "select"].contains(&action) {
-        return Ok(Some(None));
-    }
-    let waited = poll_actionable(p, selector, Duration::from_secs(10), Some(signal), true).await;
-    match (waited, action == "click") {
-        (Err(e), true) => {
-            let Some((x, y)) = in_shadow_at(&e) else { return Err(e) };
-            click_at(p, x, y).await.map_err(|e| unconfirmed(e.into(), what))?;
-            Ok(None)
-        }
-        (waited, _) => waited.map(|frame| Some(Some(frame))),
     }
 }
 
@@ -671,12 +645,13 @@ impl Engine {
         Ok(Value::Object(self.looked(&r, Self::describe_reporting(&r)).await))
     }
 
-    /// `act(owner, {pageId, action, selector, text, url, key, x, y, deltaY})`.
+    /// `act(owner, {pageId, action, selector, text, url, key, x, y, deltaY, to, toX, toY, files, answer})`.
     pub(crate) async fn act(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, true)?;
         self.lock_site(&r, None)?;
         self.sweep_sign_up(&r).await?;
         let action = act_action(args)?;
+        super::steps::check_args(&action, args)?;
         let what =
             if action == "press" { format!("press {}", js_string(arg(args, "key"))) } else { action.clone() };
         let workspace = r.lock().workspace;
@@ -685,89 +660,15 @@ impl Engine {
         }
         let acted = self
             .cdp(&r, Some(&action), |p, signal| {
-                let (action, what) = (action.clone(), what.clone());
+                let step = super::steps::Step {
+                    args,
+                    action: action.clone(),
+                    what: what.clone(),
+                    selector: js_string(arg(args, "selector")),
+                    workspace,
+                };
                 let r = Arc::clone(&r);
-                async move {
-                    let said = |e: EngineError| unconfirmed(e, &what);
-                    let selector = js_string(arg(args, "selector"));
-                    // The frame whose element the wait found ready, where the act finds it alone (`ready_in`).
-                    let Some(frame) = ready_in(&p, &selector, &action, &signal, &what).await? else {
-                        return Ok(());
-                    };
-                    let frame = frame.as_ref();
-                    match action.as_str() {
-                        "navigate" => {
-                            let url = Self::validate_url(arg(args, "url")).map_err(Failed::Settled)?;
-                            self.lock_site(&r, Some(&url)).map_err(Failed::Settled)?;
-                            p.goto(&url, NAVIGATE_TIMEOUT).await?;
-                        }
-                        // A hidden workspace delivers no animation frames, so it clicks the
-                        // element itself. The locator click's own waits end on timers there (the sign-in's
-                        // press uses it), but slowly, as a background tab's timers run about once a second.
-                        "click" if workspace => {
-                            p.eval_on_selector_in(frame, &selector, CLICK)
-                                .await
-                                .map_err(|e| said(e.into()))?;
-                        }
-                        "click" => {
-                            abortable(&signal, p.click_selector_in(frame, &selector))
-                                .await
-                                .map_err(said)
-                                .map(drop)?;
-                        }
-                        "fill" => {
-                            let text = text_to(args, "fill")?;
-                            abortable(&signal, p.fill_in(frame, &selector, &text)).await.map_err(said)?;
-                        }
-                        "select" => {
-                            let value = arg(args, "text");
-                            let Some(Value::String(v)) = value else {
-                                return Err(Failed::Settled(EngineError(format!(
-                                    "Values must be strings. Found value \"{}\" of type \"{}\"",
-                                    cut(&js_string(value), PAGE_TEXT_LIMIT),
-                                    type_of(value)
-                                ))));
-                            };
-                            let options = p
-                                .eval_on_selector_in(frame, &selector, SELECT_OPTIONS)
-                                .await
-                                .map_err(|e| said(e.into()))?;
-                            let v = pick_option(&options, v)
-                                .map_err(|why| Failed::Settled(EngineError(format!("{selector}: {why}"))))?;
-                            p.select_in(frame, &selector, &[v]).await.map_err(|e| said(e.into()))?;
-                        }
-                        // A timed-out key-down never gets its key-up, and the next press of that key would then go
-                        // out as a repeat.
-                        "press" => {
-                            let key = js_string(arg(args, "key"));
-                            if let Err(e) = p.key_down(&key).await {
-                                let (page, key) = (p.clone(), key.clone());
-                                super::relay::fire(async move {
-                                    let _ = page.key_up(&key).await;
-                                });
-                                return Err(said(e.into()).into());
-                            }
-                            p.key_up(&key).await.map_err(|e| said(e.into()))?;
-                        }
-                        // Text typed at the focus, as a person types it: what `press` sends for each key,
-                        // and the text itself for what no key on the layout makes.
-                        "type" => {
-                            let text = text_to(args, "type")?;
-                            p.type_text(&text).await.map_err(|e| said(e.into()))?;
-                        }
-                        "scroll" => {
-                            let dy = arg(args, "deltaY").and_then(Value::as_f64).unwrap_or(600.0);
-                            p.mouse_wheel(dy).await.map_err(|e| said(e.into()))?;
-                        }
-                        "click_xy" => {
-                            let x = arg(args, "x").and_then(Value::as_f64).unwrap_or(f64::NAN);
-                            let y = arg(args, "y").and_then(Value::as_f64).unwrap_or(f64::NAN);
-                            click_at(&p, x, y).await.map_err(|e| said(e.into()))?;
-                        }
-                        _ => return Err(Failed::Settled(EngineError("Unsupported action".to_owned()))),
-                    }
-                    Ok::<(), Failed>(())
-                }
+                async move { self.run_step(&r, &p, &signal, &step).await }
             })
             .await;
         // The action may have put the new password somewhere else (a copy, a reveal): swept again first,
@@ -1206,7 +1107,7 @@ impl Engine {
 /// label a snapshot shows works as well as the value behind it. Anything but a list (not a `<select>`)
 /// leaves `want` as it is, for the select itself to refuse. No match is an error naming the options: a
 /// select that matched nothing used to succeed with nothing chosen.
-fn pick_option(options: &Value, want: &str) -> Result<String, String> {
+pub(super) fn pick_option(options: &Value, want: &str) -> Result<String, String> {
     let Some(list) = options.as_array() else { return Ok(want.to_owned()) };
     let pairs: Vec<(&str, &str)> =
         list.iter().filter_map(|o| Some((o.get(0)?.as_str()?, o.get(1)?.as_str()?))).collect();
