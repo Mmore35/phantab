@@ -215,6 +215,10 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
 
   **On a work machine, or anywhere an agent reads untrusted pages, use `full`.** Secrets stay out of
   logs and files in every mode. See `docs/GUARDRAILS.md`, including what the confirmation cannot stop.
+- **Agents share a site.** By default, several agents, and you, can change one site at once
+  (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
+  ServiceNow, for example, the current update set and application scope, so one agent's switch moves
+  the other's work too. Set `siteLock` to `exclusive` for one writer per site (`docs/GUARDRAILS.md`).
 - **The extension's permissions.** The bridge extension asks for `debugger` (to drive tabs) and
   `<all_urls>` (to reach every site), plus `tabs`, `nativeMessaging`, `alarms`, `storage` and
   `scripting`. Those are broad on purpose: they are what lets an agent act in any tab. It has no

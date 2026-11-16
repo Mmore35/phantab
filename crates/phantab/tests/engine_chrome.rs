@@ -46,14 +46,27 @@ impl Lane {
         Self::start_with(chrome, "full").await
     }
 
+    /// `full`, with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md).
+    async fn start_exclusive(chrome: &PathBuf) -> Self {
+        Self::start_config(chrome, "full", Some("exclusive")).await
+    }
+
     async fn start_with(chrome: &PathBuf, guardrails: &str) -> Self {
+        Self::start_config(chrome, guardrails, None).await
+    }
+
+    async fn start_config(chrome: &PathBuf, guardrails: &str, site_lock: Option<&str>) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
-        rt.write_config(&json!({
+        let mut config = json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
             "guardrails": guardrails,
-        }));
+        });
+        if let Some(lock) = site_lock {
+            config["siteLock"] = json!(lock);
+        }
+        rt.write_config(&config);
         let svc = tokio::task::block_in_place(|| {
             let child = rt
                 .command(&["serve"])
@@ -180,7 +193,9 @@ fn ms(since: Instant) -> u128 {
 async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and_tab_end() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
-    let lane = Lane::start(&chrome).await;
+    // One writer per site, so the site lock below is the one a write takes (the default shares the site:
+    // `agents_share_a_site_by_default_*`).
+    let lane = Lane::start_exclusive(&chrome).await;
 
     let t = Instant::now();
     let a = lane.open("a", "/engine/basic").await;
@@ -350,6 +365,124 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     eprintln!(
         "lane3 timings: open {open_ms} ms, snapshot {snapshot_ms} ms, act {act_ms} ms, show {show_ms} ms"
     );
+    lane.finish().await;
+}
+
+/// The fill a second agent makes on a site where the first agent has a page (the plan's run E).
+fn fill_b() -> Value {
+    json!({ "action": "fill", "selector": "#name", "text": "agent b" })
+}
+
+/// `siteLock` absent (`shared`): a second agent's fill on the same site works while the first agent's page
+/// is open and while it is handed to the owner. The handed-over page still refuses its own agent's write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_share_a_site_by_default_and_a_handed_over_page_refuses_only_itself() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "agent a" })).await.unwrap();
+    lane.act("b", &b, fill_b()).await.unwrap();
+    lane.act("b", &b, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+    assert!(text(&lane.snap("b", &b).await).contains("agent b"));
+
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let own = lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap_err();
+    assert!(own.contains("handed to the owner"), "{own}");
+    lane.act("b", &b, json!({ "action": "fill", "selector": "#name", "text": "while a is shown" }))
+        .await
+        .unwrap();
+    lane.act("b", &b, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+    assert!(text(&lane.snap("b", &b).await).contains("while a is shown"));
+    // The first agent's draft is still its own.
+    assert!(!text(&lane.snap("a", &a).await).contains("agent b"));
+    lane.finish().await;
+}
+
+/// `siteLock: exclusive`: the same fill is refused while the first agent's page is open and while it is
+/// handed over, as before the setting; the handed-over page refuses its own agent too. Then the step-1
+/// measurement: a shown page the owner submits stays a paused record that holds the site and that
+/// `browser_pages` lists, until the owner closes its tab, which ends the record and frees the site.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_site_lock_exclusive_one_writer_holds_the_site_until_the_owner_closes_the_tab() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_exclusive(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let a_tab = lane.ext.last_window_tab();
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "agent a" })).await.unwrap();
+    let held = lane.act("b", &b, fill_b()).await.unwrap_err();
+    assert!(held.contains("holds this site"), "{held}");
+
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let own = lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap_err();
+    assert!(own.contains("handed to the owner"), "{own}");
+    let held = lane.act("b", &b, fill_b()).await.unwrap_err();
+    assert!(held.contains("holds this site"), "{held}");
+
+    // The owner submits the shown page: the record stays, paused, and still holds the site.
+    lane.ext.eval(a_tab, "document.querySelector('#go').click()").await;
+    assert_eq!(lane.ext.eval(a_tab, "document.querySelector('#result').textContent").await, json!("agent a"));
+    let pages = lane.ok("pages", json!({}), "a").await;
+    let listed = pages.as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{pages}");
+    assert_eq!((listed[0]["pageId"].as_str(), &listed[0]["paused"]), (Some(a.as_str()), &json!(true)));
+    assert!(lane.act("b", &b, fill_b()).await.unwrap_err().contains("holds this site"));
+    eprintln!("measurement: after the owner's submit, browser_pages lists {pages}");
+
+    // The owner closes the tab: the record ends, and with it the hold.
+    lane.ext.close_tab_by_hand(a_tab).await;
+    assert!(
+        lane.until(Duration::from_secs(5), async || lane.ok("pages", json!({}), "a").await == json!([]))
+            .await
+    );
+    assert!(lane.err("snapshot", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    lane.act("b", &b, fill_b()).await.unwrap();
+    eprintln!("measurement: after the owner closes the tab, browser_pages lists []");
+    lane.finish().await;
+}
+
+/// `browser_show` with `release: true`: the page is the owner's ordinary tab from then on. `browser_pages`
+/// no longer lists it, the tab stays open with what the agent left in it, its debugger is detached, and no
+/// hold on the site remains, not even under `siteLock: exclusive`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_with_release_gives_the_tab_to_the_owner_for_good() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_exclusive(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let a_tab = lane.ext.last_window_tab();
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "for the owner" }))
+        .await
+        .unwrap();
+    let released = lane.ok("show", json!({ "pageId": a, "release": true }), "a").await;
+    assert_eq!(released["handoff"], json!("released"), "{released}");
+    assert_eq!(released["pageId"], json!(a), "{released}");
+    assert_eq!(lane.ok("pages", json!({}), "a").await, json!([]));
+    assert!(lane.err("snapshot", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    assert!(lane.err("resume", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    assert!(lane.ext.tab_open(a_tab).await, "the tab stays open");
+    assert_eq!(
+        lane.ext.eval(a_tab, "document.querySelector('#name').value").await,
+        json!("for the owner"),
+        "what the agent left in it stays"
+    );
+    assert!(lane.ext.ops().iter().any(|o| o == "detach"), "{:?}", lane.ext.ops());
+    lane.act("b", &b, fill_b()).await.unwrap();
+    lane.ok("close", json!({ "pageId": b }), "b").await;
+    // A page already handed over can be released as well.
+    let c = lane.open("c", "/engine/basic").await;
+    let c_tab = lane.ext.last_window_tab();
+    lane.ok("show", json!({ "pageId": c }), "c").await;
+    lane.ok("show", json!({ "pageId": c, "release": true }), "c").await;
+    assert_eq!(lane.ok("pages", json!({}), "c").await, json!([]));
+    assert!(lane.ext.tab_open(c_tab).await);
     lane.finish().await;
 }
 

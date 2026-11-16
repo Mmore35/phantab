@@ -522,12 +522,14 @@ impl Engine {
 
     /// `lock(r, url)`: the site lease a write takes. An isolated page shares no site with anyone. A lease is
     /// a site in one Chrome profile: two profiles are two logins, so each can change the same site at once.
+    /// Under `siteLock: shared` (the default) no other page holds the site against this one, handed over or
+    /// not; a handed-over page refuses its own writes in `get`, not here.
     pub(crate) fn lock_site(&self, r: &Arc<Rec>, url: Option<&str>) -> EngineResult<()> {
         let (isolated, owner, current) = {
             let s = r.lock();
             (s.isolated.is_some(), s.owner.clone(), s.page.url())
         };
-        if isolated {
+        if isolated || self.site_lock() == super::guardrails::SiteLock::Shared {
             return Ok(());
         }
         let origin = (r.profile.clone(), origin(url.unwrap_or(&current))?);
@@ -764,6 +766,10 @@ impl Engine {
         if arg(args, "verification").is_some_and(truthy) {
             return self.show_check(&r).await;
         }
+        let release = arg(args, "release").is_some_and(truthy);
+        if release {
+            self.may_release(&r)?;
+        }
         // Paused already, so shown already, unless a hand-back's failed keep left its window hidden: that one
         // is shown again, as the owner asked. The record already holds its site, being paused. A live check
         // Phantab started and has not popped up yet is paused with its window hidden on purpose (its grace):
@@ -774,14 +780,15 @@ impl Engine {
             let s = r.lock();
             (s.paused, s.verification.as_ref().is_some_and(|v| v.current().live() && !v.shown))
         };
-        if again && (grace || !self.reads_hidden(&r).await) {
+        if again && !release && (grace || !self.reads_hidden(&r).await) {
             let mut out = Self::handoff(&r, "already-shown", false);
             if let (Value::Object(m), Some(v)) = (&mut out, self.verification_field(&r)) {
                 m.insert("verification".into(), v);
             }
             return Ok(out);
         }
-        if !again {
+        // A page given away for good takes no hold on its site: it is about to hold none.
+        if !again && !release {
             self.lock_site(&r, None)?;
         }
         let (workspace, handback) = {
@@ -791,6 +798,7 @@ impl Engine {
             (s.workspace, handback)
         };
         match self.show_inner(&r, workspace).await {
+            Ok(_) if release => Ok(self.let_go(&r)),
             Ok(v) => Ok(v),
             Err(e) => {
                 let window_id = {
@@ -812,6 +820,34 @@ impl Engine {
                 Err(e)
             }
         }
+    }
+
+    /// Whether `browser_show` may give this page to the owner for good (`release: true`). A page in
+    /// phantab's own isolated browser has no tab of the owner's to become, and a check phantab is handing
+    /// to the owner ends by itself first (SR-69).
+    fn may_release(&self, r: &Arc<Rec>) -> EngineResult<()> {
+        if r.lock().isolated.is_some() {
+            return Err(EngineError(
+                "release: an isolated page lives in phantab's own browser, not yours, so it cannot become your tab. Use browser_show without release."
+                    .to_owned(),
+            ));
+        }
+        match self.verification_refusal(r) {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+
+    /// The end of `show` with `release: true`, once the page is on the owner's screen: the agent's record
+    /// of it ends (its debugger is detached, its site hold dropped) and the tab stays open as the owner's
+    /// ordinary tab. A workspace window was marked shown before the reveal, so the extension already treats
+    /// it as the owner's: it never closes it, mutes it or answers its dialogs.
+    fn let_go(&self, r: &Arc<Rec>) -> Value {
+        let mut out = Self::describe(r);
+        out.remove("paused");
+        out.insert("handoff".into(), Value::String("released".to_owned()));
+        self.forget(&r.id);
+        Value::Object(out)
     }
 
     pub(crate) async fn show_inner(&self, r: &Arc<Rec>, workspace: bool) -> EngineResult {

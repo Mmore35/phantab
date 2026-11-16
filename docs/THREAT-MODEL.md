@@ -492,8 +492,12 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   page and another session's page. *L3.*
 - **SR-27** No page method returns or changes a record owned by another client, except `adopt` of an
   orphan. *L3: every page method called with a foreign pageId.*
-- **SR-28** `act`, `navigate` and `show` take the origin lease, refused while another owner or a
-  paused record holds that origin. `navigate` locks the destination origin before it goes. *L3.*
+- **SR-28** Under `siteLock: exclusive`, `act`, `navigate` and `show` take the origin lease, refused
+  while another owner or a paused record holds that origin. `navigate` locks the destination origin
+  before it goes. Under `shared`, the default, no lease is taken and another owner's page refuses
+  nothing; a paused record still refuses its own agent's writes. Any value but `shared` counts as
+  `exclusive`. `show` with `release` ends the record (no lease, nothing to resume or close) and leaves
+  the tab open as the owner's. *L1; L3.*
 - **SR-29** `pages()` shows another client's orphaned record with only its pageId, mode and origin.
   No path, query, fragment or title. *L3.*
 - **SR-30** Open, navigate and attach accept only `http:` and `https:`. Only the service itself makes

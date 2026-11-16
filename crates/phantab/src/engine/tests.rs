@@ -355,6 +355,16 @@ fn fixture_profiles_with(
     Fixture { engine, windows, _dir: dir }
 }
 
+/// [`fixture`] with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md); the default shares it.
+fn fixture_exclusive(windows: Recording) -> Fixture {
+    fixture_profiles_with(windows, None, None, &[], None, exclusive)
+}
+
+/// The config edit that brings back one writer per site.
+fn exclusive(_: &std::path::Path, config: &mut Config) {
+    config.other.insert("siteLock".to_owned(), json!("exclusive"));
+}
+
 async fn connected(windows: Recording) -> (Fixture, Ext) {
     let f = fixture(windows);
     let ext = Ext::connect(f.engine.bridge()).await;
@@ -453,7 +463,7 @@ async fn a_detach_message_never_names_a_page_chosen_host_and_cuts_names_and_scan
 
 #[tokio::test]
 async fn multiple_pages_keep_the_site_lease_a_takeover_blocks_the_same_agent_and_orphans_cannot_deadlock() {
-    let f = fixture(Recording::new());
+    let f = fixture_exclusive(Recording::new());
     let e = &f.engine;
     let a = rec(e, "a", FIXTURE, Fields::default()).await;
     let b = rec(e, "a", FIXTURE, Fields::default()).await;
@@ -475,6 +485,34 @@ async fn multiple_pages_keep_the_site_lease_a_takeover_blocks_the_same_agent_and
     e.close("c", &json!({ "pageId": b.id })).await.unwrap();
     e.close("c", &json!({ "pageId": c.id })).await.unwrap();
     assert_eq!(e.st().origins.len(), 0);
+}
+
+/// `siteLock` absent (`shared`): no page holds a site against another, another agent's or the same
+/// agent's, handed over or not, orphaned or not; and no lease is kept. A handed-over page still refuses
+/// writes to itself, in both settings.
+#[tokio::test]
+async fn by_default_pages_share_a_site_and_only_a_handed_over_page_refuses_its_own_writes() {
+    let f = fixture(Recording::new());
+    let e = &f.engine;
+    let a = rec(e, "a", FIXTURE, Fields::default()).await;
+    let b = rec(e, "a", FIXTURE, Fields::default()).await;
+    let c = rec(e, "c", FIXTURE, Fields::default()).await;
+    e.lock_site(&a, None).unwrap();
+    e.lock_site(&c, None).unwrap();
+    a.lock().paused = true;
+    e.lock_site(&b, None).unwrap();
+    e.lock_site(&c, None).unwrap();
+    e.release_all("a").await.unwrap();
+    assert!(a.lock().orphaned);
+    e.lock_site(&c, None).unwrap();
+    assert_eq!(e.st().origins.len(), 0);
+    for f in [fixture(Recording::new()), fixture_exclusive(Recording::new())] {
+        let e = &f.engine;
+        let a = rec(e, "a", FIXTURE, Fields::default()).await;
+        a.lock().paused = true;
+        let own = err(e.act("a", &json!({ "pageId": a.id, "action": "click", "selector": "#go" })).await);
+        assert_eq!(own, "Page is handed to the owner. Wait for handback, then resume.");
+    }
 }
 
 #[tokio::test]
@@ -1996,7 +2034,7 @@ async fn a_refused_second_copy_is_filed_under_the_profile_it_claimed() {
 /// one profile it stays one agent's.
 #[tokio::test]
 async fn a_site_lease_is_held_per_profile() {
-    let f = fixture_profiles(Recording::new(), None, None, &["Profile 2"], None);
+    let f = fixture_profiles_with(Recording::new(), None, None, &["Profile 2"], None, exclusive);
     let e = &f.engine;
     let work = || Fields { profile: Arc::from("Profile 2"), ..Fields::default() };
     let a = rec(e, "a", FIXTURE, Fields::default()).await;

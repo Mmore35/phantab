@@ -6,6 +6,13 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 ## Unreleased
 
 ### Changed
+- Agents share a site by default. Another agent's page on a site, open or handed to the owner, no
+  longer refuses a write: only a page handed to the owner refuses its own agent's writes. The new
+  `siteLock` setting in `config.json` brings back one writer per site with `exclusive`; `shared` is
+  the default, and any other value counts as `exclusive`.
+- `browser_show` takes `release: true`: the page becomes the owner's ordinary tab for good. Phantab's
+  record of it ends (it leaves `browser_pages`, with nothing to resume or close) and the tab stays
+  open, debugger detached, never closed by later cleanup.
 - Any form can be read and filled, including one in a frame inside shadow roots, the way some apps
   (such as ServiceNow) hold theirs. A selector in `browser_act`'s `click`, `fill` and `select`
   steps finds its element in the main document first, then in each website frame. With guardrails

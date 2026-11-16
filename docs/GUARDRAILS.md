@@ -87,7 +87,20 @@ These are not guardrails. They never refuse what you ask; they keep secrets and 
 ## Kept in every mode: not guardrails
 These are coordination and correctness. They protect your own work, not you from the agent.
 
-- One writer per site: another agent's or your own handoff holds the site for changes.
+- Who may change a site at once: the setting `siteLock` in `config.json`, read at service start like
+  `guardrails`.
+  - `shared` (the default, also when the key is absent): agents work side by side on one site. Another
+    agent's page on the site, open or handed to you, refuses nothing. What `shared` gives up: two
+    agents, or an agent and you, can change one site at the same moment, and they share what the site
+    keeps per signed-in user (a cart, a draft, the current record or workspace). Nothing in phantab
+    stops one from changing what the other is in the middle of.
+  - `exclusive`: one writer per site. Another agent's page, or a page handed to you, holds the site for
+    changes until it is closed or handed back. Any other value counts as `exclusive`, so a typo never
+    loosens anything.
+
+  ```json
+  { "profileDirectory": "Default", "siteLock": "exclusive" }
+  ```
 - A page you are holding (`show`) refuses the agent's writes until it is handed back. Under `parity` and
   `light`, the agent can take it back with `resume` at any time.
 - A running sign-in holds its page until it answers.
@@ -106,8 +119,9 @@ Follow-ups, each its own change:
 
 ## Gaps (the light check)
 - A control in a website frame that a `click` finds by selector is read in its own frame. A `click_xy`
-  on a point in a cross-origin frame (a payment provider's own card frame), and a press or a `type` in a
-  field there, are not read: the check reads only the main document's control at that point or focus.
+  on a point in a website frame (same-origin or not, such as a payment provider's own card frame), and a
+  press or a `type` in a field there, are not read: the check reads only the main document, where that
+  point or focus is the `<iframe>` element itself.
   A submit button on your page next to a card field still counts.
 - A selector's `click`, `fill` or `select` does not reach an element that a website frame holds only
   inside an open shadow root: the wait passes over it and the act fails. `click_xy` at its snapshot
