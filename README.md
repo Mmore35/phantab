@@ -170,7 +170,7 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
 - **Guardrails.** One setting, `guardrails` in `<runtime>/config.json`:
   - `parity` (the default): the agent gets the access you have; your agent's own setup owns the
     guardrails. A snapshot shows what a form's text fields hold, though never a password, nor any
-    field of a password, card or code form.
+    field of a form that holds a new password, a card field, a code field or two password fields.
   - `light`: phantab asks for your explicit confirmation before a payment or checkout, a password or
     two-factor change, or deleting an account or vault items, and a snapshot shows no field's value.
   - `full`: `light`, plus sign-in limits and stops, your handback before the agent resumes a page you

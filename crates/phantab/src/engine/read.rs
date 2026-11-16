@@ -103,9 +103,9 @@ pub(crate) async fn poll_until(
 }
 
 /// The wait before an action on `selector`: `actionable` in the main frame, and, while the main document
-/// has no such element, in each website frame too, the way `Page::query_selector` finds it. Answers the
-/// frame whose element is ready, for the sensitive-set check to read it there. With `quick`, as
-/// [`poll_until`].
+/// has no such element, in each website frame too ([`check_frames`]). Answers the frame whose element is
+/// ready: the sensitive-set check reads the element there, and the act finds it there alone
+/// (`Page::query_selector_in`), so both land on the element waited for. With `quick`, as [`poll_until`].
 pub(crate) async fn poll_actionable(
     page: &Page,
     selector: &str,
@@ -389,8 +389,9 @@ fn cap(elements: Vec<Value>) -> Vec<Value> {
 /// `framesUnread` counts frames that failed or did not answer in 3 s (an empty page with framesUnread
 /// above 0 is not yet read, not empty); `framesSkipped` and `elementsOmitted` count what the size limits
 /// left out; a frame with no area holds nothing a person could use. With `values`, each text field
-/// also says what it holds (`read_frame.js` leaves out every password and every field of a password, card
-/// or code form, THREAT-MODEL R8); the snapshot asks for that at parity alone.
+/// also says what it holds (`read_frame.js` leaves out every password, and every field of a form that
+/// holds a new password, a card field, a code field or two password fields, THREAT-MODEL R8); the
+/// snapshot asks for that at parity alone.
 pub(crate) async fn read_page(page: &Page, values: bool) -> Result<Map<String, Value>, CdpError> {
     let main = page.main_frame()?;
     let all = page.frames();

@@ -631,9 +631,13 @@ impl Engine {
                 async move {
                     let said = |e: EngineError| unconfirmed(e, &what);
                     let selector = js_string(arg(args, "selector"));
+                    // The frame whose element the wait found ready. The act finds its element there alone,
+                    // so the element waited for (and, with guardrails on, checked) is the one acted on, and
+                    // never another frame's match.
+                    let mut found = None;
                     if ["click", "fill", "select"].contains(&action.as_str()) {
                         let ten = Duration::from_secs(10);
-                        let waited = poll_actionable(&p, &selector, ten, Some(&signal), true).await.map(drop);
+                        let waited = poll_actionable(&p, &selector, ten, Some(&signal), true).await;
                         // A click whose element only an open shadow root has goes to that element's point, as
                         // the failure would tell the agent to do with click_xy (a turn more for it); with
                         // guardrails on, `confirm_first` has checked that point.
@@ -642,9 +646,10 @@ impl Engine {
                                 let Some((x, y)) = in_shadow_at(&e) else { return Err(e) };
                                 return click_at(&p, x, y).await.map_err(|e| said(e.into()).into());
                             }
-                            (waited, _) => waited?,
+                            (waited, _) => found = Some(waited?),
                         }
                     }
+                    let found = found.as_ref();
                     match action.as_str() {
                         "navigate" => {
                             let url = Self::validate_url(arg(args, "url")).map_err(Failed::Settled)?;
@@ -655,14 +660,19 @@ impl Engine {
                         // element itself. The locator click's own waits end on timers there (the sign-in's
                         // press uses it), but slowly, as a background tab's timers run about once a second.
                         "click" if workspace => {
-                            p.eval_on_selector(&selector, CLICK).await.map_err(|e| said(e.into()))?;
+                            p.eval_on_selector_in(found, &selector, CLICK)
+                                .await
+                                .map_err(|e| said(e.into()))?;
                         }
                         "click" => {
-                            abortable(&signal, p.click_selector(&selector)).await.map_err(said).map(drop)?;
+                            abortable(&signal, p.click_selector_in(found, &selector))
+                                .await
+                                .map_err(said)
+                                .map(drop)?;
                         }
                         "fill" => {
                             let text = text_to(args, "fill")?;
-                            abortable(&signal, p.fill(&selector, &text)).await.map_err(said)?;
+                            abortable(&signal, p.fill_in(found, &selector, &text)).await.map_err(said)?;
                         }
                         "select" => {
                             let value = arg(args, "text");
@@ -674,12 +684,12 @@ impl Engine {
                                 ))));
                             };
                             let options = p
-                                .eval_on_selector(&selector, SELECT_OPTIONS)
+                                .eval_on_selector_in(found, &selector, SELECT_OPTIONS)
                                 .await
                                 .map_err(|e| said(e.into()))?;
                             let v = pick_option(&options, v)
                                 .map_err(|why| Failed::Settled(EngineError(format!("{selector}: {why}"))))?;
-                            p.select(&selector, &[v]).await.map_err(|e| said(e.into()))?;
+                            p.select_in(found, &selector, &[v]).await.map_err(|e| said(e.into()))?;
                         }
                         // A timed-out key-down never gets its key-up, and the next press of that key would then go
                         // out as a repeat.

@@ -407,10 +407,10 @@ A dev-dependency of every crate with browser or service tests.
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (147)
+### Fixture pages (149)
 | Group | Keys |
 |---|---|
-| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
+| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
 | snapshot | `snapshot/busy`, `snapshot/deep`, `snapshot/inner`, `snapshot/long-text`, `snapshot/many`, `shadow/nested`, `frames/cross-site`, `forms/controls` |
 | sign-in, one step | `sign-in/one`, `framed`, `nested`, `crossframe`, `shadow`, `noform`, `outside`, `deep`, `react`, `jsaction`, `actionfield`, `landed` |
 | sign-in, steps | `userstep`, `passstep`, `passthencode`, `code`, `passthenkey`, `securitykey`, `codebeside`, `opensframe`, `inertpass`, `aca`, `aca-c` |

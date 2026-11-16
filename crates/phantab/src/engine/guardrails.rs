@@ -82,15 +82,16 @@ impl Engine {
     }
 
     /// The sensitive-set confirmation, in `light` and `full`: a click, `click_xy` or press of Enter or
-    /// Space (or `type` of text with a line break, which presses Enter) on a control that reads as a
-    /// payment or checkout, a password or two-factor change, or deleting an account or vault items is
-    /// refused until the agent repeats it with `ownerConfirmed` true, which it sets only once the owner
-    /// has approved that step in chat. It is the same `ownerConfirmed` that `resume` takes.
+    /// Space (or `type` of text with a line break or a space, which press Enter or Space) on a control
+    /// that reads as a payment or checkout, a password or two-factor change, or deleting an account or
+    /// vault items is refused until the agent repeats it with `ownerConfirmed` true, which it sets only
+    /// once the owner has approved that step in chat. It is the same `ownerConfirmed` that `resume` takes.
     ///
     /// It reads only, and runs before the act. A page that cannot be read lets the act through: this is
     /// the light check by design, a prompt for the owner's word, not a wall (a cross-origin frame's own
     /// buttons are not read either; see `docs/GUARDRAILS.md` § Gaps). A click by selector is checked in
-    /// the frame its element was found in, which may be a website frame (`read::poll_actionable`).
+    /// the frame its element was found in (`read::poll_actionable`), which may be a website frame; the
+    /// act's own wait answers that frame again and the act presses the element there.
     ///
     /// # Errors
     /// The refusal; or, for `click`, the selector's wait failing exactly as the act's own would.
@@ -100,10 +101,11 @@ impl Engine {
         }
         let num = |k: &str| args.get(k).and_then(Value::as_f64).filter(|n| n.is_finite());
         let selector = js_string(args.get("selector").filter(|v| !v.is_null()));
-        let how: Vec<Value> = match action {
-            "click" => vec!["selector".into(), selector.clone().into()],
+        // Each is one ask of the sensitive-set check; the first kind any answers is the one refused.
+        let hows: Vec<Vec<Value>> = match action {
+            "click" => vec![vec!["selector".into(), selector.clone().into()]],
             "click_xy" => match (num("x"), num("y")) {
-                (Some(x), Some(y)) => vec!["point".into(), x.into(), y.into()],
+                (Some(x), Some(y)) => vec![vec!["point".into(), x.into(), y.into()]],
                 _ => return Ok(()),
             },
             "press" => {
@@ -111,21 +113,29 @@ impl Engine {
                 if !PRESSING.contains(&key.as_str()) {
                     return Ok(());
                 }
-                vec!["focus".into(), key.into()]
+                vec![vec!["focus".into(), key.into()]]
             }
-            // Typed text presses Enter for each line break in it, as `press` would.
+            // Typed text presses Enter for each line break in it and Space for each space, as `press`
+            // would, so it is checked as a press of each it holds.
             "type" => {
                 let text = js_string(args.get("text").filter(|v| !v.is_null()));
-                if !text.contains(['\n', '\r']) {
+                let mut keys = Vec::new();
+                if text.contains(['\n', '\r']) {
+                    keys.push(vec!["focus".into(), "Enter".into()]);
+                }
+                if text.contains(' ') {
+                    keys.push(vec!["focus".into(), " ".into()]);
+                }
+                if keys.is_empty() {
                     return Ok(());
                 }
-                vec!["focus".into(), "Enter".into()]
+                keys
             }
             _ => return Ok(()),
         };
         let asked = self
             .cdp(r, None, |p, signal| {
-                let (mut how, selector) = (how.clone(), selector.clone());
+                let (mut hows, selector) = (hows.clone(), selector.clone());
                 async move {
                     let Ok(mut frame) = p.main_frame() else { return Ok(None) };
                     if action == "click" {
@@ -133,19 +143,25 @@ impl Engine {
                             poll_actionable(&p, &selector, Duration::from_secs(10), Some(&signal), false)
                                 .await;
                         match waited.map_err(EngineError::from) {
-                            // The element's own frame, where the act will find it.
+                            // The element's own frame, the one the act's own wait answers and acts in.
                             Ok(found) => frame = found,
                             // The act clicks an element only an open shadow root has at its point, so that
                             // point is what is checked.
                             Err(e) => {
                                 let Some((x, y)) = shadow_point(&e.0) else { return Err(e) };
-                                how = vec!["point".into(), x.into(), y.into()];
+                                hows = vec![vec!["point".into(), x.into(), y.into()]];
                             }
                         }
                     }
-                    let said = p.evaluate(&frame, SENSITIVE, how.into_iter().map(Arg::Value).collect()).await;
+                    for how in hows {
+                        let said =
+                            p.evaluate(&frame, SENSITIVE, how.into_iter().map(Arg::Value).collect()).await;
+                        if let Some(what) = said.ok().and_then(|v| v.as_str().and_then(kind)) {
+                            return Ok(Some(what));
+                        }
+                    }
                     // `cdp` takes any error that becomes a `Failed`; the waits here answer `EngineError`.
-                    Ok::<_, EngineError>(said.ok().and_then(|v| v.as_str().and_then(kind)))
+                    Ok::<_, EngineError>(None)
                 }
             })
             .await?;

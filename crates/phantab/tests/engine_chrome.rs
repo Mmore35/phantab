@@ -669,7 +669,8 @@ const RECORD_HIDDEN: [&str; 5] = ["hunter2", "new-secret-1", "a.test.user", "411
 /// At parity (the default), a task form in a frame inside open shadow roots, the way some apps (such as
 /// `ServiceNow`) hold theirs, is filled by selector in one `browser_act`, and the snapshot after shows what
 /// each field now holds; `type` types at the focus; and a record shows its text fields' values but never a
-/// password's, nor any field of a password, card or code form (THREAT-MODEL R8).
+/// password's, nor any field of a form that holds a new password, a card field, a code field or two
+/// password fields (THREAT-MODEL R8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn framed_forms_are_filled_by_selector_and_show_their_values_at_parity() {
     const FILLED: [(&str, &str); 7] = [
@@ -807,6 +808,67 @@ async fn with_guardrails_on_no_value_is_shown_and_framed_controls_are_checked() 
     assert!(refused.starts_with(ASK), "{refused}");
     lane.act("a", &pay, json!({ "action": "click", "selector": "#plain" })).await.unwrap();
     lane.finish().await;
+}
+
+/// With guardrails on, `type` is checked for the keys it presses: a space in its text presses Space at
+/// the focus, so `["type", " "]` on a focused pay button is asked about exactly as `["press", " "]` is.
+/// Typing a sentence into a text field is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_typed_space_is_checked_as_a_press_of_space() {
+    const ASK: &str = "Confirm first: this looks like a payment or checkout.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let a = lane.open("a", "/engine/clobber-pay").await;
+    let said = async |lane: &Lane| text(&lane.snap("a", &a).await).to_owned();
+    // The focus on the card form's submit button: the field, then Tab.
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#number", "text": "4111" })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "press", "key": "Tab" })).await.unwrap();
+    for args in [json!({ "action": "type", "text": " " }), json!({ "action": "press", "key": " " })] {
+        let refused = lane.act("a", &a, args.clone()).await.unwrap_err();
+        assert!(refused.starts_with(ASK), "{args}: {refused}");
+    }
+    assert!(said(&lane).await.contains("nothing pressed"), "a refused act reached the page");
+    // The owner's yes: the space presses the focused button, so the focus was there.
+    lane.act("a", &a, json!({ "action": "type", "text": " ", "ownerConfirmed": true })).await.unwrap();
+    assert!(said(&lane).await.contains("sent the card form"));
+
+    let rec = lane.open("a", "/engine/record").await;
+    lane.act("a", &rec, json!({ "action": "fill", "selector": "#short", "text": "Note:" })).await.unwrap();
+    lane.act("a", &rec, json!({ "action": "type", "text": " reset the VPN token" })).await.unwrap();
+    lane.finish().await;
+}
+
+/// A selector's readiness wait, its sensitive-set check and its action all land on one element. An
+/// earlier website frame holds a match only inside an open shadow root, which the wait passes over (its
+/// point is the frame's, not the page's); a later frame holds one in its document. Whatever the
+/// guardrails, the click and the fill reach the later frame's element, the one that was waited for and
+/// checked, and never the earlier frame's pay button.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_selector_acts_on_the_element_its_wait_and_check_read() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["parity", "light"] {
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        let a = lane.open("a", "/engine/two-frames").await;
+        let said = async |lane: &Lane| text(&lane.snap("a", &a).await).to_owned();
+        let mut now = String::new();
+        assert!(
+            lane.until(Duration::from_secs(30), async || {
+                now = said(&lane).await;
+                now.contains("the shadow frame is ready") && now.contains("the plain frame is ready")
+            })
+            .await,
+            "{guardrails}: {now}"
+        );
+        lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+        let now = said(&lane).await;
+        assert!(now.contains("pressed in the plain frame"), "{guardrails}: {now}");
+        lane.act("a", &a, json!({ "action": "fill", "selector": "#field", "text": "x" })).await.unwrap();
+        let now = said(&lane).await;
+        assert!(now.contains("filled in the plain frame"), "{guardrails}: {now}");
+        lane.finish().await;
+    }
 }
 
 /// A closed hidden page's window comes back for its client's next open, on the next page, every time and

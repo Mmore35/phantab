@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>One frame</title></head>
+<body>
+<div id="host"></div>
+<script>
+// `?shadow`: `#go` (a pay button) and `#field` sit only inside an open shadow root. `?plain`: the same
+// ids sit in the document, and `#go` shows details. Each says in its parent which frame was acted on.
+(() => {
+  const shadow = location.search === '?shadow';
+  const which = shadow ? 'the shadow frame' : 'the plain frame';
+  const root = shadow ? document.getElementById('host').attachShadow({ mode: 'open' }) : document.body;
+  const box = document.createElement('div');
+  box.innerHTML = (shadow ? '<button id="go">Pay now</button>' : '<button id="go">Show details</button>') +
+    ' <input id="field">';
+  root.appendChild(box);
+  const top = parent.document;
+  box.addEventListener('click', (e) => {
+    if (e.target.id === 'go') top.getElementById('said').textContent = 'pressed in ' + which;
+  });
+  box.addEventListener('input', () => { top.getElementById('said').textContent = 'filled in ' + which; });
+  top.getElementById('ready').textContent += which + ' is ready. ';
+})();
+</script>
+</body></html>
