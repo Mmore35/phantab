@@ -246,6 +246,26 @@ mod tests {
         assert_eq!(label(&Outcome::with("not-a-sign-in", "card-fields"))["next"], Value::Null);
     }
 
+    /// `browser_sign_in`'s description sends an agent to the README for what a status means.
+    #[test]
+    fn the_readme_names_every_status_and_reason() {
+        let readme = include_str!("../../../../README.md");
+        let start = readme.find("## What a sign-in answers").expect("the README's section");
+        let section = &readme[start..];
+        let section = &section[..section[2..].find("
+## ").map_or(section.len(), |end| end + 2)];
+        let words = STATUS
+            .iter()
+            .chain(SIGN_UP_STATUS)
+            .chain(WALL_REASONS)
+            .chain(OTHER_REASONS)
+            .chain(SIGN_UP_REASONS)
+            .chain(&["unknown"]);
+        for word in words {
+            assert!(section.contains(&format!("`{word}`")), "README.md, What a sign-in answers: no `{word}`");
+        }
+    }
+
     #[test]
     fn sign_up_answers_only_literals() {
         assert_eq!(label_sign_up(&Outcome::of("filled")), json!({"status": "filled"}));

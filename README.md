@@ -283,6 +283,78 @@ at once (`docs/VAULTS.md`). `browser_sign_up` makes a new login in Bitwarden, or
 declares it can, and fills a sign-up form with it (§ When an agent makes an account for you).
 `phantab vaults status` shows the providers configured, never a value.
 
+## What a sign-in answers
+`browser_sign_in` and `browser_sign_up` answer one status, sometimes with a reason. Both are fixed
+words from the lists below: nothing a page or a password manager wrote reaches the agent.
+
+`browser_sign_in`:
+
+| Status | What it means | What the agent does next |
+|---|---|---|
+| `submitted` | The login was typed and sent, and the page no longer asks for one. | Read the page to see where it landed; the answer ends with its snapshot. phantab never claims "signed in". |
+| `next-step` | It was sent, and the page now asks for the next part: a password after the email, or a code. | Call `browser_sign_in` again. |
+| `still-asking` | The password was sent and the page asks for it again. The site most likely rejected it. | Stop and tell the owner. Do not retry. |
+| `unknown` | It was sent, and phantab could not tell what the page did. | Read the page before anything else. |
+| `wall` | Something only the owner can pass, or a form phantab will not fill. The reason says which. | Show the owner the page (`browser_show`), or tell them. |
+| `not-a-sign-in` | The page is not a sign-in form. The reason says why. | With `next: browser_sign_up`, call that. Otherwise carry on by hand or tell the owner. |
+| `not-ready` | The page was still loading or moved during the call. Nothing was sent. | Wait for the page, then call again. |
+| `none` | No saved login matches this site. | Tell the owner. Never guess a password. |
+| `ambiguous` | More than one saved login matches; `count` says how many. | Ask the owner which, then call again with `account` set to its exact name. |
+| `refused` | The page or the login failed a safety check: a page not on HTTPS, a form phantab cannot trace, a login the password manager asks its own password for, or a login other than the one this page already used. | Tell the owner. |
+| `ask-first` | The owner listed this site as one to be asked about first. | Ask the owner. |
+| `locked` | The password manager is locked. | Ask the owner to unlock it, then call again. |
+| `busy` | A sign-in is already running on this page, or the password manager did not answer in time. | Call again in a moment. |
+| `provider-failed` | The password manager's command failed, or `vault` names one that is not configured. | Tell the owner; `phantab vaults status` shows each one's state. |
+| `no-provider` | No password manager is configured. | Tell the owner: `docs/BITWARDEN.md` or `docs/VAULTS.md`. |
+| `stopped` | Sign-in is stopped for this account or site. Only under `guardrails: full`. | Tell the owner; `phantab sign-in-clear` lifts it. |
+| `owner-has-page` | The owner has taken the page over. | Wait until they hand it back. |
+| `failed` | The call could not finish. The reason says why. | See the reasons below. |
+
+`leak-stopped` is no longer answered by a sign-in. When a site shows a typed password or code back on
+its page, the call goes on and its answer adds `echoed: true` and a `note`: phantab removes the value
+from everything it returns, and refuses screenshots of that tab until the tab closes.
+
+Reasons, by status:
+
+| Status | Reason | What it means |
+|---|---|---|
+| `wall` | `passkey` | The site asks for a passkey. Only the owner can give one. |
+| `wall` | `captcha` | The page shows a human check. |
+| `wall` | `code-not-saved` | The page asks for a one-time code and the saved login holds no authenticator key. |
+| `wall` | `code-boxes` | The code goes into several one-character boxes, which phantab does not fill. |
+| `wall` | `not-taken` | The page did not accept what was typed, or asked for the same thing again. |
+| `wall` | `no-clear-submit` | phantab could not tell which one button sends the form. |
+| `wall` | `form-posts-elsewhere` | The form sends to a site the saved login is not for. |
+| `wall` | `form-posts-in-the-clear` | The form would put the login in the address (a GET form). |
+| `wall` | `field-not-editable` | The password field cannot be typed into. |
+| `not-a-sign-in` | `new-password`, `two-passwords`, `sign-up` | The form asks for a new password. The answer adds `next: browser_sign_up`. |
+| `not-a-sign-in` | `card-fields`, `pay-button` | The form takes a card or pays. |
+| `not-a-sign-in` | `not-sign-in-step` | A lone text field that does not look like a sign-in's first step. |
+| `not-a-sign-in` | `no-field` | The page has no field to sign in with. |
+| `stopped` | `rejected` | An earlier sign-in with this account ended `still-asking`. |
+| `stopped` | `unknown` | An earlier sign-in with this account ended `unknown`. |
+| `stopped` | `limit` | 2 password sends in an hour, or 6 in a day, for this account. |
+| `stopped` | `guard-file` | The file that keeps these stops is damaged, which stops every account. |
+| `failed` | `page-ended` | The page closed or was replaced during the call. |
+| `failed` | `blank-unconfirmed` | phantab could not confirm that an earlier call's value was cleared from this page. phantab keeps trying, and holds the page until it is clear: call again in a moment, or open a new page. |
+| `failed` | `debug-logging` | Debug logging is on, which could print a typed value, so phantab fills nothing. |
+| `failed` | `error` | Anything else. |
+
+`browser_sign_up` shares `not-ready`, `no-provider`, `ask-first`, `locked`, `provider-failed`,
+`refused`, `ambiguous`, `busy`, `stopped`, `owner-has-page` and `failed`, and has these of its own:
+
+| Status | What it means |
+|---|---|
+| `filled` | A new password was made, saved in the password manager, and typed into the form. The agent presses the site's own button. |
+| `filled-existing` | A login for this site and username was already saved. Its password was typed in and nothing new was made. Pass `regenerate` to replace it. |
+| `no-provider-create` | No configured password manager can save a new login. |
+| `not-a-sign-up` | The page is not a form phantab makes a password for. Reasons: `no-field`, `sign-in-form`, `change-password`, `card-fields`, `pay-button`, `get-form`, `not-https`, `third-party-frame`, `form-posts-elsewhere`, `password-too-short` and `password-rules` (the form's own password rules cannot be met). |
+| `leak-stopped` | The page showed the new password where phantab could not clear it, so phantab closed the page. |
+
+A sign-up's `failed` has two more reasons: `page-moved` (the page changed between the save and the
+fill) and `not-taken` (the form did not accept the password). In both the password is already saved,
+so a second call types the saved password in and answers `filled-existing`.
+
 ## Questions
 **Does the agent get my existing logins?** Yes. It works in your own Chrome profile, so any site you
 are signed in to is signed in for the agent too. That is also why the Safety section above matters.
