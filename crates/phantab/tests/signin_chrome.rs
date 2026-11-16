@@ -790,12 +790,14 @@ async fn browser_sign_in_against_a_real_chrome_and_a_fake_provider() {
             cx.fx.reset();
             cx.control(&json!({}));
             let long =
-                cx.lane.with(Some(cx.fx.provider()), Lane::test_options().with_times(|t| t.settle_ms = 6000));
+                cx.lane.with(Some(cx.fx.provider()), Lane::test_options().with_times(|t| t.settle_ms = 9000));
+            // The full settle would take 9 s; the early end takes about 3 s here, and under 6 s on a
+            // loaded machine (4.5 s was seen while the whole workspace's tests ran).
             let r = cx.open("one").await;
             let began = Instant::now();
             assert_eq!(cx.sign_on(&long, &r, json!({})).await, status("submitted"));
             assert!(
-                began.elapsed() < Duration::from_millis(4500),
+                began.elapsed() < Duration::from_millis(6000),
                 "waited out the settle: {:?}",
                 began.elapsed()
             );

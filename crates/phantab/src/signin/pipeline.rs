@@ -594,18 +594,46 @@ async fn observe(
             Outcome::with("wall", "not-taken")
         };
     }
-    // A replaced document can take a moment to show what it asks. A read that fails after one that
-    // worked tells nothing new, so the last good read stands. After a re-attach the submit may still be
-    // in flight, with the old form showing, so a form seen then is read again until the settle time
-    // ends rather than taken at once: it is no proof the password was refused. (Taking the first form
-    // would, on a slow machine, read a password as refused and stop the account.)
-    //
-    // A main-frame form whose document was replaced, with no re-attach, ends sooner: once the new
-    // document has loaded, every frame answered with no sign-in form, and its elements have held still
-    // for `quiet_ms`. A form a script brings in later changes the count and restarts the wait.
-    let mut next: Option<Scan> = None;
     let stop = (Instant::now() + ms(t.settle_ms)).min(start + ms(t.call_ms));
     let early = replaced && !recovered && r.page().main_frame().is_ok_and(|main| main == found.frame);
+    let next = settle(r, stop, recovered, early, t.quiet_ms).await;
+    let Some(next) = next else { return Outcome::of("unknown") };
+    let refused = refusal(&next);
+    // What the page asks for next is a passkey: by its words, or by a request waiting for an answer.
+    // Neither is a submit to report as done.
+    if refused.as_ref().is_some_and(is_passkey_wall) || passkey::waiting(&r.page()).await {
+        return passkey_wall();
+    }
+    let asks = match (&next.chosen, refused) {
+        (Some(c), None) => &c.report,
+        _ => return Outcome::of("submitted"),
+    };
+    let (password, username, code) = (flag(asks, "password"), flag(asks, "username"), flag(asks, "code"));
+    match sent {
+        Sent::Password if password && !code => Outcome::of("still-asking"),
+        Sent::Username if username && !password && !code => Outcome::with("wall", "not-taken"),
+        Sent::Code if code && !password => Outcome::with("wall", "not-taken"),
+        _ => Outcome::of("next-step"),
+    }
+}
+
+/// A replaced document can take a moment to show what it asks. A read that fails after one that
+/// worked tells nothing new, so the last good read stands. After a re-attach the submit may still be
+/// in flight, with the old form showing, so a form seen then is read again until the settle time
+/// ends rather than taken at once: it is no proof the password was refused. (Taking the first form
+/// would, on a slow machine, read a password as refused and stop the account.)
+///
+/// A main-frame form whose document was replaced, with no re-attach, ends sooner: once the new
+/// document has loaded, every frame answered with no sign-in form, and its elements have held still
+/// for `quiet_ms`. A form a script brings in later changes the count and restarts the wait.
+async fn settle(
+    r: &dyn SignInRecord,
+    stop: Instant,
+    recovered: bool,
+    early: bool,
+    quiet_ms: u64,
+) -> Option<Scan> {
+    let mut next: Option<Scan> = None;
     let mut mark: Option<(Value, Instant)> = None;
     loop {
         let read = timeout(ms(4000), scan(r)).await.ok().flatten().filter(|s| s.main_read);
@@ -628,29 +656,12 @@ async fn observe(
             (Some(m), Some((last, since))) if m == last => Some((last, since)),
             (m, _) => m.map(|m| (m, Instant::now())),
         };
-        if mark.as_ref().is_some_and(|(_, since)| since.elapsed() >= ms(t.quiet_ms)) {
+        if mark.as_ref().is_some_and(|(_, since)| since.elapsed() >= ms(quiet_ms)) {
             break;
         }
         sleep(ms(150)).await;
     }
-    let Some(next) = next else { return Outcome::of("unknown") };
-    let refused = refusal(&next);
-    // What the page asks for next is a passkey: by its words, or by a request waiting for an answer.
-    // Neither is a submit to report as done.
-    if refused.as_ref().is_some_and(is_passkey_wall) || passkey::waiting(&r.page()).await {
-        return passkey_wall();
-    }
-    let asks = match (&next.chosen, refused) {
-        (Some(c), None) => &c.report,
-        _ => return Outcome::of("submitted"),
-    };
-    let (password, username, code) = (flag(asks, "password"), flag(asks, "username"), flag(asks, "code"));
-    match sent {
-        Sent::Password if password && !code => Outcome::of("still-asking"),
-        Sent::Username if username && !password && !code => Outcome::with("wall", "not-taken"),
-        Sent::Code if code && !password => Outcome::with("wall", "not-taken"),
-        _ => Outcome::of("next-step"),
-    }
+    next
 }
 
 /// Whether the report's `href` is the document Chrome's frame tree has in that frame, and its
