@@ -17,8 +17,8 @@ use super::host::{Host, Phase, SignInRecord};
 use super::label::{Echoed, Outcome, label, reason};
 use super::options::{debug_logging_on, ms};
 use super::page::{
-    AIM_AT, BLANK, BLANK_INPUTS, CONTROL, FILL_FIELDS, FIND_SIGN_IN, HREF, INPUT_SEEN, READ_INPUTS, REPORT,
-    REQUEST_SUBMIT, STATE, STOP_WATCH, SUBMIT_BY_FORM, WATCH_INPUT,
+    AIM_AT, BLANK, BLANK_INPUTS, CONTROL, FILL_FIELDS, FIND_SIGN_IN, HREF, INPUT_SEEN, LANDED, READ_INPUTS,
+    REPORT, REQUEST_SUBMIT, STATE, STOP_WATCH, SUBMIT_BY_FORM, WATCH_INPUT,
 };
 use super::passkey;
 use super::provider::Answer;
@@ -529,6 +529,8 @@ async fn observe(
     let mut decided = false;
     let mut answered = true;
     let mut recovered = false;
+    // The form's document is gone: its context was destroyed (a navigation), not a form removed or hidden.
+    let mut replaced = false;
     while Instant::now() < end && r.is_current() {
         if r.detached() {
             answered = false;
@@ -562,6 +564,7 @@ async fn observe(
         }
         if flag(&state, "gone") || !flag(&state, "connected") || !flag(&state, "shown") {
             decided = true;
+            replaced = flag(&state, "gone");
             break;
         }
         if sent == Sent::Password && flag(&state, "codeBeside") && !flag(&found.report, "code") {
@@ -596,10 +599,18 @@ async fn observe(
     // in flight, with the old form showing, so a form seen then is read again until the settle time
     // ends rather than taken at once: it is no proof the password was refused. (Taking the first form
     // would, on a slow machine, read a password as refused and stop the account.)
+    //
+    // A main-frame form whose document was replaced, with no re-attach, ends sooner: once the new
+    // document has loaded, every frame answered with no sign-in form, and its elements have held still
+    // for `quiet_ms`. A form a script brings in later changes the count and restarts the wait.
     let mut next: Option<Scan> = None;
     let stop = (Instant::now() + ms(t.settle_ms)).min(start + ms(t.call_ms));
+    let early = replaced && !recovered && r.page().main_frame().is_ok_and(|main| main == found.frame);
+    let mut mark: Option<(Value, Instant)> = None;
     loop {
-        if let Some(read) = timeout(ms(4000), scan(r)).await.ok().flatten().filter(|s| s.main_read) {
+        let read = timeout(ms(4000), scan(r)).await.ok().flatten().filter(|s| s.main_read);
+        let clear = read.as_ref().is_some_and(|s| s.chosen.is_none() && s.unread == 0);
+        if let Some(read) = read {
             next = Some(read);
         }
         if (!recovered && next.as_ref().is_some_and(|n| n.chosen.is_some()))
@@ -608,7 +619,19 @@ async fn observe(
         {
             break;
         }
-        sleep(ms(400)).await;
+        if !early {
+            sleep(ms(400)).await;
+            continue;
+        }
+        let landed = if clear { landed_mark(r).await } else { None };
+        mark = match (landed, mark) {
+            (Some(m), Some((last, since))) if m == last => Some((last, since)),
+            (m, _) => m.map(|m| (m, Instant::now())),
+        };
+        if mark.as_ref().is_some_and(|(_, since)| since.elapsed() >= ms(t.quiet_ms)) {
+            break;
+        }
+        sleep(ms(150)).await;
     }
     let Some(next) = next else { return Outcome::of("unknown") };
     let refused = refusal(&next);
@@ -649,6 +672,18 @@ pub(super) fn frame_tree_agrees(page: &Page, frame: &FrameId, report: &Value) ->
         parent = above.parent;
     }
     parent.is_none()
+}
+
+/// [`LANDED`] in the main frame, raced at 1 s: the element count of a document that has loaded, else
+/// None.
+async fn landed_mark(r: &dyn SignInRecord) -> Option<Value> {
+    let page = r.page();
+    let main = page.main_frame().ok()?;
+    let read = timeout(ms(1000), page.evaluate(&main, LANDED, vec![])).await.ok()?.ok()?;
+    if read.get(0).and_then(Value::as_str) != Some("complete") {
+        return None;
+    }
+    read.get(1).cloned()
 }
 
 /// `()=>location.href` in the main frame, raced at 3 s.

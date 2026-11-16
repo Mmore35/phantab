@@ -16,6 +16,9 @@ pub(crate) const BLANK_INPUTS: &str = include_str!("../page_js/signin_blank_inpu
 
 pub(crate) const REPORT: &str = "o=>o.report";
 pub(crate) const HREF: &str = "()=>location.href";
+/// `[readyState, elements]` of the main frame's document, open shadow roots counted in: the mark a
+/// replaced document's settle waits to hold still.
+pub(crate) const LANDED: &str = "()=>{const q=Document.prototype.querySelectorAll,f=DocumentFragment.prototype.querySelectorAll,sr=Object.getOwnPropertyDescriptor(Element.prototype,'shadowRoot').get;const roots=[document];let n=0;for(let i=0;i<roots.length&&i<500;i++){const all=(i?f:q).call(roots[i],'*');n+=all.length;for(const el of all){const s=sr.call(el);if(s)roots.push(s)}}return[Object.getOwnPropertyDescriptor(Document.prototype,'readyState').get.call(document),n]}";
 pub(crate) const BLANK: &str = "o=>o.blank?.()";
 pub(crate) const STATE: &str = "o=>o.state()";
 pub(crate) const SUBMIT_BY_FORM: &str = "o=>o.submitByForm";
@@ -54,6 +57,7 @@ pub(crate) const SOURCES: &[(&str, &str)] = &[
     ("signin_blank_inputs.js", BLANK_INPUTS),
     ("report", REPORT),
     ("href", HREF),
+    ("landed", LANDED),
     ("blank", BLANK),
     ("state", STATE),
     ("submitByForm", SUBMIT_BY_FORM),
@@ -263,6 +267,7 @@ mod tests {
         ("signin_blank_inputs.js", "9ba591c6e56e658955f27bf64f3ba1564f26e9491d821ac32ecb5b43b266866f"),
         ("report", "f40cbacf90f05e55c929dca00b035496d817ef37714887bdc0969db3bd56b41f"),
         ("href", "0ee7ce44d8d9f481d97202a74b7cbd0bc286e8b0d5aeb586b2c37727210c5b9c"),
+        ("landed", "c1df20d05d32c85350a5d5880667eaf9545372cc1bf7edd31f3664c6b61771de"),
         ("blank", "2f01294471ffac344f1b1e5365316352ddae67d4d7c838db060fb9ef7f3fd5ba"),
         ("state", "f25eece6846b5a430a3a1c3968af185325a2eed5167f9741f5eb4d9dc7fa5640"),
         ("submitByForm", "806a324fac2dcc263d0d850d12f7e5577260a64b38c948ddd41268c52acac600"),

@@ -16,6 +16,10 @@ pub struct Times {
     pub observe_ms: u64,
     pub settle_ms: u64,
     pub find_ms: u64,
+    /// How long a document that replaced the form must stay unchanged, loaded and showing no sign-in
+    /// form, for its settle to end before `settle_ms`. Longer than the second a hidden window's timers
+    /// can wait, as the engine's own quiet is.
+    pub quiet_ms: u64,
 }
 
 impl Default for Times {
@@ -27,6 +31,7 @@ impl Default for Times {
             observe_ms: 15_000,
             settle_ms: 4_000,
             find_ms: 4_000,
+            quiet_ms: 1_500,
         }
     }
 }
@@ -107,8 +112,8 @@ mod tests {
     fn budgets_are_the_documented_ones() {
         let t = Options::default().times();
         assert_eq!(
-            [t.call_ms, t.fill_by_ms, t.provider_ms, t.observe_ms, t.settle_ms, t.find_ms],
-            [80_000, 60_000, 45_000, 15_000, 4_000, 4_000]
+            [t.call_ms, t.fill_by_ms, t.provider_ms, t.observe_ms, t.settle_ms, t.find_ms, t.quiet_ms],
+            [80_000, 60_000, 45_000, 15_000, 4_000, 4_000, 1_500]
         );
         assert!(!Options::default().allow_loopback());
         assert!(!Options::default().ignore_debug_logging());

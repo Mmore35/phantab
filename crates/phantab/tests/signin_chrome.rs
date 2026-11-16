@@ -784,6 +784,29 @@ async fn browser_sign_in_against_a_real_chrome_and_a_fake_provider() {
         cx.lane.close(&r).await;
     });
 
+    case!(
+        "a replaced page that holds still ends the settle early; a form it brings in later is read",
+        async {
+            cx.fx.reset();
+            cx.control(&json!({}));
+            let long =
+                cx.lane.with(Some(cx.fx.provider()), Lane::test_options().with_times(|t| t.settle_ms = 6000));
+            let r = cx.open("one").await;
+            let began = Instant::now();
+            assert_eq!(cx.sign_on(&long, &r, json!({})).await, status("submitted"));
+            assert!(
+                began.elapsed() < Duration::from_millis(4500),
+                "waited out the settle: {:?}",
+                began.elapsed()
+            );
+            cx.lane.close(&r).await;
+            // The code form comes 700 ms after the load, inside the 1.5 s the page must hold still.
+            let r = cx.open("passlate").await;
+            assert_eq!(cx.sign_on(&long, &r, json!({})).await, status("next-step"));
+            cx.lane.close(&r).await;
+        }
+    );
+
     case!("no provider installed says so, and other tools still work", async {
         let bare = cx.lane.with(None, Lane::test_options());
         let r = cx.open("one").await;
