@@ -20,26 +20,33 @@ you can see it, take it over and carry on from where it is. It is parity of acce
 the password manager types the password, and the agent gets back a status word, never the password.
 
 Most browser tools start an agent in a clean browser, signed in to nothing. We measured what that
-means for three tasks that start at a sign-in page. Measured on 2026-11-15 with phantab at main
-`98806c1`, Playwright MCP 0.0.85, Chrome DevTools MCP 1.13.0 and Claude Sonnet 5.5, on a local account
+means for three tasks that start at a sign-in page. Measured on 2026-11-16 with phantab at main
+`a511285`, Playwright MCP 0.0.85, Chrome DevTools MCP 1.13.0 and Claude Sonnet 5.5, on a local account
 site with a stand-in password manager, five runs of each task per row:
 
-| Tool | What the agent was told about the login | Tasks finished | API cost | Password in the model's context |
-|---|---|---|---|---|
-| phantab | "My login for it is saved in my password manager." | **15 of 15** | $0.038 | **never** |
-| Playwright MCP | the same sentence | 0 of 15 | $0.036, to stop | never |
-| Chrome DevTools MCP | the same sentence | 0 of 15 | $0.051, to stop | never |
-| Playwright MCP | the email and password, pasted in | 15 of 15 | $0.071 | in every run |
-| Chrome DevTools MCP | the email and password, pasted in | 15 of 15 | $0.069 | in every run |
+| Tool | What the agent was told about the login | Tasks finished | Time | API cost | Password in the model's context |
+|---|---|---|---|---|---|
+| phantab | "My login for it is saved in my password manager." | **15 of 15** | **21.2 s** | **$0.026** | **never** |
+| Playwright MCP | the same sentence | 0 of 15 | 22.6 s, to stop | $0.036 | never |
+| Chrome DevTools MCP | the same sentence | 0 of 15 | 27.6 s, to stop | $0.050 | never |
+| Playwright MCP | the email and password, pasted in | 15 of 15 | 31.6 s | $0.070 | in every run |
+| Chrome DevTools MCP | the email and password, pasted in | 15 of 15 | 27.4 s | $0.068 | in every run |
 
-Asked to make a new account and save its password, all three tools got the account made, 5 runs of 5.
-Only phantab saved the password in the password manager (5 of 5), and the model was never sent it. With
-the other two the model made the password up itself, and the only copy off the site was in the chat.
+Three more results from the same test, at the same versions:
+- **A new account.** Asked to make an account and save its password, all three tools got the account
+  made, 5 runs of 5. Only phantab saved the password in the password manager (5 of 5), and the model
+  was never sent it. With the other two the model made the password up itself, and the only copy off
+  the site was in the chat.
+- **A browser that is already signed in.** Both other tools can attach to a Chrome you signed in by
+  hand, so we ran them that way too. They shopped and filled a cart in every run, as phantab did. When
+  the shop asked for the password again before taking an order, or the session had run out, they
+  finished 0 of 20 runs; phantab finished 10 of 10.
+- **A look-alike page.** Sent to a copy of the sign-in page at another address, the agents holding a
+  pasted password typed it in, in 10 of 10 runs. phantab sent nothing in 5 of 5: the login is saved
+  under the real site's address, so there was nothing to fill.
 
-The other two were run the way their own READMEs set up an agent's browser, at those versions. Both
-can also attach to a browser you signed in to by hand; that was not measured. `docs/PARITY.md` has the whole idea, the full
-results and what the test does not show. `bench/parity/` has the test and the recorded runs, so you can
-run it yourself.
+`docs/PARITY.md` has the whole idea, the full results and what the test does not show. `bench/parity/`
+has the test and the recorded runs, so you can run it yourself.
 
 ## What makes it different
 - **It is fast.** In the benchmark below, agents finished the same six browser tasks in about half
