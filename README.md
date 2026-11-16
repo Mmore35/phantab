@@ -26,8 +26,8 @@ site, a stand-in password manager, five runs of each task per row):
 | Tool | What the agent was told about the login | Tasks finished | API cost | Password in the model's context |
 |---|---|---|---|---|
 | phantab | "My login for it is saved in my password manager." | **15 of 15** | $0.038 | **never** |
-| Playwright MCP | the same sentence | 0 of 15 | | |
-| Chrome DevTools MCP | the same sentence | 0 of 15 | | |
+| Playwright MCP | the same sentence | 0 of 15 | $0.036, to stop | never |
+| Chrome DevTools MCP | the same sentence | 0 of 15 | $0.051, to stop | never |
 | Playwright MCP | the email and password, pasted in | 15 of 15 | $0.071 | in every run |
 | Chrome DevTools MCP | the email and password, pasted in | 15 of 15 | $0.069 | in every run |
 
