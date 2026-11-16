@@ -915,7 +915,7 @@ async fn framed_page(delay: Duration) -> Page {
                 "DOM.resolveNode" => json!({ "object": { "type": "object", "objectId": "iframe" } }),
                 "Runtime.callFunctionOn" => {
                     tokio::time::sleep(delay).await;
-                    let on_element = params["arguments"].as_array().is_some_and(|a| !a.is_empty());
+                    let on_element = params["arguments"][0].get("objectId").is_some();
                     let value = if on_element {
                         json!({ "x": 10, "y": 20, "width": 300, "height": 200 })
                     } else if params["uniqueContextId"] == "w-F" {
@@ -1032,7 +1032,7 @@ async fn a_snapshot_reads_the_main_frame_and_its_website_frames_at_once() {
     let delay = Duration::from_millis(150);
     let page = framed_page(delay).await;
     let start = tokio::time::Instant::now();
-    let read = super::read::read_page(&page).await.unwrap();
+    let read = super::read::read_page(&page, false).await.unwrap();
     let took = start.elapsed();
     assert_eq!(read["text"], "main\n[frame https://child.invalid]\nchild");
     assert_eq!(

@@ -356,7 +356,31 @@ const FRAME_TAGS: [&str; 5] = ["iframe", "frame", "object", "embed", "fencedfram
 const JS_NEXT_FRAME: &str =
     r"() => new Promise(resolve => { requestAnimationFrame(() => resolve()); setTimeout(resolve, 100); })";
 
-const JS_QUERY: &str = r"(selector) => Document.prototype.querySelector.call(document, selector)";
+/// The first element matching `selector` in this document, else in its open shadow roots (500 at most,
+/// as the snapshot reads them), read through the prototypes so markup cannot shadow the calls.
+const JS_LOCATE: &str = r"(selector) => {
+  const found = Document.prototype.querySelector.call(document, selector);
+  if (found) return found;
+  const shadowOf = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
+  const roots = [document];
+  for (let i = 0; i < roots.length && i < 500; i++) {
+    const all = (i ? DocumentFragment.prototype : Document.prototype).querySelectorAll.call(roots[i], '*');
+    for (const el of all) {
+      const root = shadowOf.call(el);
+      if (!root) continue;
+      const hit = DocumentFragment.prototype.querySelector.call(root, selector);
+      if (hit) return hit;
+      roots.push(root);
+    }
+  }
+  return null;
+}";
+
+/// How long [`Page::query_selector`] waits for each website frame; one that has not answered by then
+/// (a frame still loading, or a process that hangs) is passed over.
+const LOCATE_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
+/// The website frames [`Page::query_selector`] looks in, in [`Page::frames`] order, as the snapshot reads.
+const LOCATE_MAX_FRAMES: usize = 20;
 
 /// A document's scroll, read in its isolated world, where the page cannot replace `scrollX`.
 const JS_SCROLL: &str = "() => [scrollX, scrollY]";
@@ -1509,22 +1533,83 @@ impl Page {
         el.evaluate(JS_FOCUS, vec![]).await.map(drop)
     }
 
-    /// `document.querySelector` in the main frame; `None` when nothing matches.
+    /// The element `selector` names, as the snapshot sees the page: the first match in the main document,
+    /// else in its open shadow roots, else in each website (http or https) frame in [`Page::frames`]
+    /// order, the first 20, each through its own open shadow roots. A frame that does not answer within
+    /// 3 s is passed over. `None` when nothing matches. A selector that is not valid fails in the main
+    /// frame, as before.
     pub async fn query_selector(&self, selector: &str) -> Result<Option<JsHandle>, CdpError> {
         let main = self.main_frame()?;
-        let h = self.evaluate_handle(&main, JS_QUERY, vec![Arg::Value(json!(selector))]).await?;
-        if h.is_nullish() {
+        let h = self.evaluate_handle(&main, JS_LOCATE, vec![Arg::Value(json!(selector))]).await?;
+        if !h.is_nullish() {
+            return Ok(Some(h));
+        }
+        let frames: Vec<FrameId> = self
+            .frames()
+            .into_iter()
+            .filter(|f| {
+                f.id != main && !f.detached && (f.url.starts_with("http:") || f.url.starts_with("https:"))
+            })
+            .take(LOCATE_MAX_FRAMES)
+            .map(|f| f.id)
+            .collect();
+        if frames.is_empty() {
             return Ok(None);
         }
-        Ok(Some(h))
+        // Asked together, so a slow frame costs its timeout once; the first match in frame order wins.
+        let asks = frames.iter().map(|f| async move {
+            match tokio::time::timeout(
+                LOCATE_FRAME_TIMEOUT,
+                self.evaluate_handle(f, JS_LOCATE, vec![Arg::Value(json!(selector))]),
+            )
+            .await
+            {
+                Ok(Ok(h)) if !h.is_nullish() => Some(h),
+                _ => None,
+            }
+        });
+        let mut found = None;
+        for h in join_all(asks).await.into_iter().flatten() {
+            if found.is_none() {
+                found = Some(h);
+            } else {
+                h.dispose().await;
+            }
+        }
+        Ok(found)
     }
 
-    /// Puppeteer's locator loop: find the element, run `action`, and on any failure retry every 100 ms
-    /// until the locator timeout. The element is only required to exist (the engine turns off the
-    /// visibility, enabled, stable-box and in-viewport conditions). Deviations: the wait polls
-    /// `querySelector` from here instead of an in-page observer, and a closed page fails at once instead
-    /// of being retried until the timeout.
-    async fn with_located<F, Fut>(&self, selector: &str, action: F) -> Result<(), CdpError>
+    /// The element `selector` names in `frame` alone: the first match in its document, else in its open
+    /// shadow roots. For an act on the element a wait found in that frame, so that no other frame's match
+    /// is acted on instead. `None` when nothing matches there.
+    pub async fn query_selector_in(
+        &self,
+        frame: &FrameId,
+        selector: &str,
+    ) -> Result<Option<JsHandle>, CdpError> {
+        let h = self.evaluate_handle(frame, JS_LOCATE, vec![Arg::Value(json!(selector))]).await?;
+        Ok((!h.is_nullish()).then_some(h))
+    }
+
+    /// [`Page::query_selector_in`] with `frame`, else [`Page::query_selector`].
+    async fn locate(&self, frame: Option<&FrameId>, selector: &str) -> Result<Option<JsHandle>, CdpError> {
+        match frame {
+            Some(frame) => self.query_selector_in(frame, selector).await,
+            None => self.query_selector(selector).await,
+        }
+    }
+
+    /// Puppeteer's locator loop: find the element (in `frame` alone when given), run `action`, and on any
+    /// failure retry every 100 ms until the locator timeout. The element is only required to exist (the
+    /// engine turns off the visibility, enabled, stable-box and in-viewport conditions). Deviations: the
+    /// wait polls `querySelector` from here instead of an in-page observer, and a closed page fails at once
+    /// instead of being retried until the timeout.
+    async fn with_located<F, Fut>(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        action: F,
+    ) -> Result<(), CdpError>
     where
         F: Fn(JsHandle) -> Fut,
         Fut: Future<Output = (JsHandle, Result<(), CdpError>)>,
@@ -1534,7 +1619,7 @@ impl Page {
         let attempts = async {
             let mut covered_since: Option<Instant> = None;
             loop {
-                let outcome = match self.query_selector(selector).await {
+                let outcome = match self.locate(frame, selector).await {
                     Ok(Some(h)) => {
                         let (h, r) = action(h).await;
                         h.dispose().await;
@@ -1575,18 +1660,29 @@ impl Page {
         }
     }
 
-    /// Clicks the first element matching `selector` in the main frame, with the engine's locator rules.
+    /// Clicks the element `selector` names ([`Page::query_selector`]), with the engine's locator rules. A
+    /// framed element is pressed at its point on the page.
     pub async fn click_selector(&self, selector: &str) -> Result<(), CdpError> {
-        self.with_located(selector, |h| async move {
+        self.click_selector_in(None, selector).await
+    }
+
+    /// [`Page::click_selector`], in `frame` alone when given ([`Page::query_selector_in`]).
+    pub async fn click_selector_in(&self, frame: Option<&FrameId>, selector: &str) -> Result<(), CdpError> {
+        self.with_located(frame, selector, |h| async move {
             let r = self.click_element(&h).await;
             (h, r)
         })
         .await
     }
 
-    /// Puppeteer's `Locator.fill` for the first element matching `selector` in the main frame.
+    /// Puppeteer's `Locator.fill` for the element `selector` names ([`Page::query_selector`]).
     pub async fn fill(&self, selector: &str, text: &str) -> Result<(), CdpError> {
-        self.with_located(selector, |h| async move {
+        self.fill_in(None, selector, text).await
+    }
+
+    /// [`Page::fill`], in `frame` alone when given ([`Page::query_selector_in`]).
+    pub async fn fill_in(&self, frame: Option<&FrameId>, selector: &str, text: &str) -> Result<(), CdpError> {
+        self.with_located(frame, selector, |h| async move {
             let r = self.fill_element(&h, text).await;
             (h, r)
         })
@@ -1662,8 +1758,18 @@ impl Page {
     /// Puppeteer's `page.select`: selects options of the `<select>` matching `selector` by value and
     /// returns the values now selected.
     pub async fn select(&self, selector: &str, values: &[String]) -> Result<Vec<String>, CdpError> {
+        self.select_in(None, selector, values).await
+    }
+
+    /// [`Page::select`], in `frame` alone when given ([`Page::query_selector_in`]).
+    pub async fn select_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        values: &[String],
+    ) -> Result<Vec<String>, CdpError> {
         let el = self
-            .query_selector(selector)
+            .locate(frame, selector)
             .await?
             .ok_or_else(|| CdpError::Other(format!("No element found for selector: {selector}")))?;
         let r = self.select_element(&el, values).await;
@@ -1673,7 +1779,17 @@ impl Page {
 
     /// Puppeteer's `page.$eval`: runs `js` with the first element matching `selector` as its argument.
     pub async fn eval_on_selector(&self, selector: &str, js: &str) -> Result<Value, CdpError> {
-        let el = self.query_selector(selector).await?.ok_or_else(|| {
+        self.eval_on_selector_in(None, selector, js).await
+    }
+
+    /// [`Page::eval_on_selector`], in `frame` alone when given ([`Page::query_selector_in`]).
+    pub async fn eval_on_selector_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        js: &str,
+    ) -> Result<Value, CdpError> {
+        let el = self.locate(frame, selector).await?.ok_or_else(|| {
             CdpError::Other(format!("failed to find element matching selector \"{selector}\""))
         })?;
         let r = el.evaluate(js, vec![]).await;

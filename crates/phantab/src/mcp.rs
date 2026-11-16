@@ -29,7 +29,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
     let page = || json!({ "pageId": s() });
     let number = || json!({ "type": "number" });
     // An action's own fields: `act`'s, and each of its `then` steps'.
-    let action = || json!({ "action": { "type": "string", "enum": ["navigate", "click", "fill", "select", "press", "scroll", "click_xy"] }, "selector": s(), "text": s(), "url": s(), "key": s(), "x": number(), "y": number(), "deltaY": number() });
+    let action = || json!({ "action": { "type": "string", "enum": ["navigate", "click", "fill", "select", "press", "type", "scroll", "click_xy"] }, "selector": s(), "text": s(), "url": s(), "key": s(), "x": number(), "y": number(), "deltaY": number() });
     let mut act = json!({ "pageId": s() });
     if let (Value::Object(a), Value::Object(fields)) = (&mut act, action()) {
         a.extend(fields);
@@ -81,7 +81,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "snapshot",
-            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. Controls marked fN (frame N of the FRAMES line) or shadow take click_xy and press, because selectors reach the main document only. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. Typed values in input fields are not read, but a ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything. Leave pageId out for the page your last call named.",
+            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. A selector reaches the main document, then each website frame (fN, frame N of the FRAMES line, or a same-site frame, which has no mark); a control marked shadow takes click_xy instead. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. With guardrails parity (the default) a text field shows what it holds as value=, except a password field or any field of a form that holds a new password, a card field, a code field or two password fields; with guardrails light or full no value is read. A ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything. Leave pageId out for the page your last call named.",
             json!({ "pageId": s(), "full": { "type": "boolean" } }),
             &[],
         ),
@@ -99,7 +99,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "act",
-            "Interact with your assigned page. steps lists the actions to do, in order, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url]. The first that fails stops the rest and says which, and the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it (snapshot false leaves it out), so a run of steps and its check is one call. action with its fields is the older form of one step, and then of the ones after it (each with this tool's fields but pageId); with them the snapshot comes only with snapshot true. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click or press that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step; it covers the first step. Leave pageId out for the page your last call named.",
+            "Interact with your assigned page. steps lists the actions to do, in order, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"type\", text] (typed at the focus, as after a click_xy on a field), [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url]. A selector finds its element in the main document, then in each website frame. The first that fails stops the rest and says which, and the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it (snapshot false leaves it out), so a run of steps and its check is one call. action with its fields is the older form of one step, and then of the ones after it (each with this tool's fields but pageId); with them the snapshot comes only with snapshot true. Agent writes are blocked during owner takeover; site changes are reserved against other agents. With guardrails light or full, a click, a press or a type with a line break or a space that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step; it covers the first step. Leave pageId out for the page your last call named.",
             act,
             &[],
         ),
@@ -621,7 +621,7 @@ fn act_plan(
 }
 
 /// What `act`'s `steps` must be, said when they are not.
-const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url].";
+const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"type\", text], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url].";
 
 /// Item `n` of `act`'s `steps` as the action fields it stands for: `["fill", "#qty", "2"]` is
 /// `{"action": "fill", "selector": "#qty", "text": "2"}`. In climb
@@ -642,6 +642,7 @@ fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, St
         "click" => &["selector"],
         "fill" | "select" => &["selector", "text"],
         "press" => &["key"],
+        "type" => &["text"],
         "scroll" => &["deltaY"],
         "click_xy" => &["x", "y"],
         "navigate" => &["url"],
@@ -1313,6 +1314,10 @@ mod tests {
             json!([{ "action": "click_xy", "x": 32.0, "y": 192 }, { "action": "press", "key": "Enter" }])
         );
         assert!(snapshot);
+        // `type` takes its text, a number written as its digits.
+        let (first, then, _) = plan(json!({ "steps": [["type", "Reset the VPN token"], ["type", 42]] }));
+        assert_eq!(first, json!({ "action": "type", "text": "Reset the VPN token" }));
+        assert_eq!(then, json!([{ "action": "type", "text": "42" }]));
         assert!(!plan(json!({ "steps": [["click", "#a"]], "snapshot": false })).2);
         // The older form keeps its snapshot opt-in.
         assert!(!plan(json!({ "action": "click", "selector": "#a" })).2);
@@ -1365,6 +1370,21 @@ mod tests {
              Line one\nLine \"two\""
         );
         assert_eq!(snapshot_text(&json!({ "pageId": "p" })), None);
+    }
+
+    /// A field's value, which a snapshot at parity reads, is shown quoted, after the field's own keys.
+    #[test]
+    fn a_fields_value_is_shown_quoted() {
+        let snap = json!({
+            "pageId": "p", "text": "",
+            "elements": [
+                { "tag": "input", "id": "short", "type": "text", "value": "Say \"hi\"", "x": 1, "y": 2 },
+                { "tag": "textarea", "id": "notes", "value": "a\nb", "x": 3, "y": 4 },
+            ],
+        });
+        let shown = snapshot_text(&snap).unwrap();
+        assert!(shown.contains("1,2 input#short type=text value=\"Say \\\"hi\\\"\""), "{shown}");
+        assert!(shown.contains("3,4 textarea#notes value=\"a\\nb\""), "{shown}");
     }
 
     fn page(controls: &[&str], text: &str) -> Shown {

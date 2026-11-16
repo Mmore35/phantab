@@ -6,6 +6,14 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 ## Unreleased
 
 ### Changed
+- Any form can be read and filled, including one in a frame inside shadow roots, the way some apps
+  (such as ServiceNow) hold theirs. A selector in `browser_act`'s `click`, `fill` and `select`
+  steps finds its element in the main document first, then in each website frame. With guardrails
+  `parity` (the default), a snapshot shows what each text field holds as `value=`, so the agent can
+  check its own work; a password, and every field of a form that holds a new password, a card field,
+  a code field or two password fields, never shows. With `light` or `full`, no value is shown. A framed
+  control is checked against the sensitive set in its own frame, and the act lands on the element that
+  was checked. A `type` whose text has a space is checked as a press of Space.
 - `browser_sign_in` is faster. It takes `url` in place of `pageId`: it opens the page as
   `browser_open` does and signs in there, so the agent needs one call and not two. After `submitted`
   or `next-step`, the result ends with a snapshot of the page, so the agent can see where it landed
@@ -22,6 +30,7 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   it.
 
 ### Added
+- `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - phantab no longer starts a closed profile where the bridge was never loaded, nor waits for you to
   open one under `guardrails: full`: the call says how to load it. A call naming a profile that is left
   out, or one made since the last install, says so and names the install command that changes it.

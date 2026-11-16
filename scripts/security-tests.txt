@@ -65,6 +65,9 @@ all lib engine::tests::another_client_never_gets_a_kept_window
 all lib engine::tests::the_sensitive_set_waits_for_owner_confirmed
 all lib engine::guardrails::tests::the_sensitive_check_asks_page_objects_for_nothing_markup_can_shadow
 chrome engine_chrome markup_that_shadows_dom_properties_cannot_silence_the_sensitive_check
+chrome engine_chrome with_guardrails_on_no_value_is_shown_and_framed_controls_are_checked
+chrome engine_chrome a_typed_space_is_checked_as_a_press_of_space
+chrome engine_chrome a_selector_acts_on_the_element_its_wait_and_check_read
 # A page puts its own words where phantab's message names another extension (SR-32).
 all lib engine::tests::a_detach_message_never_names_a_page_chosen_host_and_cuts_names_and_scan_errors
 
@@ -85,6 +88,8 @@ all lib signin::secret::tests::an_echo_redacts_each_form_found_by_its_digest_alo
 all lib engine::tests::after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes
 chrome signin_echo an_echo_is_redacted_from_every_answer_and_the_sign_in_goes_on
 chrome signin_echo a_fresh_attach_to_an_echoing_tab_is_still_redacted_and_refuses_screenshots
+# A page holds a password, a card number or a code in a field; a snapshot shows none of them (R8).
+chrome engine_chrome framed_forms_are_filled_by_selector_and_show_their_values_at_parity
 
 # A changed binary, a test build or a moved action reaches an install or a release (SR-48 to SR-53, SR-56, SR-73).
 all lib engine::profiles::tests::the_owners_chrome_is_started_under_the_spawn_guard

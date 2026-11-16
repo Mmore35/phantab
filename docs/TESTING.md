@@ -301,7 +301,7 @@ exists.
 | A program posing as the service, or as our extension, asks the native host for the token | `cli_host` |
 | A forged, changed or silent extension reaches the bridge, or asks for a CDP method off the allow-list | `bridge`, `lib`, the extension's `manifest`, `ops` and `frames` tests |
 | One agent session reaches another's page; a page's markup hides a sensitive step from the check; a page puts its own words where a message names another extension | `lib`, `engine_chrome` (real Chrome) |
-| A page, or a planted program, gets between the owner's passwords and the sign-in form; a site shows the value back on the page | `signin_provider`, `signin_bitwarden`, `signin_fake_page`, `lib`, `signin_echo` (real Chrome) |
+| A page, or a planted program, gets between the owner's passwords and the sign-in form; a site shows the value back on the page; a page holds a password, card number or code in a field a snapshot reads | `signin_provider`, `signin_bitwarden`, `signin_fake_page`, `lib`, `signin_echo` and `engine_chrome` (real Chrome) |
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
 
@@ -407,10 +407,10 @@ A dev-dependency of every crate with browser or service tests.
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (132)
+### Fixture pages (152)
 | Group | Keys |
 |---|---|
-| engine | `engine/basic`, `engine/dialogs`, `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
+| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
 | snapshot | `snapshot/busy`, `snapshot/deep`, `snapshot/inner`, `snapshot/long-text`, `snapshot/many`, `shadow/nested`, `frames/cross-site`, `forms/controls` |
 | sign-in, one step | `sign-in/one`, `framed`, `nested`, `crossframe`, `shadow`, `noform`, `outside`, `deep`, `react`, `jsaction`, `actionfield`, `landed` |
 | sign-in, steps | `userstep`, `passstep`, `passthencode`, `code`, `passthenkey`, `securitykey`, `codebeside`, `opensframe`, `inertpass`, `aca`, `aca-c` |
@@ -418,6 +418,7 @@ A dev-dependency of every crate with browser or service tests.
 | sign-in, walls | `passkey`, `passkey-ask`, `passkey-onload`, `captcha`, `captcha-frame`, `captcha-invisible`, `captcha-zero`, `captcha-hidden`, `captcha-offscreen`, `captcha-solved`, `captcha-unsolved`, `captcha-framed-solved`, `captcha-framed-unsolved`, `captcha-other-kind`, `captcha-shadow-solved`, `captcha-scrolled`, `captcha-shadow-scrolled`, `captcha-slotted-scrolled`, `captcha-rtl`, `captcha-inner-rtl`, `captcha-column-reverse`, `captcha-parked-long`, `captcha-parked-fixed`, `code-boxes`, `readonly`, `twobuttons`, `nobutton`, `otherform`, `ignores`, `aimframe`, `closedframe`, `overframe` |
 | verification | `verify/box`, `verify/shop`, `verify/wall`, `verify/autoclear`, `verify/never`, `verify/widget`, `verify/challenge-only`, `verify/captcha-word-title`, `verify/hold`, `verify/slider`, `verify/offscreen` |
 | sign-in, hazards | `leaves`, `plainhttp`, `getform`, `getshadow`, `echo`, `wrong`, `hides`, `moves`, `detaching`, `landsthendetaches`, `leak-dom`, `leak-hash`, `leak-url`, `clobber-base`, `clobber-id`, `clobber-get`, `clobber-doc`, `tamper`, `leak-clobber`, `unresolved`, `form-button`, `rerender` |
+| parity benchmark | `parity/signin`, `parity/signin2`, `parity/join` (`docs/PARITY.md`) |
 | sign-up | `signup/basic`, `confirm`, `signin`, `change`, `card`, `pay`, `getform`, `elsewhere`, `crossframe`, `framed`, `shadow`, `maxlength`, `shortmax`, `rules`, `copy`, `copytext`, `reveal` |
 
 (The sign-in keys all start `sign-in/`, the sign-up keys `signup/`.) The `verify/*` pages are stand-in checks only: a box, a wall,
@@ -491,9 +492,9 @@ Test files, by the short names used above:
 - `threads` = `crates/phantab/tests/threads.rs`
 - `ext` = `extension/test/*.test.mjs`
 
-- Lane 2: `cdp::real_chrome` (evaluate and handles, forms and keyboard, the isolated world and covered
-  clicks, navigation, out-of-process frames, screenshots, closing). It runs headless at a device
-  scale of 1 (`devicePixelRatio` 1, a 756x469 view on the Mac), where the `0.9px`-padded frame
+- Lane 2: `cdp::real_chrome` (evaluate and handles, forms and keyboard, selectors that reach a
+  website frame and open shadow roots (`framed_forms`), the isolated world and covered clicks,
+  navigation, out-of-process frames, screenshots, closing). It runs headless at a device scale of 1 (`devicePixelRatio` 1, a 756x469 view on the Mac), where the `0.9px`-padded frame
   (`#xpad`) reads between pixels (`BetweenPixels`); a device scale of 2 has not been run. Its test
   output is hidden by `scripts/check.sh`, so the `#xpad`, `#xfilter`, `#xfixed`, `#xshift` and
   `#xclear` outcomes, and what each refused frame lane said (`sr34-turned.txt`), are also written to
