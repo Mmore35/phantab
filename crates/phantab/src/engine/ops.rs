@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use phantab_cdp::{BoundingBox, Browser, CdpError, LaunchOptions, Page, PageOptions};
+use phantab_cdp::{BoundingBox, Browser, CdpError, FrameId, LaunchOptions, Page, PageOptions};
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
@@ -176,6 +176,35 @@ async fn abortable<T>(signal: &Abort, f: impl Future<Output = Result<T, CdpError
     tokio::select! {
         r = f => r.map_err(EngineError::from),
         () = on_abort(Some(signal)) => Err(EngineError("The operation was aborted.".to_owned())),
+    }
+}
+
+/// A step's wait before it acts: `Some` of the frame to act in, `None` once a click is done here.
+///
+/// A `click`, `fill` or `select` waits for its element to be ready and answers that element's frame. The
+/// act finds its element in that frame alone, so the element waited for (and, with guardrails on,
+/// checked) is the one acted on, never another frame's match. Any other action waits for nothing and has
+/// no frame. A click whose element only an open shadow root has goes to that element's point, as the
+/// failure would tell the agent to do with `click_xy` (a turn more for it); with guardrails on,
+/// `confirm_first` has checked that point.
+async fn ready_in(
+    p: &Page,
+    selector: &str,
+    action: &str,
+    signal: &Abort,
+    what: &str,
+) -> Result<Option<Option<FrameId>>, Failed> {
+    if !["click", "fill", "select"].contains(&action) {
+        return Ok(Some(None));
+    }
+    let waited = poll_actionable(p, selector, Duration::from_secs(10), Some(signal), true).await;
+    match (waited, action == "click") {
+        (Err(e), true) => {
+            let Some((x, y)) = in_shadow_at(&e) else { return Err(e) };
+            click_at(p, x, y).await.map_err(|e| unconfirmed(e.into(), what))?;
+            Ok(None)
+        }
+        (waited, _) => waited.map(|frame| Some(Some(frame))),
     }
 }
 
@@ -631,25 +660,11 @@ impl Engine {
                 async move {
                     let said = |e: EngineError| unconfirmed(e, &what);
                     let selector = js_string(arg(args, "selector"));
-                    // The frame whose element the wait found ready. The act finds its element there alone,
-                    // so the element waited for (and, with guardrails on, checked) is the one acted on, and
-                    // never another frame's match.
-                    let mut found = None;
-                    if ["click", "fill", "select"].contains(&action.as_str()) {
-                        let ten = Duration::from_secs(10);
-                        let waited = poll_actionable(&p, &selector, ten, Some(&signal), true).await;
-                        // A click whose element only an open shadow root has goes to that element's point, as
-                        // the failure would tell the agent to do with click_xy (a turn more for it); with
-                        // guardrails on, `confirm_first` has checked that point.
-                        match (waited, action == "click") {
-                            (Err(e), true) => {
-                                let Some((x, y)) = in_shadow_at(&e) else { return Err(e) };
-                                return click_at(&p, x, y).await.map_err(|e| said(e.into()).into());
-                            }
-                            (waited, _) => found = Some(waited?),
-                        }
-                    }
-                    let found = found.as_ref();
+                    // The frame whose element the wait found ready, where the act finds it alone (`ready_in`).
+                    let Some(frame) = ready_in(&p, &selector, &action, &signal, &what).await? else {
+                        return Ok(());
+                    };
+                    let frame = frame.as_ref();
                     match action.as_str() {
                         "navigate" => {
                             let url = Self::validate_url(arg(args, "url")).map_err(Failed::Settled)?;
@@ -660,19 +675,19 @@ impl Engine {
                         // element itself. The locator click's own waits end on timers there (the sign-in's
                         // press uses it), but slowly, as a background tab's timers run about once a second.
                         "click" if workspace => {
-                            p.eval_on_selector_in(found, &selector, CLICK)
+                            p.eval_on_selector_in(frame, &selector, CLICK)
                                 .await
                                 .map_err(|e| said(e.into()))?;
                         }
                         "click" => {
-                            abortable(&signal, p.click_selector_in(found, &selector))
+                            abortable(&signal, p.click_selector_in(frame, &selector))
                                 .await
                                 .map_err(said)
                                 .map(drop)?;
                         }
                         "fill" => {
                             let text = text_to(args, "fill")?;
-                            abortable(&signal, p.fill_in(found, &selector, &text)).await.map_err(said)?;
+                            abortable(&signal, p.fill_in(frame, &selector, &text)).await.map_err(said)?;
                         }
                         "select" => {
                             let value = arg(args, "text");
@@ -684,12 +699,12 @@ impl Engine {
                                 ))));
                             };
                             let options = p
-                                .eval_on_selector_in(found, &selector, SELECT_OPTIONS)
+                                .eval_on_selector_in(frame, &selector, SELECT_OPTIONS)
                                 .await
                                 .map_err(|e| said(e.into()))?;
                             let v = pick_option(&options, v)
                                 .map_err(|why| Failed::Settled(EngineError(format!("{selector}: {why}"))))?;
-                            p.select_in(found, &selector, &[v]).await.map_err(|e| said(e.into()))?;
+                            p.select_in(frame, &selector, &[v]).await.map_err(|e| said(e.into()))?;
                         }
                         // A timed-out key-down never gets its key-up, and the next press of that key would then go
                         // out as a repeat.
