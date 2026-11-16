@@ -6,6 +6,12 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 ## Unreleased
 
 ### Changed
+- `browser_sign_in` is faster. It takes `url` in place of `pageId`: it opens the page as
+  `browser_open` does and signs in there, so the agent needs one call and not two. After `submitted`
+  or `next-step`, the result ends with a snapshot of the page, so the agent can see where it landed
+  without another call. When a sign-in loads a new page, the wait for it now ends once that page has
+  held still (1.5 s), not after the full settle time. In the parity benchmark the three sign-in tasks
+  took 21.4 s, against 35.7 s before, measured side by side.
 - Install allows every Chrome profile, not only the ones named with `--add-profile`. Each profile gets
   its own copy of the bridge, and agents can use it once you load that copy there at
   chrome://extensions. `--remove-profile` now leaves a profile out (a leave-out list later installs
