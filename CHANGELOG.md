@@ -38,6 +38,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   provider's caps, pin and lock state, and sites named twice. Install has
   `--add-sign-in-provider`, `--remove-sign-in-provider` and `--sign-in-save-to`. A config with one
   provider answers exactly as before. A conformance kit and a fixture provider test any provider.
+- `docs/PARITY.md`: user-agent parity, the idea phantab is built around, and what it does not cover. With
+  it a benchmark anyone can run, `bench/parity/`: four tasks that start at a sign-in or sign-up page,
+  with phantab, Playwright MCP and Chrome DevTools MCP, and the recorded runs.
 
 ### Fixed
 - A stray gap of spaces in the "refused in every profile" error.

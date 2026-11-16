@@ -11,6 +11,35 @@ use it: Claude Code, Codex, or anything else that speaks the Model Context Proto
 use it to browse, read pages, fill forms, click through web apps and pull data from sites that need a
 login. It runs on Windows and macOS. It is free and open source under the Apache License 2.0.
 
+## The idea: user-agent parity
+> **Your agent gets the browser you have, and you keep the browser your agent has.**
+
+An agent that works for you should reach what you can reach, the way you reach it: your signed-in
+Chrome profiles, the logins in your password manager, your two-step codes. And whatever it is doing,
+you can see it, take it over and carry on from where it is. It is parity of access, not of knowledge:
+the password manager types the password, and the agent gets back a status word, never the password.
+
+Most browser tools start an agent in a clean browser, signed in to nothing. We measured what that
+means for three tasks that start at a sign-in page (2026-11-15, Claude Sonnet 5.5, a local account
+site, a stand-in password manager, five runs of each task per row):
+
+| Tool | What the agent was told about the login | Tasks finished | API cost | Password in the model's context |
+|---|---|---|---|---|
+| phantab | "My login for it is saved in my password manager." | **15 of 15** | $0.038 | **never** |
+| Playwright MCP | the same sentence | 0 of 15 | | |
+| Chrome DevTools MCP | the same sentence | 0 of 15 | | |
+| Playwright MCP | the email and password, pasted in | 15 of 15 | $0.071 | in every run |
+| Chrome DevTools MCP | the email and password, pasted in | 15 of 15 | $0.069 | in every run |
+
+Asked to make a new account and save its password, all three tools got the account made, 5 runs of 5.
+Only phantab saved the password in the password manager (5 of 5), and the model was never sent it. With
+the other two the model made the password up itself, and the only copy off the site was in the chat.
+
+The other two were run the way their own READMEs set up an agent's browser. Both can also attach to a
+browser you signed in to by hand; that was not measured. `docs/PARITY.md` has the whole idea, the full
+results and what the test does not show. `bench/parity/` has the test and the recorded runs, so you can
+run it yourself.
+
 ## What makes it different
 - **It is fast.** In the benchmark below, agents finished the same six browser tasks in about half
   the time they took with Chrome DevTools MCP, at well under half the cost.
@@ -268,6 +297,7 @@ to each site's terms. For large crawls of public pages, a headless crawler is a 
 Other browsers are not supported.
 
 ## Documentation
+- `docs/PARITY.md`: user-agent parity, the idea phantab is built around, and the benchmark behind it.
 - `docs/ARCHITECTURE.md`: the pieces and how they talk.
 - `docs/GUARDRAILS.md`: what each guardrails mode asks for.
 - `docs/THREAT-MODEL.md`: assets, attackers, requirements and residual risks.

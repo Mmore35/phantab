@@ -14,6 +14,7 @@
 mod chrome;
 mod http;
 mod pages;
+mod parity;
 mod server;
 pub mod sign_in;
 mod temp;

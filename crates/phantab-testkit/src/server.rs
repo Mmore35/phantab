@@ -430,6 +430,11 @@ async fn route(ctx: &Ctx<'_>, method: &str, path: &str, body: &str) -> Response 
         return Response::text(200, "ok");
     }
     if let Some(rest) = path.strip_prefix("/post/") {
+        if let Some(step) = rest.strip_prefix("parity-") {
+            // The parity benchmark's account site: the server checks the sign-in (`parity.rs`).
+            let step = if method == "POST" { step } else { "" };
+            return Response::html(200, crate::parity::answer(step, body));
+        }
         if method != "POST" {
             return Response::html(200, LANDED);
         }
