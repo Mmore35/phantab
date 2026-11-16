@@ -235,7 +235,8 @@ fn concurrent_tool_calls_each_get_their_own_answer() {
 }
 
 /// A stand-in service on 127.0.0.1 that keeps its connections, as this version's does: `/hello`
-/// proves `token` and says `keep`, and `/rpc` answers `{"method", "args"}` of the call it got. A call
+/// proves `token` and says `keep`, and `/rpc` answers `{"method", "args"}` of the call it got, with
+/// [`OPENED`] as `pageId` for an `open`. A call
 /// whose url ends `?n=<i>` is answered after `(16 - i) * 20` ms, so answers come back in reverse.
 /// Every request is recorded as (connection, request line, whether it carried the token).
 struct KeepingService {
@@ -317,7 +318,11 @@ impl KeepingService {
                 if let Some(i) = i.and_then(|i| i.parse::<u64>().ok()) {
                     std::thread::sleep(Duration::from_millis(16u64.saturating_sub(i) * 20));
                 }
-                json!({ "result": { "method": call["method"], "args": call["args"] } })
+                let mut result = json!({ "method": call["method"], "args": call["args"] });
+                if call["method"] == "open" {
+                    result["pageId"] = json!(OPENED);
+                }
+                json!({ "result": result })
             };
             let answer = answer.to_string();
             let head = format!(
@@ -340,6 +345,9 @@ impl Drop for KeepingService {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
+
+/// The page id the stand-in service gives every page it opens.
+const OPENED: &str = "f00dfeed-0000-4000-8000-000000000001";
 
 /// Removes the endpoint a test wrote for a stand-in service before the runtime's drop reads it: that
 /// drop stops the service an endpoint names, and this one names none of ours.
@@ -391,4 +399,50 @@ fn calls_of_one_kind_never_swap_answers() {
         assert!(first.1.starts_with("GET /hello?nonce=") && !first.2, "{on:?}");
         assert!(rest.iter().all(|r| r.1 == "POST /rpc HTTP/1.1" && r.2), "{on:?}");
     }
+}
+
+/// `browser_sign_in` with `url` opens the page, as `browser_open` does with its defaults, and signs in
+/// on it in the same call; the answer starts with the open's line, so the agent knows the page. Without
+/// a page, or with both, it refuses before anything reaches the service.
+#[test]
+fn a_sign_in_with_a_url_opens_the_page_and_signs_in_there() {
+    let rt = Runtime::new();
+    let token = "7b".repeat(32);
+    let service = KeepingService::start(&token);
+    let endpoint = rt.path().join("endpoint.json");
+    let endpoint_json = json!({
+        "port": service.port, "token": token, "pid": 1,
+        "protocol": phantab::paths::SERVICE_PROTOCOL, "source": "fake"
+    });
+    std::fs::write(&endpoint, endpoint_json.to_string()).unwrap();
+    let _unadvertise = Unadvertise(endpoint);
+    let mut mcp = Mcp::start(&rt, &[]);
+    mcp.initialize();
+    let posts =
+        |service: &KeepingService| service.seen().iter().filter(|r| r.1 == "POST /rpc HTTP/1.1").count();
+    for (id, arguments, said) in [
+        (2, json!({}), "browser_sign_in needs pageId, or url to open the page."),
+        (
+            3,
+            json!({ "url": "https://a.test/", "pageId": "p" }),
+            "browser_sign_in takes pageId or url, not both.",
+        ),
+        (4, json!({ "url": 7 }), "url must be a string."),
+    ] {
+        let refused = mcp.call(id, "browser_sign_in", &arguments);
+        assert_eq!(refused["isError"], json!(true), "{refused}");
+        assert_eq!(refused["content"][0]["text"], json!(said));
+    }
+    assert_eq!(posts(&service), 0, "a refused call reaches no service");
+    let answer = mcp.call(5, "browser_sign_in", &json!({ "url": "https://a.test/login", "account": "me" }));
+    let text = answer["content"][0]["text"].as_str().unwrap().to_owned();
+    let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert_eq!(lines[0]["method"], json!("open"));
+    assert_eq!(lines[0]["args"], json!({ "url": "https://a.test/login" }), "opened with the defaults");
+    assert_eq!(lines[0]["pageId"], json!(&OPENED[..8]), "the agent's short id for the page");
+    assert_eq!(lines[1]["method"], json!("sign_in"));
+    // The service echoes the arguments it got; the answer shows the page id short, as every answer does.
+    assert_eq!(lines[1]["args"], json!({ "pageId": &OPENED[..8], "account": "me" }));
+    assert_eq!(posts(&service), 2);
 }

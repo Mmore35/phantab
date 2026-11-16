@@ -117,9 +117,9 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "sign_in",
-            "Sign in to the site on this page with its saved login, with no secret ever shown to you. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: after submitted or next-step the result ends with the page's snapshot, as browser_snapshot shows it. account picks one saved login by its exact name when status is ambiguous. vault picks one of the owner's configured password managers by name; omit it to use them in the owner's order. Statuses: README.md of phantab.",
-            json!({ "pageId": s(), "account": s(), "vault": s() }),
-            &["pageId"],
+            "Sign in to the site on this page with its saved login, with no secret ever shown to you. url in place of pageId opens the page first, as browser_open does with its defaults, so opening a sign-in page and signing in is one call; the result starts with the opened page's line. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: after submitted or next-step the result ends with the page's snapshot, as browser_snapshot shows it. account picks one saved login by its exact name when status is ambiguous. vault picks one of the owner's configured password managers by name; omit it to use them in the owner's order. Statuses: README.md of phantab.",
+            json!({ "pageId": s(), "url": s(), "account": s(), "vault": s() }),
+            &[],
         ),
         (
             "sign_up",
@@ -511,6 +511,24 @@ fn result(value: Value) -> CallToolResult {
         .unwrap_or_else(|e| failure(&format!("Browser service answer could not be shown: {e}")))
 }
 
+/// The failure of a call the service did not answer. A page opened for a sign-in (`url`) stays open,
+/// so its line comes first: the agent is told which it is.
+fn failed(name: &str, message: &str, opened_first: Option<String>) -> CallToolResult {
+    let old = message.contains("Invalid method or client")
+        && (name == "browser_sign_in" || name == "browser_sign_up");
+    let said = if !old {
+        message
+    } else if name == "browser_sign_up" {
+        "This browser service predates browser_sign_up: restart the browser service when its pages are drained."
+    } else {
+        "This browser service predates browser_sign_in: restart the browser service when its pages are drained."
+    };
+    match opened_first {
+        Some(line) => failure(&format!("{line}\n{said}")),
+        None => failure(said),
+    }
+}
+
 fn failure(message: &str) -> CallToolResult {
     let mut r = CallToolResult::default();
     r.is_error = Some(true);
@@ -852,6 +870,35 @@ impl Server {
         }
     }
 
+    /// `sign_in`'s `url`, taken out of its arguments: the page opened as `browser_open` opens one with
+    /// its defaults, named by `pageId` in its place. Answers the open's line as the agent is shown it,
+    /// none when the call names its page, or why there is no page to sign in on. In the parity benchmark
+    /// (climb 2026-11-15-phantab-signin-speed) every sign-in task opened its page and then signed in, a
+    /// model turn each; the turn, not phantab's own work, was the time.
+    async fn open_to_sign_in(
+        &self,
+        arguments: Option<&mut serde_json::Map<String, Value>>,
+    ) -> Result<Option<String>, String> {
+        let Some(a) = arguments.filter(|a| a.contains_key("url") || a.contains_key("pageId")) else {
+            return Err("browser_sign_in needs pageId, or url to open the page.".to_owned());
+        };
+        let Some(url) = a.remove("url") else { return Ok(None) };
+        if a.contains_key("pageId") {
+            return Err("browser_sign_in takes pageId or url, not both.".to_owned());
+        }
+        if !url.is_string() {
+            return Err("url must be a string.".to_owned());
+        }
+        let value =
+            rpc("open", json!({ "url": url }), &self.client, true).await.map_err(|e| e.to_string())?;
+        let Some(id) = value.get("pageId").and_then(Value::as_str).map(str::to_owned) else {
+            return Err(format!("The page did not open: {value}"));
+        };
+        let line = self.answer("open", value, None, false);
+        a.insert("pageId".into(), Value::String(id));
+        Ok(Some(line))
+    }
+
     async fn call(&self, name: &str, arguments: Option<serde_json::Map<String, Value>>) -> CallToolResult {
         let method = match checked(&self.tools, name, arguments.as_ref()) {
             Ok(method) => method,
@@ -880,6 +927,14 @@ impl Server {
                 Err(refused) => return failure(&refused),
             },
             _ => false,
+        };
+        // And `sign_in`'s `url`: the page is opened here, and the sign-in goes to it.
+        let opened_first = match method {
+            "sign_in" => match self.open_to_sign_in(arguments.as_mut()).await {
+                Ok(line) => line,
+                Err(refused) => return failure(&refused),
+            },
+            _ => None,
         };
         // The agent is shown short page ids (`SHORT_ID`); the service gets its own.
         let given =
@@ -930,6 +985,9 @@ impl Server {
                     } else if landed {
                         text = self.and_snapshot(text, page.clone(), false, "it").await;
                     }
+                    if let Some(line) = opened_first {
+                        text = format!("{line}\n{text}");
+                    }
                     if method == "close"
                         && let Some(p) = &page
                     {
@@ -939,18 +997,7 @@ impl Server {
                 };
                 result(json!({ "content": [content] }))
             }
-            Err(e) => {
-                let message = e.to_string();
-                let old = message.contains("Invalid method or client")
-                    && (name == "browser_sign_in" || name == "browser_sign_up");
-                failure(if !old {
-                    &message
-                } else if name == "browser_sign_up" {
-                    "This browser service predates browser_sign_up: restart the browser service when its pages are drained."
-                } else {
-                    "This browser service predates browser_sign_in: restart the browser service when its pages are drained."
-                })
-            }
+            Err(e) => failed(name, &e.to_string(), opened_first),
         }
     }
 }
