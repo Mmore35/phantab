@@ -79,6 +79,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T9 | An action interrupted by a detach is replayed, so a payment or send happens twice. | SR-35 | L3 |
 | T10 | A recovery loop against a frame that keeps coming back. | SR-36 | L4 |
 | T11 | Page-controlled text inside an error carries injection or very long output. | SR-32 | L3 |
+| T92 | An injected agent uses a screenshot or snapshot saved to a file (`path`) to overwrite a file the owner keeps, to write where the service was started rather than where it was told, or to save a picture of a page whose screenshot is refused. | SR-88 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -734,6 +735,23 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   real-Chrome lane (`engine_chrome.rs`,
   `markup_that_shadows_dom_properties_cannot_silence_the_sensitive_check`) clicks by selector and by
   point and presses Enter on a page that shadows every one of those names, and is refused each time.*
+
+- **SR-88** `screenshot` and `snapshot` save their result to a file only when asked with `path`.
+  Writing a file adds little: the MCP client that asks already runs as the owner, with his disk, and
+  the service writes as that same user, so it writes nothing the client could not. What is refused:
+  a path that is not absolute (it would land in the service's own working folder), a folder that does
+  not exist (named in the error), and a file that exists unless `overwrite` is true; a file that
+  appears between the check and the write is still not replaced (it is made new). A saved snapshot is
+  redacted as its answer is (SR-45). Every screenshot refusal (a page that showed a password or code
+  back, a sign-up's new password on the page, SR-82) comes before any argument is read, so it refuses
+  every form: `path`, `format`, `fullPage`, `selector`, `width` and `height`. `width` and `height`
+  emulate the view for that picture alone through the already-allowed
+  `Emulation.setDeviceMetricsOverride`, put back after it, also when it fails, and are refused on a
+  page handed to the owner. No CDP method was added. *L1: `engine::files` tests (relative, missing
+  folder, existing file, a file that appears after the check), every new form refused on a marked page
+  and its saved snapshot redacted
+  (`after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes`); L3:
+  `screenshots_and_snapshots_are_saved_as_files_at_the_size_asked`.*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame

@@ -5,7 +5,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -214,6 +213,8 @@ pub struct Dialog {
 const DIALOG_MEMORY: usize = 10;
 
 /// [`Page::visual_viewport`]'s fallback: the viewport as the page sees it, in CSS pixels.
+/// The document's scroll size, for [`Page::full_page`] when `Page.getLayoutMetrics` is refused.
+const DOCUMENT_SIZE: &str = "()=>{const d=document.documentElement,b=document.body;return{width:Math.max(d.scrollWidth,b?b.scrollWidth:0),height:Math.max(d.scrollHeight,b?b.scrollHeight:0)};}";
 const VISUAL_VIEWPORT: &str = "()=>{const v=window.visualViewport;return v?{x:v.pageLeft,y:v.pageTop,width:v.width,height:v.height}:{x:scrollX,y:scrollY,width:document.documentElement.clientWidth,height:document.documentElement.clientHeight};}";
 
 /// `Page.captureScreenshot`'s base64, moved out of the reply rather than copied (a few hundred kilobytes).
@@ -706,7 +707,8 @@ pub(crate) struct Inner {
     closed: watch::Sender<Option<String>>,
     keyboard: Mutex<Keyboard>,
     mouse: Mutex<Mouse>,
-    viewport_active: AtomicBool,
+    /// The emulated viewport [`Page::set_viewport`] last set, `None` while none is.
+    viewport: Mutex<Option<(u32, u32)>>,
     /// Test builds only: how many click checks fell back to the box rule, by reason
     /// (`Page::strict_fallbacks`).
     #[cfg(feature = "test-seams")]
@@ -1129,7 +1131,7 @@ impl Page {
             closed: watch::Sender::new(None),
             keyboard: Mutex::new(Keyboard::default()),
             mouse: Mutex::new(Mouse::default()),
-            viewport_active: AtomicBool::new(false),
+            viewport: Mutex::new(None),
             #[cfg(feature = "test-seams")]
             strict_fallbacks: Default::default(),
         });
@@ -1360,13 +1362,68 @@ impl Page {
         screenshot_data(res)
     }
 
+    /// The viewport [`Page::set_viewport`] emulates now, `None` while the page has its window's own.
+    #[must_use]
+    pub fn viewport(&self) -> Option<(u32, u32)> {
+        *self.inner.viewport.lock()
+    }
+
+    /// A picture of the page, base64-encoded: PNG with `png`, else JPEG at `quality`. `clip`, in document
+    /// coordinates, takes only that rectangle, painted beyond the viewport when it reaches past it (a
+    /// full page, or an element taller than the view); without it, the viewport.
+    pub async fn capture(
+        &self,
+        png: bool,
+        quality: u8,
+        clip: Option<BoundingBox>,
+    ) -> Result<String, CdpError> {
+        if quality > 100 {
+            return Err(CdpError::Other(format!(
+                "Expected 'quality' ({quality}) to be between 0 and 100, inclusive."
+            )));
+        }
+        let mut params = json!({"format": if png { "png" } else { "jpeg" }, "optimizeForSpeed": false,
+                                "fromSurface": true, "captureBeyondViewport": clip.is_some()});
+        if !png {
+            params["quality"] = json!(quality);
+        }
+        if let Some(c) = clip {
+            params["clip"] = json!({"x": c.x, "y": c.y, "width": c.width, "height": c.height, "scale": 1});
+        }
+        screenshot_data(self.send("Page.captureScreenshot", params).await?)
+    }
+
+    /// The whole document's size in CSS pixels, as a clip from its top left for [`Page::capture`].
+    /// `Page.getLayoutMetrics` first, else the document's own scroll size (an extension older than the
+    /// one that allows the method).
+    pub async fn full_page(&self) -> Result<BoundingBox, CdpError> {
+        let size = match self.send("Page.getLayoutMetrics", json!({})).await {
+            Ok(m) => m.get("cssContentSize").map(|c| {
+                let n = |k: &str| c.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+                (n("width"), n("height"))
+            }),
+            Err(e) => {
+                tracing::debug!(error = %e, "Page.getLayoutMetrics failed; reading the scroll size instead");
+                None
+            }
+        };
+        let (width, height) = if let Some(s) = size {
+            s
+        } else {
+            let v = self.evaluate(&self.main_frame()?, DOCUMENT_SIZE, vec![]).await?;
+            let n = |k: &str| v.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            (n("width"), n("height"))
+        };
+        Ok(BoundingBox { x: 0.0, y: 0.0, width: width.ceil(), height: height.ceil() })
+    }
+
     /// Emulates a `width x height` viewport (scale 1, not mobile, no touch), or clears the emulation.
     pub async fn set_viewport(&self, size: Option<(u32, u32)>) -> Result<(), CdpError> {
         let root = self.inner.root.as_ref();
         let touch_off = json!({"enabled": false});
         match size {
             None => {
-                if !self.inner.viewport_active.swap(false, Ordering::AcqRel) {
+                if self.inner.viewport.lock().take().is_none() {
                     return Ok(());
                 }
                 // Puppeteer only logs failures to clear.
@@ -1381,7 +1438,7 @@ impl Page {
                 Ok(())
             }
             Some((width, height)) => {
-                self.inner.viewport_active.store(true, Ordering::Release);
+                *self.inner.viewport.lock() = Some((width, height));
                 let metrics = json!({"mobile": false, "width": width, "height": height, "deviceScaleFactor": 1,
                                      "screenOrientation": {"angle": 0, "type": "portraitPrimary"}});
                 let (a, b) = futures_util::future::join(

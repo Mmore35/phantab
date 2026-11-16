@@ -504,8 +504,11 @@ impl Engine {
     /// `snapshot(owner, {pageId})`. At parity a text field also says what it holds (THREAT-MODEL R8),
     /// except on a page whose screenshot is refused: one that showed a password or code back, or holds a
     /// sign-up's new password.
+    /// With `path` the snapshot is saved there as JSON, redacted as an answer is (SR-88), and the answer is
+    /// the file, not the snapshot.
     pub(crate) async fn snapshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
+        let target = super::files::Target::of(args)?;
         let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
         let new_password = crate::signin::sweep_sign_up(self, &held).await?;
         let values = self.guardrails() == super::guardrails::Guardrails::Parity
@@ -517,7 +520,13 @@ impl Engine {
             .await?;
         let mut out = Self::describe_reporting(&r);
         out.extend(data);
-        Ok(Value::Object(self.looked(&r, out).await))
+        let out = Value::Object(self.looked(&r, out).await);
+        let Some(target) = target else { return Ok(out) };
+        let text = serde_json::to_string_pretty(&self.redacted(out, false))
+            .map_err(|e| EngineError(format!("snapshot: {e}")))?;
+        let mut saved = target.write(text.into_bytes()).await?;
+        saved.insert("pageId".into(), json!(r.id));
+        Ok(Value::Object(saved))
     }
 
     /// `lock(r, url)`: the site lease a write takes. An isolated page shares no site with anyone. A lease is
@@ -568,7 +577,9 @@ impl Engine {
         Ok(())
     }
 
-    /// `screenshot(owner, {pageId})`.
+    /// `screenshot(owner, {pageId, path, overwrite, format, fullPage, selector, width, height})`. The
+    /// refusals come before any argument is read, so every form of it is refused alike. With `path` the
+    /// image is saved there (SR-88) and the answer is the file, not the image.
     pub(crate) async fn screenshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
         // An image of a page that showed a password or code back cannot be redacted.
@@ -578,21 +589,38 @@ impl Engine {
         // While a sign-up's new password is on the page, no picture of it (SR-82).
         let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
         crate::signin::before_screenshot(self, &held).await?;
+        let shot = super::files::Shot::of(args)?;
+        let target = super::files::Target::of(args)?;
+        if shot.resizes() && r.lock().paused {
+            return Err(EngineError(
+                "width and height: the owner holds this page (browser_show), so its view keeps his window's size. Take it without them, or after handback.".to_owned(),
+            ));
+        }
+        let mime = shot.mime();
         let data = self
-            .cdp(&r, None, |page, _| async move {
-                capture(&page, 80).await.map_err(|e| {
-                    if e.to_string().contains("timed out") {
-                        EngineError(
+            .cdp(&r, None, |page, signal| {
+                let shot = shot.clone();
+                async move {
+                    shot.take(&page, &signal).await.map_err(|e| match e {
+                        Failed::Settled(e) | Failed::Unsure(e) if e.0.contains("timed out") => Failed::Settled(EngineError(
                             "Screenshot: the page did not paint in time, usually while it is loading. Retry in a few seconds."
                                 .to_owned(),
-                        )
-                    } else {
-                        e.into()
-                    }
-                })
+                        )),
+                        e => e,
+                    })
+                }
             })
             .await?;
-        Ok(json!({ "data": data, "mimeType": "image/jpeg" }))
+        let Some(target) = target else { return Ok(json!({ "data": data, "mimeType": mime })) };
+        let bytes = super::files::decode(&data)?;
+        let size = super::files::image_size(&bytes);
+        let mut out = target.write(bytes).await?;
+        if let Some((width, height)) = size {
+            out.insert("width".into(), json!(width));
+            out.insert("height".into(), json!(height));
+        }
+        out.insert("mimeType".into(), json!(mime));
+        Ok(Value::Object(out))
     }
 
     /// `wait(owner, {pageId, selector, text, seconds})`.

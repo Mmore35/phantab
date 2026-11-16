@@ -743,6 +743,15 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         // A call that leaves pageId out reaches the page the last one named.
         let shot = call("browser_screenshot", json!({}));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
+        // One saved to a file answers the file, as text.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let saved = call("browser_screenshot", json!({ "path": path }));
+        assert_eq!(saved["content"][0]["type"], json!("text"), "{saved}");
+        let said: Value = serde_json::from_str(saved["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(said["path"], json!(path.display().to_string()), "{said}");
+        assert_eq!(said["mimeType"], json!("image/png"), "{said}");
+        assert!(path.is_file());
         let read = call("browser_snapshot", json!({ "full": true }));
         let said = read["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")), "{said}");
@@ -1130,5 +1139,112 @@ async fn per_call_latency_of_open_snapshot_act_wait_and_close() {
         );
     }
     eprintln!("lane3 latency {}", Value::Object(out));
+    lane.finish().await;
+}
+
+/// A PNG's size in pixels, from its header.
+fn png_size(bytes: &[u8]) -> (u32, u32) {
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    (be(16), be(20))
+}
+
+/// SR-88, L3: results as files. A screenshot with `path` saves the picture there at the size asked (a
+/// 390-wide view, a full page taller than the view, one element in the document, in an open shadow
+/// root or in a website frame) and answers the file, not the image; the view is back to its usual size
+/// after each, also after one that failed. A relative path, a missing folder and an existing file
+/// without `overwrite` are refused. A snapshot with `path` saves its JSON and answers the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start(&chrome).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = lane.open("a", "/engine/shots").await;
+    let tab = lane.ext.last_window_tab();
+    let framed = "document.querySelector('iframe').contentDocument?.getElementById('inframe') != null";
+    assert!(
+        lane.until(Duration::from_secs(15), async || lane.ext.eval(tab, framed).await == json!(true)).await
+    );
+    let view = async || lane.ext.eval(tab, "[innerWidth, innerHeight]").await;
+    let usual = view().await;
+    assert_eq!(usual, json!([1280, 900]));
+    let shot = async |args: Value| {
+        let mut args = args;
+        args["pageId"] = json!(a);
+        lane.call("screenshot", args, "a").await
+    };
+
+    // A phone-wide PNG: the file, not the image.
+    let phone = dir.path().join("phone.png");
+    let out = shot(json!({ "path": phone, "format": "png", "width": 390 })).await.unwrap();
+    let bytes = std::fs::read(&phone).unwrap();
+    assert_eq!(png_size(&bytes).0, 390, "{out}");
+    assert_eq!(out.get("data"), None, "{out}");
+    assert_eq!(
+        out,
+        json!({ "path": phone.display().to_string(), "bytes": bytes.len(), "width": 390,
+                "height": png_size(&bytes).1, "mimeType": "image/png" })
+    );
+    assert_eq!(view().await, usual, "the view is put back");
+
+    // The full page is taller than the view.
+    let full = dir.path().join("full.png");
+    let out = shot(json!({ "path": full, "fullPage": true })).await.unwrap();
+    let (w, h) = png_size(&std::fs::read(&full).unwrap());
+    assert!(w == 1280 && h > 3000, "{w}x{h}: {out}");
+    assert_eq!(view().await, usual);
+
+    // One element, wherever an act would find it; JPEG unless asked or the name says .png.
+    for (selector, size) in [("#box", (200, 120)), ("#inshadow", (150, 80)), ("#inframe", (90, 70))] {
+        let path = dir.path().join(format!("{}.jpg", &selector[1..]));
+        let out = shot(json!({ "path": path, "selector": selector })).await.unwrap();
+        assert!(std::fs::read(&path).unwrap().starts_with(&[0xFF, 0xD8]), "{selector}: a JPEG");
+        assert_eq!(
+            (&out["width"], &out["height"], &out["mimeType"]),
+            (&json!(size.0), &json!(size.1), &json!("image/jpeg")),
+            "{selector}: {out}"
+        );
+    }
+    // A picture that fails puts the view back too.
+    let missing = shot(json!({ "selector": "#nowhere", "width": 390, "height": 844 })).await.unwrap_err();
+    assert!(missing.contains("#nowhere"), "{missing}");
+    assert_eq!(view().await, usual, "put back after a failure");
+
+    // Refusals: a relative path, a folder that is not there, an existing file without overwrite.
+    let relative = shot(json!({ "path": "shot.png" })).await.unwrap_err();
+    assert!(relative.contains("not an absolute path"), "{relative}");
+    let gone = dir.path().join("gone");
+    let folder = shot(json!({ "path": gone.join("shot.png") })).await.unwrap_err();
+    assert!(folder.contains(&gone.display().to_string()) && folder.contains("does not exist"), "{folder}");
+    let taken = dir.path().join("taken.png");
+    std::fs::write(&taken, b"old").unwrap();
+    let kept = shot(json!({ "path": taken })).await.unwrap_err();
+    assert!(kept.contains("already exists") && kept.contains("overwrite"), "{kept}");
+    assert_eq!(std::fs::read(&taken).unwrap(), b"old");
+    shot(json!({ "path": taken, "overwrite": true })).await.unwrap();
+    png_size(&std::fs::read(&taken).unwrap());
+
+    // Without path, the image comes back as before.
+    let inline = shot(json!({ "width": 390 })).await.unwrap();
+    assert_eq!(inline["mimeType"], json!("image/jpeg"));
+    assert!(inline["data"].as_str().is_some_and(|d| d.len() > 100), "{inline}");
+
+    // A snapshot saved to a file: the path and size, not the snapshot.
+    let saved = dir.path().join("snapshot.json");
+    let out = lane.ok("snapshot", json!({ "pageId": a, "path": saved }), "a").await;
+    let file = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(out, json!({ "pageId": a, "path": saved.display().to_string(), "bytes": file.len() }));
+    let read: Value = serde_json::from_str(&file).unwrap();
+    assert!(read["text"].as_str().is_some_and(|t| t.contains("Shot words")), "{file}");
+    assert!(read["elements"].is_array(), "{file}");
+    let again = lane.err("snapshot", json!({ "pageId": a, "path": saved }), "a").await;
+    assert!(again.contains("already exists"), "{again}");
+
+    // A page handed to the owner keeps his window's size: no width or height then, a plain picture yes.
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let held = shot(json!({ "width": 390 })).await.unwrap_err();
+    assert!(held.contains("the owner holds this page"), "{held}");
+    shot(json!({ "path": dir.path().join("held.png") })).await.unwrap();
     lane.finish().await;
 }

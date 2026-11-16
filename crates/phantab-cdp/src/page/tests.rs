@@ -1,6 +1,7 @@
 //! Page bookkeeping against a scripted transport; no Chrome needed.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;

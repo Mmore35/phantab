@@ -81,14 +81,14 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "snapshot",
-            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. A selector reaches the main document, then each website frame (fN, frame N of the FRAMES line, or a same-site frame, which has no mark); a control marked shadow takes click_xy instead. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. With guardrails parity (the default) a text field shows what it holds as value=, except a password field or any field of a form that holds a new password, a card field, a code field or two password fields; with guardrails light or full no value is read. A ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything. Leave pageId out for the page your last call named.",
-            json!({ "pageId": s(), "full": { "type": "boolean" } }),
+            "Read a page: its text and the controls a person could use, through open shadow roots and website frames. The result is one JSON line of page fields, then a line per control after CONTROLS: x,y for the click_xy action, tag#id, name=, type=, its text in quotes, a link's href (only its #part when it goes to a place on this page), then flags; offscreen means scroll to it first. A selector reaches the main document, then each website frame (fN, frame N of the FRAMES line, or a same-site frame, which has no mark); a control marked shadow takes click_xy instead. The page text comes last, after TEXT:. framesUnread above 0 means some frames did not answer in time, so read again. framesSkipped and elementsOmitted count what the size limits left out. With guardrails parity (the default) a text field shows what it holds as value=, except a password field or any field of a form that holds a new password, a card field, a code field or two password fields; with guardrails light or full no value is read. A ticked box or radio shows checked and a select its chosen option as selected=; text the page displays is read, including editable areas. A repeat snapshot of a page shows only the controls and text lines changed since your last one, when that is shorter, and every result leaves out page fields unchanged since your last one for that page; full true shows everything. With path, an absolute file path, the whole snapshot is saved there as JSON and the result is the path and its size in bytes, not the snapshot; an existing file is replaced only with overwrite true, and the folder must exist. Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "full": { "type": "boolean" }, "path": s(), "overwrite": { "type": "boolean" } }),
             &[],
         ),
         (
             "screenshot",
-            "Capture the assigned page for visual inspection. Leave pageId out for the page your last call named.",
-            page(),
+            "Capture the assigned page for visual inspection: the view as JPEG unless format is png. fullPage true takes the whole page; selector takes one element, found as browser_act finds one (the main document, then each website frame, open shadow roots included); width and height set the view's size in CSS pixels for this picture alone (390 for a phone), and the view is put back afterwards. With path, an absolute file path, the image is saved there and the result is the path, its size in bytes and pixels, not the image; an existing file is replaced only with overwrite true, and the folder must exist. A .png path with no format saves PNG. Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "path": s(), "overwrite": { "type": "boolean" }, "format": { "type": "string", "enum": ["png", "jpeg"] }, "fullPage": { "type": "boolean" }, "selector": s(), "width": { "type": "integer" }, "height": { "type": "integer" } }),
             &[],
         ),
         (
@@ -965,7 +965,9 @@ impl Server {
         let args = arguments.map_or_else(|| json!({}), Value::Object);
         match rpc(method, args, &self.client, true).await {
             Ok(value) => {
-                let content = if method == "screenshot" {
+                // A screenshot saved to a file answers with the file, as text.
+                let saved = method == "screenshot" && value.get("data").is_none();
+                let content = if method == "screenshot" && !saved {
                     let mut image = serde_json::Map::new();
                     image.insert("type".into(), json!("image"));
                     if let Value::Object(m) = value {

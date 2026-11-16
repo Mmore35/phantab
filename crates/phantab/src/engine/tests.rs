@@ -2239,6 +2239,32 @@ async fn after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_
         // Every page's answer, not only the marked one's: the value is the site's to put anywhere.
         let shot = PageService::call(e.as_ref(), EngineMethod::Screenshot, id.clone(), "a").await;
         assert_eq!(err(shot), echo::SCREENSHOT_REFUSED, "{mode}");
+        // Every new form of a screenshot is refused alike, before any argument is read (SR-88).
+        let dir = tempfile::tempdir().unwrap();
+        let forms = [
+            json!({ "path": dir.path().join("shot.png"), "format": "png" }),
+            json!({ "path": "relative.png", "overwrite": true }),
+            json!({ "fullPage": true }),
+            json!({ "selector": "#name" }),
+            json!({ "width": 390, "height": 844 }),
+            json!({ "format": "png" }),
+        ];
+        for mut form in forms {
+            form["pageId"] = json!(r.id);
+            let shot = PageService::call(e.as_ref(), EngineMethod::Screenshot, form.clone(), "a").await;
+            assert_eq!(err(shot), echo::SCREENSHOT_REFUSED, "{mode}: {form}");
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "{mode}: nothing was written");
+        // A snapshot saved to a file is redacted as its answer is.
+        let saved = dir.path().join("snapshot.json");
+        let args = json!({ "pageId": r.id, "path": saved });
+        let out = PageService::call(e.as_ref(), EngineMethod::Snapshot, args, "a").await.unwrap();
+        assert_eq!(out["path"], json!(saved.display().to_string()), "{mode}: {out}");
+        assert_eq!(out.get("text"), None, "{mode}: {out}");
+        let file = std::fs::read_to_string(&saved).unwrap();
+        assert_eq!(out["bytes"], json!(file.len()), "{mode}");
+        assert_eq!(leaks(&file), None, "{mode}: a form is left in the saved snapshot");
+        assert!(file.contains("[redacted]"), "{mode}: {file}");
         assert!(!e.echo_marked(&other), "{mode}: another tab's screenshots are not refused");
         // A fresh attach to the same tab is the same tab.
         let again = rec(e, "a", FIXTURE, Fields { tab_id: Some(5), ..Fields::default() }).await;

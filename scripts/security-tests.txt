@@ -91,6 +91,11 @@ chrome signin_echo a_fresh_attach_to_an_echoing_tab_is_still_redacted_and_refuse
 # A page holds a password, a card number or a code in a field; a snapshot shows none of them (R8).
 chrome engine_chrome framed_forms_are_filled_by_selector_and_show_their_values_at_parity
 
+# An agent saves a result to a file: a relative path, a missing folder, a file it would replace (SR-88).
+all lib engine::files::tests::a_target_is_refused_unless_absolute_in_a_folder_that_exists_and_new_or_overwritten
+all lib engine::files::tests::a_write_makes_the_file_new_or_replaces_it_only_with_overwrite
+chrome engine_chrome screenshots_and_snapshots_are_saved_as_files_at_the_size_asked
+
 # A changed binary, a test build or a moved action reaches an install or a release (SR-48 to SR-53, SR-56, SR-73).
 all lib engine::profiles::tests::the_owners_chrome_is_started_under_the_spawn_guard
 all install a_test_seams_build_refuses_to_install_itself

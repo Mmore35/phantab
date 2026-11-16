@@ -200,6 +200,14 @@ The 15 tools: `browser_status`, `browser_connect`, `browser_open`, `browser_page
 `browser_screenshot`, `browser_close`, `browser_sign_in` and `browser_sign_up`. Each tool describes
 itself to the agent.
 
+Results can be files. `browser_screenshot` takes a PNG or JPEG of the view, the full page or one
+element, at a view size of your choosing (390 wide for a phone), and with `path` saves it there and
+answers only the path and size, so an image costs the agent no tokens. `browser_snapshot` with `path`
+saves the whole snapshot as JSON. The path must be absolute and its folder must exist; an existing
+file is replaced only with `overwrite: true`. When the agent's work is done and you are to finish it
+yourself, `browser_show` with `release: true` gives you the tab for good: it stays open as your
+ordinary tab and leaves the agent's list.
+
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
 a page it reads, it can do as you, on every site you are signed in to. Read this before you install.

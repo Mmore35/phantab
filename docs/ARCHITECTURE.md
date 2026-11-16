@@ -126,8 +126,10 @@ transport.
     argument), `JsHandle::dispose`.
   - `frame_element_box(frame) -> Option<BoundingBox>` in page coordinates (puppeteer
     `frameElement().boundingBox()`).
-  - `screenshot_jpeg(quality) -> base64`.
-  - `set_viewport(Option<(w, h)>)`: `None` clears the override. `emulate_focus(bool)`.
+  - `screenshot_jpeg(quality) -> base64`; `capture(png, quality, clip)` for a PNG, a full page
+    (`full_page()`) or an element (`element_clip(el)`, scrolled into view, in document coordinates).
+  - `set_viewport(Option<(w, h)>)`: `None` clears the override; `viewport()` is the size it set.
+    `emulate_focus(bool)`.
   - `goto(url, timeout)`: waits for DOMContentLoaded, or same-document navigation; errors like puppeteer.
   - `mouse_click(x, y)`, `mouse_wheel(delta_y)`, `mouse_reset()`, `key_down(key)`, `key_up(key)`,
     `key_press(key)`, `type_text(text)`. These use puppeteer's US keyboard layout table (Apache-2.0,
