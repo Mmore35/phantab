@@ -43,8 +43,8 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   DevTools MCP, and the recorded runs. The tasks start at a sign-in page, a sign-up page, a look-alike
   of the sign-in page, or in a browser that is already signed in and is asked for the password again.
 - README, "What a sign-in answers": every status and reason `browser_sign_in` and `browser_sign_up`
-  answer, with what each means and what an agent does next. The tools' descriptions pointed to this
-  list, and it was not there. A test now fails when a status or reason has no line in it.
+  answer, with what each means and what an agent does next. `browser_sign_in`'s description pointed
+  to this list, and it was not there. A test now fails when a status or reason is not named in it.
 
 ### Fixed
 - A stray gap of spaces in the "refused in every profile" error.

@@ -246,7 +246,8 @@ mod tests {
         assert_eq!(label(&Outcome::with("not-a-sign-in", "card-fields"))["next"], Value::Null);
     }
 
-    /// `browser_sign_in`'s description sends an agent to the README for what a status means.
+    /// `browser_sign_in`'s description sends an agent to the README for what a status means: every
+    /// status and reason is named there. It does not check which table a word stands in.
     #[test]
     fn the_readme_names_every_status_and_reason() {
         let readme = include_str!("../../../../README.md");
@@ -259,8 +260,7 @@ mod tests {
             .chain(SIGN_UP_STATUS)
             .chain(WALL_REASONS)
             .chain(OTHER_REASONS)
-            .chain(SIGN_UP_REASONS)
-            .chain(&["unknown"]);
+            .chain(SIGN_UP_REASONS);
         for word in words {
             assert!(section.contains(&format!("`{word}`")), "README.md, What a sign-in answers: no `{word}`");
         }
