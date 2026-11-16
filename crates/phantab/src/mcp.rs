@@ -117,7 +117,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "sign_in",
-            "Sign in to the site on this page with its saved login, with no secret ever shown to you. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: snapshot to see where it landed. account picks one saved login by its exact name when status is ambiguous. vault picks one of the owner's configured password managers by name; omit it to use them in the owner's order. Statuses: README.md of phantab.",
+            "Sign in to the site on this page with its saved login, with no secret ever shown to you. Sign-in only: refuses sign-up and paying forms. Returns a status and never a secret; call again per step (next-step). Never claims signed-in: after submitted or next-step the result ends with the page's snapshot, as browser_snapshot shows it. account picks one saved login by its exact name when status is ambiguous. vault picks one of the owner's configured password managers by name; omit it to use them in the owner's order. Statuses: README.md of phantab.",
             json!({ "pageId": s(), "account": s(), "vault": s() }),
             &["pageId"],
         ),
@@ -654,6 +654,13 @@ fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, St
     Ok(step)
 }
 
+/// Whether a `sign_in` answer is followed by the page's snapshot: after a submit the page went on to
+/// (`submitted`, `next-step`). In the parity benchmark's sign-in tasks (climb
+/// 2026-11-15-phantab-signin-speed) every agent read the page in its very next call, a turn of its own.
+fn read_after_sign_in(answer: &Value) -> bool {
+    matches!(answer.get("status").and_then(Value::as_str), Some("submitted" | "next-step"))
+}
+
 /// `act`'s and `open`'s own `snapshot`, taken out of their arguments: whether the page's snapshot follows.
 fn snapshot_after(arguments: &mut serde_json::Map<String, Value>) -> Result<bool, String> {
     match arguments.remove("snapshot") {
@@ -913,12 +920,15 @@ impl Server {
                     json!({ "type": "text", "text": self.answer(method, value, page, everything) })
                 } else {
                     let opened = value.get("pageId").and_then(Value::as_str).map(str::to_owned);
+                    let landed = method == "sign_in" && read_after_sign_in(&value);
                     if opened.is_some() && method != "close" {
                         self.seen().last.clone_from(&opened);
                     }
                     let mut text = self.answer(method, value, page.clone(), everything);
                     if read_opened && opened.is_some() {
                         text = self.and_snapshot(text, opened, false, "it").await;
+                    } else if landed {
+                        text = self.and_snapshot(text, page.clone(), false, "it").await;
                     }
                     if method == "close"
                         && let Some(p) = &page
@@ -1117,6 +1127,20 @@ mod tests {
             assert_eq!(checked(&listed, name, Some(&known)).ok(), Some(name));
         }
         assert!(checked(&listed, "browser_browser_snapshot", None).is_err());
+    }
+
+    /// A sign-in that went on to a page (`submitted`, `next-step`) is followed by that page's snapshot;
+    /// one that stopped or was turned back (refused, ambiguous, a wall, still asking) is not, and an answer
+    /// without a status is not either.
+    #[test]
+    fn a_sign_in_that_went_on_is_followed_by_the_page() {
+        assert!(read_after_sign_in(&json!({ "status": "submitted" })));
+        assert!(read_after_sign_in(&json!({ "status": "next-step", "step": "code" })));
+        for status in ["ambiguous", "refused", "none", "wall", "still-asking", "unknown", "busy", "stopped"] {
+            assert!(!read_after_sign_in(&json!({ "status": status })), "{status}");
+        }
+        assert!(!read_after_sign_in(&json!({})));
+        assert!(!read_after_sign_in(&json!({ "status": 1 })));
     }
 
     /// A link to a place on the page itself is its `#part`; any other link, and one in a frame, stays.
