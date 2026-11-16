@@ -82,10 +82,10 @@ impl Engine {
     }
 
     /// The sensitive-set confirmation, in `light` and `full`: a click, `click_xy` or press of Enter or
-    /// Space (or `type` of text with a line break, which presses Enter) on a control that reads as a payment or checkout, a password or two-factor change, or
-    /// deleting an account or vault items is refused until the agent repeats it with `ownerConfirmed`
-    /// true, which it sets only once the owner has approved that step in chat. It is the same
-    /// `ownerConfirmed` that `resume` takes.
+    /// Space (or `type` of text with a line break, which presses Enter) on a control that reads as a
+    /// payment or checkout, a password or two-factor change, or deleting an account or vault items is
+    /// refused until the agent repeats it with `ownerConfirmed` true, which it sets only once the owner
+    /// has approved that step in chat. It is the same `ownerConfirmed` that `resume` takes.
     ///
     /// It reads only, and runs before the act. A page that cannot be read lets the act through: this is
     /// the light check by design, a prompt for the owner's word, not a wall (a cross-origin frame's own
