@@ -291,7 +291,7 @@ words from the lists below: nothing a page or a password manager wrote reaches t
 
 | Status | What it means | What the agent does next |
 |---|---|---|
-| `submitted` | The login was typed and sent, and what the page shows next is not a sign-in form. | Read the page to see where it landed; the answer ends with its snapshot. phantab never claims "signed in". |
+| `submitted` | The login was typed and sent, and what the page shows next is not a sign-in step phantab can go on with. It may be the signed-in page, or a human check. | Read the page to see where it landed; the answer ends with its snapshot. phantab never claims "signed in". |
 | `next-step` | It was sent, and the page now asks for the next part: a password after the email, or a code. | Call `browser_sign_in` again. The answer ends with the page's snapshot. |
 | `still-asking` | The password was sent and the page asks for it again. The site most likely rejected it. | Stop and tell the owner. Do not retry. |
 | `unknown` | It was sent, and phantab could not tell what the page did. | Read the page before anything else. |
@@ -306,7 +306,7 @@ words from the lists below: nothing a page or a password manager wrote reaches t
 | `busy` | A sign-in or sign-up is already running on this page, or the call ran out of time before anything was typed (a slow password manager, for example). | Call again in a moment. |
 | `provider-failed` | The password manager's command failed, or `vault` names one that is not configured. | Tell the owner; `phantab vaults status` shows each one's state. |
 | `no-provider` | No password manager is configured. | Tell the owner: `docs/BITWARDEN.md` or `docs/VAULTS.md`. |
-| `stopped` | Sign-in is stopped for this account, or for this site because a login used on it is stopped. Only under `guardrails: full`. | Tell the owner. Only they can lift it, in a terminal of their own: the reasons below say how. |
+| `stopped` | Sign-in is stopped for this account, or for this site because a login used on it is stopped. Only under `guardrails: full`. | Tell the owner. The reasons below say what lifts it: mostly the owner, in a terminal of their own. |
 | `owner-has-page` | The owner has taken the page over. | Wait until they hand it back. |
 | `failed` | The call could not finish. The reason says why. | See the reasons below. |
 
@@ -355,14 +355,14 @@ It has these of its own:
 | `filled-existing` | A login for this site and username was already saved. Its password was typed in and nothing new was made. Pass `regenerate` to replace it. |
 | `no-provider-create` | No configured password manager can save a new login. |
 | `not-a-sign-up` | The page is not a form phantab makes a password for. Reasons: `no-field`, `sign-in-form`, `change-password`, `card-fields`, `pay-button`, `get-form`, `not-https`, `third-party-frame`, `form-posts-elsewhere`, `password-too-short` and `password-rules` (the form's own password rules cannot be met). |
-| `leak-stopped` | The page showed the new password where phantab could not clear it. phantab drops the page, so its `pageId` no longer works, and closes the tab if it opened it; a tab the owner opened stays open. The new login is already saved. Tell the owner. |
+| `leak-stopped` | The page showed the new password where phantab could not clear it. phantab drops the page, so its `pageId` no longer works, and closes the tab if it opened it; a tab the owner opened stays open. The login is already in the password manager. Tell the owner. |
 
 A sign-up's `failed` has two more reasons: `page-moved` (the page changed between the save and the
 fill) and `not-taken` (the form did not accept the password). The password is saved before it is
 typed, so after either of these the new login is already in the password manager. It may be there
-too after `owner-has-page`, or a `failed` with `page-ended` or `error`.
-- After `page-moved`, call again once the page is still: the saved password is typed in and the
-  answer is `filled-existing`.
+too after `owner-has-page`, `provider-failed`, or a `failed` with `page-ended` or `error`.
+- After `page-moved`, call again once the page is still, without `regenerate`: the saved password is
+  typed in and the answer is `filled-existing`.
 - After `not-taken`, a second call types the same password and will most likely end the same way.
   Call with `regenerate` to make another, or tell the owner.
 
