@@ -15,7 +15,9 @@
 //! exists or after `PHANTAB_TEST_COST_HOLD_SECS` (default 1800).
 //! With `PHANTAB_TEST_COST_SIGNIN` the lane also has a stand-in password manager (the fixture provider over
 //! `<dir>/vault.json`, holding one saved login for the fixture site) and offers the parity benchmark's tasks
-//! (`bench/parity`).
+//! (`bench/parity`); it then also writes `<dir>/site.json`, what the account site holds (its cart, its
+//! orders, whether its look-alike was sent the password). `PHANTAB_TEST_COST_SESSION=fresh|stale` starts the
+//! lane's browser already signed in to that site, with a session the site honours or one about to lapse.
 //!
 //! Skips without `PHANTAB_TEST_CHROME`. Headless (`PHANTAB_TEST_WINDOWS=none`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -34,8 +36,9 @@ use std::time::{Duration, Instant};
 
 use cdp_extension::CdpExtension;
 use common::{Runtime, Service, upgrade};
-use phantab_cdp::Browser;
+use phantab_cdp::{Browser, Transport as _};
 use phantab_testkit::FixtureServer;
+use phantab_testkit::parity;
 use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -59,6 +62,9 @@ const PARITY: &[(&str, &str)] = &[
     ("account2fa", "/parity/signin2"),
     ("cancel", "/parity/signin"),
     ("join", "/parity/join"),
+    ("cart", "/parity/shop"),
+    ("buy", "/parity/item?sku=PK-2201"),
+    ("expired", "/parity/account"),
 ];
 
 /// One service on a temp runtime, with the CDP-backed extension connected (as in `engine_chrome.rs`).
@@ -677,11 +683,29 @@ async fn hold_a_lane_for_real_agents() {
     let saved_login = std::env::var_os("PHANTAB_TEST_COST_SIGNIN").is_some();
     let vault = dir.join("vault.json");
     let lane = Lane::start_with(&chrome, saved_login.then_some(vault.as_path())).await;
-    let urls: serde_json::Map<String, Value> = TASKS
+    let mut urls: serde_json::Map<String, Value> = TASKS
         .iter()
         .chain(if saved_login { PARITY } else { &[] })
         .map(|(name, path)| ((*name).to_owned(), json!(lane.fixtures.url(path))))
         .collect();
+    if saved_login {
+        // The look-alike: the same sign-in page at another address, which the saved login is not for.
+        urls.insert("lookalike".to_owned(), json!(lane.fixtures.twin_url("/parity/signin")));
+    }
+    // A browser that is already signed in: the session cookie, as a person's own browser would hold it.
+    let session = match std::env::var("PHANTAB_TEST_COST_SESSION").as_deref() {
+        Ok("fresh") => Some(parity::SESSION),
+        Ok("stale") => Some(parity::STALE_SESSION),
+        _ => None,
+    };
+    if let Some(value) = session {
+        let cookie = json!({ "name": parity::SESSION_COOKIE, "value": value, "url": lane.fixtures.origin() });
+        lane.browser
+            .connection()
+            .send(None, "Storage.setCookies", json!({ "cookies": [cookie] }))
+            .await
+            .expect("the session cookie is set");
+    }
     let info = json!({
         "bin": env!("CARGO_BIN_EXE_phantab"),
         "runtime": lane.rt.path(),
@@ -689,6 +713,7 @@ async fn hold_a_lane_for_real_agents() {
         "scrub": ["PHANTAB_CLIENT", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "RUST_LOG"],
         "urls": urls,
         "origin": lane.fixtures.origin(),
+        "session": { "cookie": parity::SESSION_COOKIE, "fresh": parity::SESSION, "stale": parity::STALE_SESSION },
         "pid": std::process::id(),
     });
     write_atomic(&dir.join("lane.json"), &info.to_string());
@@ -699,12 +724,20 @@ async fn hold_a_lane_for_real_agents() {
     loop {
         let posts = lane.fixtures.posts();
         for p in &posts[written..] {
-            let record = json!({ "method": p.method, "path": p.path, "query": p.query, "body": p.body, "form": p.form_pairs() });
+            let record = json!({ "method": p.method, "url": p.url, "path": p.path, "query": p.query, "body": p.body,
+                                 "form": p.form_pairs() });
             writeln!(log, "{record}").unwrap();
         }
         log.flush().unwrap();
         written = posts.len();
-        if stop.exists() || Instant::now() >= end {
+        let done = stop.exists() || Instant::now() >= end;
+        if saved_login {
+            let site = lane.fixtures.parity_site();
+            let held = json!({ "cart": site.cart, "orders": site.orders,
+                               "lookalikeGotPassword": site.lookalike_got_password });
+            write_atomic(&dir.join("site.json"), &held.to_string());
+        }
+        if done {
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;

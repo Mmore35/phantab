@@ -93,6 +93,8 @@ struct State {
     /// Bumped on every recorded request, so waiters wake.
     recorded: watch::Sender<usize>,
     gates: Mutex<HashMap<String, GateState>>,
+    /// The parity benchmark's account site (`parity.rs`).
+    parity: Mutex<crate::parity::Site>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -168,6 +170,7 @@ impl FixtureServer {
             requests: Mutex::new(Vec::new()),
             recorded: watch::Sender::new(0),
             gates: Mutex::new(HashMap::new()),
+            parity: Mutex::new(crate::parity::Site::default()),
         });
         let mut listeners = vec![(primary, Listener::Primary), (twin, Listener::Twin)];
         if let Some(twin6) = twin6 {
@@ -197,6 +200,12 @@ impl FixtureServer {
 
     pub fn origin(&self) -> &str {
         &self.state.primary_origin
+    }
+
+    /// What the parity benchmark's account site holds now: its cart, its orders, and whether its
+    /// look-alike on the twin origin was sent the saved password.
+    pub fn parity_site(&self) -> crate::parity::Site {
+        lock(&self.state.parity).clone()
     }
 
     pub fn twin_origin(&self) -> &str {
@@ -398,7 +407,14 @@ async fn handle(mut stream: TcpStream, which: Listener, state: Arc<State>) {
     lock(&state.requests).push(recorded);
     state.recorded.send_modify(|n| *n += 1);
 
-    let ctx = Ctx { state: &state, self_origin: &self_origin, query: &request.query };
+    let cookie = request.headers.iter().find(|(name, _)| name == "cookie").map(|(_, value)| value.as_str());
+    let ctx = Ctx {
+        state: &state,
+        self_origin: &self_origin,
+        query: &request.query,
+        cookie,
+        twin: which == Listener::Twin,
+    };
     let response = route(&ctx, &request.method, &path, &body).await;
     let _ = response.write(&mut stream, request.method == "HEAD").await;
     let _ = tokio::io::AsyncWriteExt::shutdown(&mut stream).await;
@@ -408,6 +424,10 @@ struct Ctx<'a> {
     state: &'a State,
     self_origin: &'a str,
     query: &'a str,
+    /// The request's `Cookie` header.
+    cookie: Option<&'a str>,
+    /// The request came to the twin origin.
+    twin: bool,
 }
 
 impl Ctx<'_> {
@@ -429,12 +449,22 @@ async fn route(ctx: &Ctx<'_>, method: &str, path: &str, body: &str) -> Response 
         hook(ctx.state, name).await;
         return Response::text(200, "ok");
     }
-    if let Some(rest) = path.strip_prefix("/post/") {
-        if let Some(step) = rest.strip_prefix("parity-") {
-            // The parity benchmark's account site: the server checks the sign-in (`parity.rs`).
-            let step = if method == "POST" { step } else { "" };
-            return Response::html(200, crate::parity::answer(step, body));
+    if path.starts_with("/parity/") || path.starts_with("/post/parity-") {
+        // The parity benchmark's account site: the server checks the sign-in (`parity.rs`). On the twin
+        // origin it is the look-alike.
+        let visit = crate::parity::Visit {
+            method,
+            path,
+            query: ctx.query,
+            body,
+            cookie: ctx.cookie,
+            lookalike: ctx.twin,
+        };
+        if let Some(response) = crate::parity::respond(&mut lock(&ctx.state.parity), &visit) {
+            return response;
         }
+    }
+    if let Some(rest) = path.strip_prefix("/post/") {
         if method != "POST" {
             return Response::html(200, LANDED);
         }
