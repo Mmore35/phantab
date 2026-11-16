@@ -12,11 +12,11 @@ use std::time::Duration;
 use phantab_cdp::Arg;
 use serde_json::Value;
 
+use super::Engine;
 use super::ops::shadow_point;
+use super::read::poll_actionable;
 use super::record::Rec;
-use super::{Engine, until};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::ACTIONABLE;
 use crate::runtime::Config;
 use crate::signin::SignInRecord;
 use crate::util::{js_string, truthy};
@@ -82,14 +82,15 @@ impl Engine {
     }
 
     /// The sensitive-set confirmation, in `light` and `full`: a click, `click_xy` or press of Enter or
-    /// Space on a control that reads as a payment or checkout, a password or two-factor change, or
+    /// Space (or `type` of text with a line break, which presses Enter) on a control that reads as a payment or checkout, a password or two-factor change, or
     /// deleting an account or vault items is refused until the agent repeats it with `ownerConfirmed`
     /// true, which it sets only once the owner has approved that step in chat. It is the same
     /// `ownerConfirmed` that `resume` takes.
     ///
     /// It reads only, and runs before the act. A page that cannot be read lets the act through: this is
     /// the light check by design, a prompt for the owner's word, not a wall (a cross-origin frame's own
-    /// buttons are not read either; see `docs/GUARDRAILS.md` § Gaps).
+    /// buttons are not read either; see `docs/GUARDRAILS.md` § Gaps). A click by selector is checked in
+    /// the frame its element was found in, which may be a website frame (`read::poll_actionable`).
     ///
     /// # Errors
     /// The refusal; or, for `click`, the selector's wait failing exactly as the act's own would.
@@ -112,25 +113,36 @@ impl Engine {
                 }
                 vec!["focus".into(), key.into()]
             }
+            // Typed text presses Enter for each line break in it, as `press` would.
+            "type" => {
+                let text = js_string(args.get("text").filter(|v| !v.is_null()));
+                if !text.contains(['\n', '\r']) {
+                    return Ok(());
+                }
+                vec!["focus".into(), "Enter".into()]
+            }
             _ => return Ok(()),
         };
         let asked = self
             .cdp(r, None, |p, signal| {
                 let (mut how, selector) = (how.clone(), selector.clone());
                 async move {
+                    let Ok(mut frame) = p.main_frame() else { return Ok(None) };
                     if action == "click" {
-                        let sel = Value::String(selector.clone());
                         let waited =
-                            until(&p, &selector, ACTIONABLE, &[sel], Duration::from_secs(10), Some(&signal))
+                            poll_actionable(&p, &selector, Duration::from_secs(10), Some(&signal), false)
                                 .await;
-                        // The act clicks an element only an open shadow root has at its point, so that point
-                        // is what is checked.
-                        if let Err(e) = waited {
-                            let Some((x, y)) = shadow_point(&e.0) else { return Err(e) };
-                            how = vec!["point".into(), x.into(), y.into()];
+                        match waited.map_err(EngineError::from) {
+                            // The element's own frame, where the act will find it.
+                            Ok(found) => frame = found,
+                            // The act clicks an element only an open shadow root has at its point, so that
+                            // point is what is checked.
+                            Err(e) => {
+                                let Some((x, y)) = shadow_point(&e.0) else { return Err(e) };
+                                how = vec!["point".into(), x.into(), y.into()];
+                            }
                         }
                     }
-                    let Ok(frame) = p.main_frame() else { return Ok(None) };
                     let said = p.evaluate(&frame, SENSITIVE, how.into_iter().map(Arg::Value).collect()).await;
                     // `cdp` takes any error that becomes a `Failed`; the waits here answer `EngineError`.
                     Ok::<_, EngineError>(said.ok().and_then(|v| v.as_str().and_then(kind)))

@@ -129,7 +129,7 @@ pub(crate) mod tests {
     const GOLDEN: &[(&str, &str)] = &[
         ("actionable.js", "71c60b44c08c94c9387c27c5309d9491f9fad99b4a81a00be13da7b7c1d43aed"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
-        ("read_frame.js", "7afc0a457a986c1a41c9fd93e42d091c0f45e020ed02e6ece8e4fed7ebd28176"),
+        ("read_frame.js", "a40eefd4242dc11bb91485ba02f284a8c47473da508a3e28b09fb0584ec851dc"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),
         ("click.js", "67034e2d21ed6407789dba9496c5cfff6baf6e589fb6527f37d45b26b8de654a"),
         ("select_options.js", "00a830ec9a4699ccc585f0855d24b786e8e438e7760061384886436e3a6b2d1a"),

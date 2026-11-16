@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use futures_util::FutureExt as _;
-use phantab_cdp::{Arg, CdpError, FrameInfo, Page};
+use phantab_cdp::{Arg, CdpError, FrameId, FrameInfo, Page};
 use serde_json::{Map, Value, json};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use super::recover::Failed;
 use super::{PAGE_TEXT_LIMIT, cut};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::READ_FRAME;
+use crate::page_js::{ACTIONABLE, READ_FRAME};
 use crate::util::js_string;
 
 /// A frame that doesn't answer in this long is left out rather than holding up the page.
@@ -26,7 +26,9 @@ const MAX_TEXT: usize = 18_000;
 /// get [`PAGE_TEXT_LIMIT`].
 const MAX_ELEMENT_TEXT: usize = 160;
 const MAX_HREF: usize = super::URL_LIMIT;
-const ELEMENT_FIELDS: [(&str, usize); 7] = [
+/// A field's value, which only a snapshot at parity reads (`read_frame.js`, THREAT-MODEL R8).
+const MAX_VALUE: usize = 200;
+const ELEMENT_FIELDS: [(&str, usize); 8] = [
     ("tag", PAGE_TEXT_LIMIT),
     ("id", PAGE_TEXT_LIMIT),
     ("name", PAGE_TEXT_LIMIT),
@@ -34,6 +36,7 @@ const ELEMENT_FIELDS: [(&str, usize); 7] = [
     ("text", MAX_ELEMENT_TEXT),
     ("href", MAX_HREF),
     ("selected", MAX_ELEMENT_TEXT),
+    ("value", MAX_VALUE),
 ];
 
 /// A call's abort signal (`AbortSignal`): set when the page detached or closed under the call.
@@ -68,7 +71,7 @@ pub async fn until(
     within: Duration,
     signal: Option<&watch::Receiver<bool>>,
 ) -> EngineResult<()> {
-    poll(page, label, check, args, within, signal, false).await.map_err(Into::into)
+    poll(page, label, check, args, within, signal, false, false).await.map(drop).map_err(Into::into)
 }
 
 /// Checks come every 150 ms, except that `wait`'s and an action's (`poll_until`) come every 50 ms in the
@@ -96,9 +99,70 @@ pub(crate) async fn poll_until(
     within: Duration,
     signal: Option<&watch::Receiver<bool>>,
 ) -> Result<(), Failed> {
-    poll(page, label, check, args, within, signal, true).await
+    poll(page, label, check, args, within, signal, true, false).await.map(drop)
 }
 
+/// The wait before an action on `selector`: `actionable` in the main frame, and, while the main document
+/// has no such element, in each website frame too, the way `Page::query_selector` finds it. Answers the
+/// frame whose element is ready, for the sensitive-set check to read it there. With `quick`, as
+/// [`poll_until`].
+pub(crate) async fn poll_actionable(
+    page: &Page,
+    selector: &str,
+    within: Duration,
+    signal: Option<&watch::Receiver<bool>>,
+    quick: bool,
+) -> Result<FrameId, Failed> {
+    let args = [Value::String(selector.to_owned())];
+    poll(page, selector, ACTIONABLE, &args, within, signal, quick, true).await
+}
+
+/// `actionable`'s answer for an element the document does not have: `'not found'` while it loads, or
+/// `['not found', <element count>]` once loaded.
+fn not_found(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s == "not found",
+        Value::Array(a) => a.len() == 2 && a[0] == json!("not found") && a[1].is_number(),
+        _ => false,
+    }
+}
+
+/// One check of [`poll_actionable`]'s, across frames: the main frame's answer unless it is
+/// [`not_found`], then the first website frame (in `Page::frames` order, the first [`MAX_FRAMES`], each
+/// given [`READ_TIMEOUT_FRAME`]) whose element is there, ready or not. A frame's own pointer into its open
+/// shadow roots counts as not there: its point is the frame's, not the page's. While no frame has it, the
+/// mark is every frame's element count added up, so a frame still loading keeps the wait going; a frame
+/// that has not loaded yet leaves the mark off.
+async fn check_frames(page: &Page, check: &str, args: &[Value]) -> Result<(Value, FrameId), CdpError> {
+    let main = page.main_frame()?;
+    let said = page.evaluate(&main, check, args.iter().cloned().map(Arg::Value).collect()).await?;
+    if !not_found(&said) {
+        return Ok((said, main));
+    }
+    let frames: Vec<FrameId> = page
+        .frames()
+        .into_iter()
+        .filter(|f| f.id != main && is_website(&f.url))
+        .take(MAX_FRAMES)
+        .map(|f| f.id)
+        .collect();
+    let asks = frames.iter().map(|f| async move {
+        let ask = page.evaluate(f, check, args.iter().cloned().map(Arg::Value).collect());
+        (f, tokio::time::timeout(READ_TIMEOUT_FRAME, ask).await)
+    });
+    let mut total = said.get(1).and_then(Value::as_u64);
+    for (frame, answer) in futures_util::future::join_all(asks).await {
+        let Ok(Ok(v)) = answer else { continue };
+        match &v {
+            v if not_found(v) => total = total.zip(v.get(1).and_then(Value::as_u64)).map(|(a, b)| a + b),
+            Value::Array(a) if a.len() == 2 && a[1].is_null() => {}
+            _ => return Ok((v, frame.clone())),
+        }
+    }
+    Ok((total.map_or_else(|| json!("not found"), |n| json!(["not found", n])), main))
+}
+
+#[allow(clippy::too_many_arguments, reason = "the waits' one loop, each caller naming its own")]
 async fn poll(
     page: &Page,
     label: &str,
@@ -107,7 +171,8 @@ async fn poll(
     within: Duration,
     signal: Option<&watch::Receiver<bool>>,
     quick: bool,
-) -> Result<(), Failed> {
+    in_frames: bool,
+) -> Result<FrameId, Failed> {
     let start = Instant::now();
     let end = start + within;
     let mut why = "the page did not answer".to_owned();
@@ -119,8 +184,12 @@ async fn poll(
     let mut last_word = false;
     while Instant::now() < end && !aborted(signal) {
         let attempt = async {
+            if in_frames {
+                return check_frames(page, check, args).await;
+            }
             let frame = page.main_frame()?;
-            page.evaluate(&frame, check, args.iter().cloned().map(Arg::Value).collect()).await
+            let said = page.evaluate(&frame, check, args.iter().cloned().map(Arg::Value).collect()).await?;
+            Ok((said, frame))
         };
         answered = false;
         let sent = Instant::now();
@@ -128,8 +197,8 @@ async fn poll(
             Err(_) => {}
             Ok(Err(e)) if !e.is_navigating() => return Err(e.into()),
             Ok(Err(_)) => "the page was navigating".clone_into(&mut why),
-            Ok(Ok(Value::Bool(true))) => return Ok(()),
-            Ok(Ok(v)) => {
+            Ok(Ok((Value::Bool(true), frame))) => return Ok(frame),
+            Ok(Ok((v, _))) => {
                 let (said, now) = match v {
                     Value::Array(mut a) if a.len() == 2 => {
                         let m = a.pop();
@@ -210,12 +279,12 @@ struct FrameRead {
     origin: String,
 }
 
-async fn read_frame(page: &Page, f: &FrameInfo) -> Result<Option<FrameRead>, CdpError> {
+async fn read_frame(page: &Page, f: &FrameInfo, values: bool) -> Result<Option<FrameRead>, CdpError> {
     let Some(b) = page.frame_element_box(&f.id).await? else { return Ok(None) };
     if b.width == 0.0 || b.height == 0.0 || b.width.is_nan() || b.height.is_nan() {
         return Ok(None);
     }
-    let data = match page.evaluate(&f.id, READ_FRAME, vec![]).await? {
+    let data = match page.evaluate(&f.id, READ_FRAME, vec![Arg::Value(Value::Bool(values))]).await? {
         Value::Object(m) => m,
         _ => Map::new(),
     };
@@ -319,8 +388,10 @@ fn cap(elements: Vec<Value>) -> Vec<Value> {
 /// `click_xy`. Other extensions' frames stay unread: a password manager's menu lists saved logins.
 /// `framesUnread` counts frames that failed or did not answer in 3 s (an empty page with framesUnread
 /// above 0 is not yet read, not empty); `framesSkipped` and `elementsOmitted` count what the size limits
-/// left out; a frame with no area holds nothing a person could use.
-pub(crate) async fn read_page(page: &Page) -> Result<Map<String, Value>, CdpError> {
+/// left out; a frame with no area holds nothing a person could use. With `values`, each text field
+/// also says what it holds (`read_frame.js` leaves out every password and every field of a password, card
+/// or code form, THREAT-MODEL R8); the snapshot asks for that at parity alone.
+pub(crate) async fn read_page(page: &Page, values: bool) -> Result<Map<String, Value>, CdpError> {
     let main = page.main_frame()?;
     let all = page.frames();
     let main_origin = all.iter().find(|f| f.id == main).map_or_else(|| "null".to_owned(), |f| origin(&f.url));
@@ -329,13 +400,16 @@ pub(crate) async fn read_page(page: &Page) -> Result<Map<String, Value>, CdpErro
     // The main frame and the website frames are read at once (the time is the slower of them, not the
     // sum); a failed main read still fails the snapshot straight away.
     let reads = futures_util::future::join_all(frames.iter().map(|f| async move {
-        match tokio::time::timeout(READ_TIMEOUT_FRAME, read_frame(page, f)).await {
+        match tokio::time::timeout(READ_TIMEOUT_FRAME, read_frame(page, f, values)).await {
             Ok(Ok(read)) => Some(read),
             Ok(Err(_)) | Err(_) => None,
         }
     }));
-    let (data, results): (Value, Vec<Option<Option<FrameRead>>>) =
-        futures_util::future::try_join(page.evaluate(&main, READ_FRAME, vec![]), reads.map(Ok)).await?;
+    let (data, results): (Value, Vec<Option<Option<FrameRead>>>) = futures_util::future::try_join(
+        page.evaluate(&main, READ_FRAME, vec![Arg::Value(Value::Bool(values))]),
+        reads.map(Ok),
+    )
+    .await?;
     let data = match data {
         Value::Object(m) => m,
         _ => Map::new(),
@@ -456,14 +530,21 @@ mod tests {
     fn page_written_fields_are_cut() {
         let long = "x".repeat(5000);
         let mut e =
-            json!({"tag": long, "id": long, "name": long, "type": long, "text": long, "href": long, "x": 1})
+            json!({"tag": long, "id": long, "name": long, "type": long, "text": long, "href": long, "selected": long, "value": long, "x": 1})
                 .as_object()
                 .cloned()
                 .unwrap();
         cap_fields(&mut e);
-        for (key, limit) in
-            [("tag", 300), ("id", 300), ("name", 300), ("type", 300), ("text", 160), ("href", 2048)]
-        {
+        for (key, limit) in [
+            ("tag", 300),
+            ("id", 300),
+            ("name", 300),
+            ("type", 300),
+            ("text", 160),
+            ("href", 2048),
+            ("selected", 160),
+            ("value", 200),
+        ] {
             assert_eq!(e[key].as_str().unwrap().len(), limit, "{key}");
         }
         assert_eq!(e["x"], 1);

@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Task form</title>
+<style>label{display:block;margin-top:10px;font:14px sans-serif}input,select,textarea{width:420px;font:14px sans-serif}</style></head>
+<body>
+<form id="task" onsubmit="event.preventDefault();document.getElementById('out').textContent='SUBMITTED '+JSON.stringify(Object.fromEntries(new FormData(this)))">
+<label>Short description <input id="task.short_description" name="short_description"></label>
+<label>Assignment group <input id="sys_display.task.assignment_group" name="assignment_group" autocomplete="off"></label>
+<label>State <select id="task.state" name="state"><option value="1">Open</option><option value="2">Work in Progress</option><option value="3">Closed Complete</option></select></label>
+<label>Priority <select id="task.priority" name="priority"><option value="4">4 - Low</option><option value="3">3 - Moderate</option><option value="2">2 - High</option></select></label>
+<label>Due date <input id="task.due_date" name="due_date"></label>
+<label>Work notes <textarea id="task.work_notes" name="work_notes" rows="4"></textarea></label>
+<label>Description <textarea id="task.description" name="description" rows="4"></textarea></label>
+<label><input type="checkbox" id="task.active" name="active" style="width:auto"> Active</label>
+<button type="submit" id="sysverb_update">Submit</button>
+</form>
+<pre id="out"></pre>
+<script>window.g_form={setValue:(f,v)=>{document.getElementById('task.'+f).value=v;}};</script>
+</body></html>

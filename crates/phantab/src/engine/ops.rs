@@ -9,13 +9,13 @@ use phantab_cdp::{BoundingBox, Browser, CdpError, LaunchOptions, Page, PageOptio
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
-use super::read::{Abort, capture, on_abort, poll_until, read_page};
+use super::read::{Abort, capture, on_abort, poll_actionable, poll_until, read_page};
 use super::record::{Fields, Rec};
 use super::recover::Failed;
 use super::{Engine, PAGE_TEXT_LIMIT, cut};
 use crate::bridge::{Profile, TabId};
 use crate::engine_api::{EngineError, EngineResult};
-use crate::page_js::{ACTIONABLE, CLICK, PRESENT, SELECT_OPTIONS};
+use crate::page_js::{CLICK, PRESENT, SELECT_OPTIONS};
 use crate::signin::{Phase, SignInRecord};
 use crate::util::{js_string, random_hex, same_secret, truthy};
 
@@ -85,6 +85,14 @@ async fn viewer_frame(page: &Page, checking: bool, passkey: bool, args: &Value) 
 
 fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a Value> {
     args.get(key).filter(|v| !v.is_null())
+}
+
+/// A `fill` or `type` step's text, which must be a string: `Supply text to <verb>.` otherwise.
+fn text_to(args: &Value, verb: &str) -> Result<String, Failed> {
+    match arg(args, "text") {
+        Some(Value::String(text)) => Ok(text.clone()),
+        _ => Err(Failed::Settled(EngineError(format!("Supply text to {verb}.")))),
+    }
 }
 
 /// The point `actionable.js` gave for a selector's element that only an open shadow root has, read back
@@ -464,12 +472,20 @@ impl Engine {
         crate::signin::sweep_sign_up(self, &held).await.map(drop)
     }
 
-    /// `snapshot(owner, {pageId})`.
+    /// `snapshot(owner, {pageId})`. At parity a text field also says what it holds (THREAT-MODEL R8),
+    /// except on a page whose screenshot is refused: one that showed a password or code back, or holds a
+    /// sign-up's new password.
     pub(crate) async fn snapshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
-        self.sweep_sign_up(&r).await?;
-        let data =
-            self.cdp(&r, None, |page, _| async move { read_page(&page).await.map_err(Failed::from) }).await?;
+        let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
+        let new_password = crate::signin::sweep_sign_up(self, &held).await?;
+        let values = self.guardrails() == super::guardrails::Guardrails::Parity
+            && !new_password
+            && r.on_page().is_none()
+            && !self.echo_marked(&r);
+        let data = self
+            .cdp(&r, None, |page, _| async move { read_page(&page, values).await.map_err(Failed::from) })
+            .await?;
         let mut out = Self::describe_reporting(&r);
         out.extend(data);
         Ok(Value::Object(self.looked(&r, out).await))
@@ -616,8 +632,8 @@ impl Engine {
                     let said = |e: EngineError| unconfirmed(e, &what);
                     let selector = js_string(arg(args, "selector"));
                     if ["click", "fill", "select"].contains(&action.as_str()) {
-                        let (sel, ten) = ([Value::String(selector.clone())], Duration::from_secs(10));
-                        let waited = poll_until(&p, &selector, ACTIONABLE, &sel, ten, Some(&signal)).await;
+                        let ten = Duration::from_secs(10);
+                        let waited = poll_actionable(&p, &selector, ten, Some(&signal), true).await.map(drop);
                         // A click whose element only an open shadow root has goes to that element's point, as
                         // the failure would tell the agent to do with click_xy (a turn more for it); with
                         // guardrails on, `confirm_first` has checked that point.
@@ -645,10 +661,8 @@ impl Engine {
                             abortable(&signal, p.click_selector(&selector)).await.map_err(said).map(drop)?;
                         }
                         "fill" => {
-                            let Some(Value::String(text)) = arg(args, "text") else {
-                                return Err(Failed::Settled(EngineError("Supply text to fill.".to_owned())));
-                            };
-                            abortable(&signal, p.fill(&selector, text)).await.map_err(said)?;
+                            let text = text_to(args, "fill")?;
+                            abortable(&signal, p.fill(&selector, &text)).await.map_err(said)?;
                         }
                         "select" => {
                             let value = arg(args, "text");
@@ -679,6 +693,12 @@ impl Engine {
                                 return Err(said(e.into()).into());
                             }
                             p.key_up(&key).await.map_err(|e| said(e.into()))?;
+                        }
+                        // Text typed at the focus, as a person types it: what `press` sends for each key,
+                        // and the text itself for what no key on the layout makes.
+                        "type" => {
+                            let text = text_to(args, "type")?;
+                            p.type_text(&text).await.map_err(|e| said(e.into()))?;
                         }
                         "scroll" => {
                             let dy = arg(args, "deltaY").and_then(Value::as_f64).unwrap_or(600.0);

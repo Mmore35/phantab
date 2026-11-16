@@ -41,14 +41,18 @@ struct Lane {
 }
 
 impl Lane {
+    /// `full`, so the handback rules below still hold (docs/GUARDRAILS.md).
     async fn start(chrome: &PathBuf) -> Self {
+        Self::start_with(chrome, "full").await
+    }
+
+    async fn start_with(chrome: &PathBuf, guardrails: &str) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
-        // `full`, so the handback rules below still hold (docs/GUARDRAILS.md).
         rt.write_config(&json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
-            "guardrails": "full",
+            "guardrails": guardrails,
         }));
         let svc = tokio::task::block_in_place(|| {
             let child = rt
@@ -649,6 +653,159 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
     let (code, _, err) =
         tokio::task::block_in_place(|| cli(&["close", &json!({ "pageId": id }).to_string()]));
     assert_eq!(code, Some(0), "{err}");
+    lane.finish().await;
+}
+
+/// The values a record's fields hold, as `engine/record`'s snapshot shows them at parity.
+const RECORD_VALUES: [(&str, &str); 3] = [
+    ("short", "VPN token expired for a test user"),
+    ("group", "Network Operations"),
+    ("notes", "Called user at 09:10, reset pending."),
+];
+/// What `engine/record` holds that no snapshot shows, in any mode: a password, a password-change form's
+/// other field, a card number and a one-time code.
+const RECORD_HIDDEN: [&str; 5] = ["hunter2", "new-secret-1", "a.test.user", "4111111111111111", "123456"];
+
+/// At parity (the default), a task form in a frame inside open shadow roots, the way some apps (such as
+/// `ServiceNow`) hold theirs, is filled by selector in one `browser_act`, and the snapshot after shows what
+/// each field now holds; `type` types at the focus; and a record shows its text fields' values but never a
+/// password's, nor any field of a password, card or code form (THREAT-MODEL R8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn framed_forms_are_filled_by_selector_and_show_their_values_at_parity() {
+    const FILLED: [(&str, &str); 7] = [
+        ("#task\\.short_description", "VPN token expired"),
+        ("#sys_display\\.task\\.assignment_group", "Network Operations"),
+        ("#task\\.state", "Work in Progress"),
+        ("#task\\.priority", "2 - High"),
+        ("#task\\.due_date", "2026-12-01"),
+        ("#task\\.work_notes", "Called the user."),
+        ("#task\\.description", "The token expired overnight."),
+    ];
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let url = lane.fixtures.url("/engine/framed-task");
+
+    let said = tokio::task::block_in_place(|| {
+        let mut child = lane
+            .rt
+            .command(&["mcp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut send = |v: Value| {
+            writeln!(stdin, "{v}").unwrap();
+            stdin.flush().unwrap();
+        };
+        send(json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "lane3", "version": "1" } } }));
+        lines.next().unwrap().unwrap();
+        send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        let mut id = 1;
+        let mut call = |name: &str, arguments: Value| -> Value {
+            id += 1;
+            send(
+                json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": arguments } }),
+            );
+            let answer: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            answer["result"].clone()
+        };
+        let opened = call("browser_open", json!({ "url": url }));
+        assert_eq!(opened["isError"], Value::Null, "{opened}");
+        // Proof 1: one call fills all seven fields by selector, with no step failing.
+        let steps: Vec<Value> = FILLED
+            .iter()
+            .map(|(sel, v)| {
+                let verb =
+                    if sel.ends_with("state") || sel.ends_with("priority") { "select" } else { "fill" };
+                json!([verb, sel, v])
+            })
+            .collect();
+        let filled = call("browser_act", json!({ "steps": steps }));
+        assert_eq!(filled["isError"], Value::Null, "{filled}");
+        let said = filled["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+        // Its page holds the site's lease; closing it leaves the site to the RPC client below.
+        let head: Value = serde_json::from_str(said.lines().next().unwrap_or_default()).unwrap();
+        let closed = call("browser_close", json!({ "pageId": head["pageId"] }));
+        assert_eq!(closed["isError"], Value::Null, "{closed}");
+        drop(stdin);
+        let _ = child.wait();
+        said
+    });
+    // Proof 2: the snapshot that ends the call shows each field's value.
+    assert!(!said.contains("failed"), "{said}");
+    for (sel, v) in FILLED {
+        let shown = if sel.ends_with("state") || sel.ends_with("priority") {
+            format!("selected={}", json!(v))
+        } else {
+            format!("value={}", json!(v))
+        };
+        assert!(said.contains(&shown), "{sel}: {shown} in {said}");
+    }
+
+    // Proof 3: a click at the field's point, then `type`, fills it.
+    let a = lane.open("a", "/engine/framed-task").await;
+    let mut snap = Value::Null;
+    assert!(
+        lane.until(Duration::from_secs(30), async || {
+            snap = lane.snap("a", &a).await;
+            element(&snap, "task.short_description").is_some()
+        })
+        .await,
+        "{snap}"
+    );
+    let field = element(&snap, "task.short_description").unwrap().clone();
+    lane.act("a", &a, json!({ "action": "click_xy", "x": field["x"], "y": field["y"] })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "type", "text": "Reset the VPN token" })).await.unwrap();
+    let after = lane.snap("a", &a).await;
+    assert_eq!(element(&after, "task.short_description").unwrap()["value"], json!("Reset the VPN token"));
+
+    // Proof 4: a record shows its text fields' values, and never a password's.
+    let rec = lane.open("a", "/engine/record").await;
+    let snap = lane.snap("a", &rec).await;
+    for (id, v) in RECORD_VALUES {
+        assert_eq!(element(&snap, id).unwrap()["value"], json!(v), "{id}: {snap}");
+    }
+    for id in ["pw", "login", "newpw", "card", "otp"] {
+        assert_eq!(element(&snap, id).unwrap()["value"], Value::Null, "{id}: {snap}");
+    }
+    for secret in RECORD_HIDDEN {
+        assert!(!snap.to_string().contains(secret), "{secret}: {snap}");
+    }
+    lane.finish().await;
+}
+
+/// With guardrails `light`, no snapshot shows a field's value (proof 5), and a framed control in the
+/// sensitive set is still asked about when it is clicked by selector.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_guardrails_on_no_value_is_shown_and_framed_controls_are_checked() {
+    const ASK: &str = "Confirm first: this looks like a payment or checkout.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let rec = lane.open("a", "/engine/record").await;
+    let snap = lane.snap("a", &rec).await;
+    for (id, _) in RECORD_VALUES {
+        assert!(element(&snap, id).is_some(), "{id}: {snap}");
+    }
+    let shown: Vec<&Value> =
+        snap["elements"].as_array().unwrap().iter().filter(|e| e.get("value").is_some()).collect();
+    assert_eq!(shown, Vec::<&Value>::new(), "{snap}");
+    for (_, v) in RECORD_VALUES {
+        assert!(!snap.to_string().contains(v), "{v}: {snap}");
+    }
+    for secret in RECORD_HIDDEN {
+        assert!(!snap.to_string().contains(secret), "{secret}: {snap}");
+    }
+
+    let pay = lane.open("a", "/engine/framed-pay").await;
+    let refused = lane.act("a", &pay, json!({ "action": "click", "selector": "#pay" })).await.unwrap_err();
+    assert!(refused.starts_with(ASK), "{refused}");
+    lane.act("a", &pay, json!({ "action": "click", "selector": "#plain" })).await.unwrap();
     lane.finish().await;
 }
 

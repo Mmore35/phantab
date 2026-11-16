@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>A task form in a frame</title></head>
+<body>
+<h1>Tasks</h1>
+<input id="global-search" placeholder="Search">
+<fx-shell></fx-shell>
+<script>
+class FxShell extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});
+r.innerHTML='<div style="padding:8px">Workspace</div><fx-frame></fx-frame>';}}
+class FxFrame extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});
+r.innerHTML='<iframe id="form_frame" name="form_frame" src="/engine/task-form" style="width:1100px;height:700px;border:1px solid #999"></iframe>';}}
+customElements.define('fx-frame',FxFrame);customElements.define('fx-shell',FxShell);
+</script></body></html>

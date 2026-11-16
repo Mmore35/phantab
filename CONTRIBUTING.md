@@ -84,7 +84,8 @@ Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` 
   writing `phantab-macos-arm64-bundle.zip`; its test installs under a throwaway `HOME`.
 
 ## Gotchas
-- A snapshot's text has no input values. To check what a field holds in a test, read it with
+- A snapshot shows a field's value only under `guardrails: parity`, and never a password's (THREAT-MODEL
+  R8). A test lane that starts in `full` sees none: to check what a field holds there, read it with
   `ext.eval(tab, "document.getElementById('…').value")`.
 - A CDP method the service sends must be in `extension/src/cdp-methods.ts`; the extension refuses
   every other one, and the service reads the same file. An installed extension needs a reload after

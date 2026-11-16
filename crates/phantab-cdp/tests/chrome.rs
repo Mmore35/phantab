@@ -106,6 +106,7 @@ async fn start_fixtures() -> Fixtures {
                 false,
             )),
             "/scrolled-sub" => Some((child_scrolled.clone(), false)),
+            "/xform" => Some((XFORM.to_owned(), false)),
             _ => None,
         }
         }),
@@ -126,6 +127,13 @@ async fn start_fixtures() -> Fixtures {
          <iframe id=f src=\"http://localhost:{child_port}/child\" \
          style=\"position:absolute;left:30px;top:40px;width:200px;height:100px;border:0\"></iframe></body>"
     );
+    // A form in another site's frame, inside an open shadow root, the way some apps hold theirs.
+    let framed_form = format!(
+        "<!doctype html><body style=\"margin:0\"><input id=top><div id=outer></div>\
+         <script>outer.attachShadow({{mode: 'open'}}).innerHTML = '<input id=deep>\
+         <iframe id=f src=\"http://localhost:{child_port}/xform\" \
+         style=\"width:600px;height:300px;border:0\"></iframe>'</script></body>"
+    );
     let form = "<!doctype html><body>\
         <form id=form onsubmit=\"event.preventDefault(); window.submitted = true\">\
           <input id=name> <input id=k onkeydown=\"window.keys.push(event.key)\">\
@@ -143,6 +151,7 @@ async fn start_fixtures() -> Fixtures {
             "/" => Some(("<!doctype html><title>home</title><p id=p>hello</p>".to_owned(), false)),
             "/oopif" => Some((oopif.clone(), false)),
             "/form" => Some((form.clone(), false)),
+            "/framed-form" => Some((framed_form.clone(), false)),
             "/isolation" => Some((ISOLATION.to_owned(), false)),
             "/scrolled" => Some((scrolled.clone(), false)),
             "/scrolled-sub" => Some((scrolled_sub.clone(), false)),
@@ -378,6 +387,53 @@ async fn forms_and_keyboard(page: &Page, fx: &Fixtures) {
 
     page.mouse_wheel(100.0).await.unwrap();
     page.mouse_reset().await.unwrap();
+}
+
+/// `/xform`: a form for `/framed-form`'s frame. It has its own `#top`, which the main document's wins
+/// over, and a field in its own open shadow root.
+const XFORM: &str = "<!doctype html><body style=\"margin:0\">\
+    <form onsubmit=\"event.preventDefault()\"><input id=top><input id=name>\
+      <select id=color><option value=red>Red</option><option value=green>Green</option></select>\
+      <button type=button id=go onclick=\"document.body.dataset.clicked = 'yes'\">Go</button></form>\
+    <div id=host></div>\
+    <script>host.attachShadow({mode: 'open'}).innerHTML = '<input id=inner>'</script></body>";
+
+/// The selector actions reach a website frame's fields and open shadow roots, the main document first:
+/// a form in another site's frame inside a shadow root is filled, selected, read and clicked by selector.
+async fn framed_forms(page: &Page, fx: &Fixtures) {
+    page.goto(&format!("{}/framed-form", fx.parent), NAV).await.unwrap();
+    let frame = wait_for_frame(page, "/xform").await;
+    let ready = "() => !!document.getElementById('go') && !!document.getElementById('host').shadowRoot";
+    for _ in 0..200 {
+        if page.evaluate(&frame, ready, vec![]).await.ok() == Some(json!(true)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let in_frame = async |js: &str| page.evaluate(&frame, js, vec![]).await.unwrap();
+
+    page.fill("#name", "Ada").await.unwrap();
+    assert_eq!(in_frame("() => document.getElementById('name').value").await, json!("Ada"));
+    assert_eq!(page.eval_on_selector("#name", "(e) => e.value").await.unwrap(), json!("Ada"));
+    page.fill("#top", "main").await.unwrap();
+    assert_eq!(eval(page, "() => document.getElementById('top').value").await, json!("main"));
+    assert_eq!(in_frame("() => document.getElementById('top').value").await, json!(""));
+    page.fill("#deep", "shadow").await.unwrap();
+    assert_eq!(
+        eval(page, "() => document.getElementById('outer').shadowRoot.getElementById('deep').value").await,
+        json!("shadow")
+    );
+    page.fill("#inner", "framed shadow").await.unwrap();
+    assert_eq!(
+        in_frame("() => document.getElementById('host').shadowRoot.getElementById('inner').value").await,
+        json!("framed shadow")
+    );
+    assert_eq!(page.select("#color", &["green".to_owned()]).await.unwrap(), ["green"]);
+    assert_eq!(in_frame("() => document.getElementById('color').value").await, json!("green"));
+    page.click_selector("#go").await.unwrap();
+    assert_eq!(in_frame("() => document.body.dataset.clicked ?? null").await, json!("yes"));
+    let err = page.select("#missing", &["x".to_owned()]).await.unwrap_err();
+    assert_eq!(err.to_string(), "No element found for selector: #missing");
 }
 
 /// A page that tampers with its own globals and lays a banner over a button. The label's span covers its
@@ -1193,6 +1249,7 @@ async fn real_chrome() {
         oopif(&browser, &page, &fx).await;
         screenshot(&page, &fx).await;
         forms_and_keyboard(&page, &fx).await;
+        framed_forms(&page, &fx).await;
         isolation(&page, &fx).await;
         scrolled(&page, &fx).await;
         popups(&browser, &fx).await;

@@ -19,7 +19,8 @@ keeps it when it rewrites the file.
 ```
 
 ## The sensitive set (`light`, `full`)
-A `click`, `click_xy`, or a press of Enter or Space on a control that reads as one of these:
+A `click`, `click_xy`, a press of Enter or Space, or a `type` whose text has a line break (it presses
+Enter), on a control that reads as one of these:
 
 - **a payment or checkout**: pay, place order, complete purchase, buy now, check out, book now, donate,
   confirm and pay; a submit button in a form with a card field (`autocomplete="cc-…"`); a PayPal, Apple
@@ -47,6 +48,7 @@ Phantab cannot read lets the step through (see § Gaps).
 | Sign-in stops: an account stops after a rejected or unknown result, and a damaged guard file stops all, until `phantab sign-in-clear` | off | off | on |
 | `resume` on a shown tab waits for your handback (`ownerConfirmed` or the viewer's Return to agent) | off | off | on |
 | Recovering another session's orphaned page waits for `ownerConfirmed` | off | off | on |
+| Snapshots leave out what text fields hold (`value=`); a password's, and any field of a password, card or code form, is left out in every mode (THREAT-MODEL R8) | off | on | on |
 | Opening a closed allowed Chrome profile is left to you: Phantab waits 10 s for a window there instead of starting the profile with none (README § Another Chrome profile) | off | off | on |
 
 Removed outright: the tool description's "Honor user authorization for site actions". It was an
@@ -103,8 +105,10 @@ Follow-ups, each its own change:
 - **HTTP(S) only.** `open` and `navigate` take only website URLs (no `file:`, `chrome:` or `javascript:`).
 
 ## Gaps (the light check)
-- Buttons inside a cross-origin frame (a payment provider's own card frame) are not read. A submit
-  button on your page next to a card field still counts.
+- A control in a website frame that a `click` finds by selector is read in its own frame. A `click_xy`
+  on a point in a cross-origin frame (a payment provider's own card frame), and a press or a `type` in a
+  field there, are not read: the check reads only the main document's control at that point or focus.
+  A submit button on your page next to a card field still counts.
 - A self-hosted password manager on your own domain is not a "vault site", so only the account and
   item wording counts there.
 - Wording outside English is not matched.

@@ -971,7 +971,7 @@ they apply; these are its own.
   leak form, found in a field, an address and a text, with digests only on the record; L4: a copy in
   the page's text, a reveal toggle, a GET form.*
 - **SR-82** While the mark holds, a screenshot of the page is refused (`secret-on-page`), after the
-  sweep. A snapshot never reads input values, so it still works. *L4: a screenshot before and after
+  sweep. A snapshot still works: while the new password is on the page it reads no field's value (R8). *L4: a screenshot before and after
   the site's button.*
 - **SR-83** No result, error, log, record or file holds the password: the answer is a status and a
   reason from a whitelist (and an `ambiguous` count); the generated password lives in a zeroized
@@ -1364,7 +1364,7 @@ These remain after every requirement holds. The README must say them in plain wo
 - **R7 Other extensions.** An extension with debugger or all-sites access can do anything phantab can
   in the profile. Quiet debugging hides its debugger use too (SR-49). An extension drawing into an
   open shadow root is read as page content.
-- **R8 Third-party frames are read.** Snapshots read website frames, a payment frame included. Typed values in inputs stay unread; displayed text does not, and neither does whether a box or radio is ticked or which option a select shows.
+- **R8 Third-party frames and field values are read.** Snapshots read website frames, a payment frame included, and so do selector actions, which find their element in the main document first, then in each website frame. Displayed text is read, and so is whether a box or radio is ticked and which option a select shows. With `guardrails: parity` (the default), a snapshot also shows what each text field and editable area holds (`value=`, cut at 200 characters), so whatever a page or the owner typed there reaches the agent. It never shows a password field's value, nor any field whose name, id or `autocomplete` reads as a password, card number or one-time code, nor any field of a form that holds a new password, a card field, a code field or two password fields, in any mode. No value is shown while a sign-in's echo is marked (SR-45), while a sign-up's new password is on the page (SR-82), nor while a sign-in is under way on it. With `guardrails: light` or `full`, no value is read. *L1: `page_written_fields_are_cut`; L3: `framed_forms_are_filled_by_selector_and_show_their_values_at_parity`, `with_guardrails_on_no_value_is_shown_and_framed_controls_are_checked`.*
 - **R9 Viewer fragment.** The viewer token sits in the `/view` URL fragment until the page strips it. An extension with access to that tab can read it first.
 - **R10 Provider parent check.** A provider that checks its parent process must expect
   `phantab serve`; one written for another parent fails closed, and sign-in answers `refused`.
