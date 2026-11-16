@@ -252,8 +252,8 @@ mod tests {
         let readme = include_str!("../../../../README.md");
         let start = readme.find("## What a sign-in answers").expect("the README's section");
         let section = &readme[start..];
-        let section = &section[..section[2..].find("
-## ").map_or(section.len(), |end| end + 2)];
+        let end = section[2..].find("\n## ").map_or(section.len(), |end| end + 2);
+        let section = &section[..end];
         let words = STATUS
             .iter()
             .chain(SIGN_UP_STATUS)
