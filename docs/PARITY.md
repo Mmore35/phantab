@@ -56,9 +56,11 @@ password, or stop.
 
 ## The evidence
 We measured that. Four tasks on a small account site that checks the sign-in itself, five runs each,
-with phantab and with the two most used browser MCP servers, Playwright MCP (Microsoft) and Chrome
-DevTools MCP (Google), run the way their own READMEs set up an agent's browser. Then the same two
-again with the workaround: the password pasted into the prompt. 90 runs in all, on 2026-11-15.
+with phantab and with the two most used browser MCP servers as of November 2026, Playwright MCP
+(Microsoft) and Chrome DevTools MCP (Google), run the way their own READMEs set up an agent's browser.
+Then the same two again with the workaround: the password pasted into the prompt. 90 runs in all, on
+2026-11-15. Every figure below is for the versions in the tables and under "Versions measured"; any of
+the three tools may behave differently in a later one.
 
 ### Three tasks that start at a sign-in page
 Sign in and read the member number; sign in through an authenticator-code step and read the points
@@ -67,7 +69,7 @@ Time and cost add up each task's median.
 
 | Tool | What the agent was told about the login | Tasks finished | Time | API cost | Password in the model's context |
 |---|---|---|---|---|---|
-| phantab | "My login for it is saved in my password manager." | **15 of 15** | 39.5 s | $0.038 | **never** |
+| phantab `98806c1` | "My login for it is saved in my password manager." | **15 of 15** | 39.5 s | $0.038 | **never** |
 | Playwright MCP 0.0.85 | the same sentence | 0 of 15 | 25.6 s, to stop | $0.036 | never |
 | Chrome DevTools MCP 1.13.0 | the same sentence | 0 of 15 | 33.9 s, to stop | $0.051 | never |
 | Playwright MCP 0.0.85 | the email and password (and the code), pasted in | 15 of 15 | 40.5 s | $0.071 | in 15 of 15 runs |
@@ -79,7 +81,7 @@ Time and cost add up each task's median.
 
 | Tool | Account made | Password saved in the password manager | Password in the model's context | Time | API cost |
 |---|---|---|---|---|---|
-| phantab | 5 of 5 | **5 of 5** | **never** | 10.2 s | $0.014 |
+| phantab `98806c1` | 5 of 5 | **5 of 5** | **never** | 10.2 s | $0.014 |
 | Playwright MCP 0.0.85 | 5 of 5 | 0 of 5 | in 5 of 5 runs | 12.7 s | $0.021 |
 | Chrome DevTools MCP 1.13.0 | 5 of 5 | 0 of 5 | in 5 of 5 runs | 12.0 s | $0.020 |
 
@@ -115,15 +117,31 @@ the code, in any encoding, in everything the model was sent.
 The whole test is in `bench/parity/`: the tasks, the grader, the runner, the recorded runs and how to
 run it yourself. It takes about 20 minutes and cost $1.61 in API use when we ran it.
 
+### Versions measured
+| What | Version, on 2026-11-15 |
+|---|---|
+| phantab | main `98806c1`: the code after the 0.5.0 release, with sign-in from any password manager |
+| Playwright MCP | `@playwright/mcp` 0.0.85, started `--headless --isolated` |
+| Chrome DevTools MCP | `chrome-devtools-mcp` 1.13.0, started `--headless --isolated` |
+| Agent | Claude Code 2.1.325 (`claude -p`) |
+| Model | `claude-sonnet-5-5` |
+| Chrome | 157.0.8103.78 |
+| Node.js | 25.7.0 |
+| Machine | Windows 11 (10.0.26200), an 8-core desktop PC |
+
+The same list is in `bench/parity/results/2026-11-15/environment.json`, and the runner writes one
+beside every new set of runs. When any line here is old, run the test again before quoting it.
+
 ### What it does not show
 - The password manager is a stand-in: this repository's fixture provider over a file of made-up
   logins, answering through the same provider protocol a real password manager's command uses
   (`docs/VAULTS.md`). No real vault or account was used, and no site on the internet saw a request.
-- Both other tools can also work in a browser you have already signed in to by hand: Playwright MCP
+- As of the versions measured, both other tools can also work in a browser you have already signed
+  in to by hand: Playwright MCP
   through its extension or a kept profile, Chrome DevTools MCP by attaching to your running Chrome.
   Those modes were not measured. In them a task that needs only an existing session can pass. A fresh
   sign-in, a code step or a new account still needs the login from somewhere.
-- Playwright MCP's `--secrets` file, which masks listed values in what the model reads and which its
+- Playwright MCP 0.0.85's `--secrets` file, which masks listed values in what the model reads and which its
   README calls "a convenience and not a security feature", was not measured.
 - The site is a simple one: no human check, no passkey, no email confirmation. Those stop every tool,
   phantab included; phantab shows you the page and waits.

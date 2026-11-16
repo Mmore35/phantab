@@ -20,8 +20,9 @@ you can see it, take it over and carry on from where it is. It is parity of acce
 the password manager types the password, and the agent gets back a status word, never the password.
 
 Most browser tools start an agent in a clean browser, signed in to nothing. We measured what that
-means for three tasks that start at a sign-in page (2026-11-15, Claude Sonnet 5.5, a local account
-site, a stand-in password manager, five runs of each task per row):
+means for three tasks that start at a sign-in page. Measured on 2026-11-15 with phantab at main
+`98806c1`, Playwright MCP 0.0.85, Chrome DevTools MCP 1.13.0 and Claude Sonnet 5.5, on a local account
+site with a stand-in password manager, five runs of each task per row:
 
 | Tool | What the agent was told about the login | Tasks finished | API cost | Password in the model's context |
 |---|---|---|---|---|
@@ -35,8 +36,8 @@ Asked to make a new account and save its password, all three tools got the accou
 Only phantab saved the password in the password manager (5 of 5), and the model was never sent it. With
 the other two the model made the password up itself, and the only copy off the site was in the chat.
 
-The other two were run the way their own READMEs set up an agent's browser. Both can also attach to a
-browser you signed in to by hand; that was not measured. `docs/PARITY.md` has the whole idea, the full
+The other two were run the way their own READMEs set up an agent's browser, at those versions. Both
+can also attach to a browser you signed in to by hand; that was not measured. `docs/PARITY.md` has the whole idea, the full
 results and what the test does not show. `bench/parity/` has the test and the recorded runs, so you can
 run it yourself.
 

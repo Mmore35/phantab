@@ -20,13 +20,15 @@ Usage:
   python run.py --report <out dir>
 
 Runs go strictly one at a time, arms interleaved, each on a fresh lane. Each run appends one line to
-<out>/runs.jsonl; its transcript and full record go to <out>/raw/ (they hold local paths: not for publishing).
+<out>/runs.jsonl, the versions measured go to <out>/environment.json; its transcript and full record go to <out>/raw/ (they hold local paths: not for publishing).
 See README.md for what to install and how the exe is built.
 """
 import argparse
 import datetime
 import json
 import os
+import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -63,6 +65,34 @@ NEW_NAME, NEW_EMAIL = "Ava Lindqvist", "ava.lindqvist@example.test"
 SAVED = " My login for it is saved in my password manager."
 TOLD = " My login is email {user} and password {password}"
 TOLD_CODE = " and the authenticator code is {code}"
+
+
+def said(command):
+    """The first line a command prints, or None."""
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=30).stdout.strip()
+        return out.splitlines()[0] if out else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def chrome_version():
+    """Chrome's version: on Windows the folder beside chrome.exe is named for it."""
+    if os.name == "nt":
+        names = [n for n in os.listdir(os.path.dirname(CHROME)) if re.fullmatch("[0-9]+([.][0-9]+){3}", n)]
+        return max(names, key=lambda n: [int(x) for x in n.split(".")]) if names else None
+    return said([CHROME, "--version"])
+
+
+def environment(model):
+    """What a result folder measured: results go out of date with every version named here."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    dirty = subprocess.run(["git", "-C", here, "status", "--porcelain"], capture_output=True, text=True).stdout
+    return {"date": datetime.date.today().isoformat(),
+            "phantab": {"commit": said(["git", "-C", here, "rev-parse", "HEAD"]), "uncommittedChanges": bool(dirty.strip())},
+            "playwright": VERSIONS["playwright"], "devtools": VERSIONS["devtools"],
+            "claudeCode": said([shutil.which("claude") or "claude", "--version"]), "model": model,
+            "chrome": chrome_version(), "node": said(["node", "--version"]), "os": platform.platform()}
 
 
 def prompt_for(arm, task, url):
@@ -340,6 +370,8 @@ def main():
     if not a.exe or not a.out:
         ap.error("give the cost test exe and an out dir, or --report <out dir>")
     os.makedirs(a.out, exist_ok=True)
+    with open(os.path.join(a.out, "environment.json"), "w", encoding="utf-8") as f:
+        json.dump(environment(a.model), f, indent=2)
     bad = 0
     with open(os.path.join(a.out, "runs.jsonl"), "a", encoding="utf-8") as log:
         for n in range(a.first, a.first + a.runs):

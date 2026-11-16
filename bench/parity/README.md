@@ -50,8 +50,22 @@ the model was sent that password.
 
 ## The recorded runs
 `results/2026-11-15/runs.jsonl` holds the 90 runs behind the tables in `docs/PARITY.md`, one line per
-run: phantab at this branch, Claude Sonnet 5.5, a Windows 11 PC. They cost $1.61 in API use and took
-about 20 minutes. To print the tables from them:
+run. They cost $1.61 in API use and took about 20 minutes. `results/2026-11-15/environment.json` names
+what they measured:
+
+| What | Version measured on 2026-11-15 |
+|---|---|
+| phantab | main `98806c1` (after the 0.5.0 release), plus this folder's test pages |
+| Playwright MCP | `@playwright/mcp` 0.0.85 |
+| Chrome DevTools MCP | `chrome-devtools-mcp` 1.13.0 |
+| Agent | Claude Code 2.1.325 (`claude -p`) |
+| Model | `claude-sonnet-5-5` |
+| Chrome | 157.0.8103.78 |
+| Node.js | 25.7.0 |
+| Machine | Windows 11 (10.0.26200), an 8-core desktop PC |
+
+Every one of these moves. A result is a result for those versions; a new run writes its own
+`environment.json`. To print the tables from the recorded runs:
 
 ```sh
 python bench/parity/run.py --report bench/parity/results/2026-11-15
@@ -77,12 +91,15 @@ python bench/parity/run.py <that executable> results --runs 5
 python bench/parity/run.py --report results
 ```
 
-`results/runs.jsonl` gets one line per run. `results/raw/` gets each run's transcript and full record;
+`results/runs.jsonl` gets one line per run, and `results/environment.json` the versions that run
+measured (to measure a newer Playwright MCP or Chrome DevTools MCP, install it and change `VERSIONS` at
+the top of `run.py`). `results/raw/` gets each run's transcript and full record;
 those hold your local paths, so look before you share them. The runner exits 1 when any run fails, and
 the two arms told only that the login is saved are expected to fail.
 
 ## Reading the result honestly
-- The two other tools were run the way their own READMEs set up an agent's browser. Both can also work
+- The two other tools were run the way their own READMEs set up an agent's browser, as of the versions
+  measured. Both can also work
   in a browser you have already signed in to by hand (Playwright MCP through its extension or a kept
   profile, Chrome DevTools MCP by attaching to your Chrome). Those modes were not measured here. In them
   a task that needs only an existing session can pass; a fresh sign-in, a code step or a new account

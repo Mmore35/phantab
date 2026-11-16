@@ -1,0 +1,16 @@
+{
+  "date": "2026-11-15",
+  "phantab": {
+    "commit": "98806c1f3f5f5715ae6206d0cd995fd747d6db8a",
+    "uncommittedChanges": true,
+    "note": "main after the 0.5.0 release, plus this benchmark's test-kit pages and cost-test lane (no change to phantab itself)"
+  },
+  "playwright": "@playwright/mcp@0.0.85",
+  "devtools": "chrome-devtools-mcp@1.13.0",
+  "claudeCode": "2.1.325 (Claude Code)",
+  "model": "claude-sonnet-5-5",
+  "chrome": "157.0.8103.78",
+  "node": "v25.7.0",
+  "os": "Windows-11-10.0.26200-SP0",
+  "recordedBy": "hand, after the run: the runner began writing this file later"
+}
