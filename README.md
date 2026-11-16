@@ -209,7 +209,7 @@ yourself, `browser_show` with `release: true` gives you the tab for good: it sta
 ordinary tab and leaves the agent's list.
 
 `browser_act` does what a person does on a page: click, fill, select, press a key or a combination
-(`Control+A`), type, scroll, hover (a menu that opens on hover), drag (a sortable list), upload a file
+(`Control+A`), type, scroll, hover (a menu that opens on hover), drag (a sortable list, HTML5 drag and drop included), upload a file
 from your computer into a file input, answer the page's next dialog (`["dialog", "accept"]`, with a
 prompt's text), and go back, forward or reload. With guardrails `light` or `full`, every upload and
 every dialog accept waits for your yes (`docs/GUARDRAILS.md`).

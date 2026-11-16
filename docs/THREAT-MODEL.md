@@ -760,8 +760,8 @@ Each requirement is a release blocker, and each is tested in the lanes named.
 - **SR-89** The steps that act beyond a click or a keystroke: `upload`, `dialog`, `back`, `forward` and
   `reload` (and `hover`, `drag`, which only move the mouse). An upload sends only files named by an
   absolute path that exists and is a file, checked by the service before the page is touched, into an
-  element that is an enabled `<input type=file>` taking that many files (`DOM.setFileInputFiles`; no
-  file chooser opens). The service runs as the owner, so any of his files can be named: with
+  element that is an enabled `<input type=file>` taking that many files (`DOM.setFileInputFiles`): phantab
+  never opens or answers a file chooser. The service runs as the owner, so any of his files can be named: with
   `guardrails` `light` or `full` every upload is asked about first (`ownerConfirmed`), whatever the
   site, and so is every `["dialog", "accept"]`, since a confirm's yes may be a deletion or a payment;
   a dismiss is not asked about. A dialog answer is used once, for that page's next dialog, and only on
