@@ -407,7 +407,7 @@ A dev-dependency of every crate with browser or service tests.
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (149)
+### Fixture pages (152)
 | Group | Keys |
 |---|---|
 | engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/wait`, `changes`, `navigates` |
@@ -418,6 +418,7 @@ A dev-dependency of every crate with browser or service tests.
 | sign-in, walls | `passkey`, `passkey-ask`, `passkey-onload`, `captcha`, `captcha-frame`, `captcha-invisible`, `captcha-zero`, `captcha-hidden`, `captcha-offscreen`, `captcha-solved`, `captcha-unsolved`, `captcha-framed-solved`, `captcha-framed-unsolved`, `captcha-other-kind`, `captcha-shadow-solved`, `captcha-scrolled`, `captcha-shadow-scrolled`, `captcha-slotted-scrolled`, `captcha-rtl`, `captcha-inner-rtl`, `captcha-column-reverse`, `captcha-parked-long`, `captcha-parked-fixed`, `code-boxes`, `readonly`, `twobuttons`, `nobutton`, `otherform`, `ignores`, `aimframe`, `closedframe`, `overframe` |
 | verification | `verify/box`, `verify/shop`, `verify/wall`, `verify/autoclear`, `verify/never`, `verify/widget`, `verify/challenge-only`, `verify/captcha-word-title`, `verify/hold`, `verify/slider`, `verify/offscreen` |
 | sign-in, hazards | `leaves`, `plainhttp`, `getform`, `getshadow`, `echo`, `wrong`, `hides`, `moves`, `detaching`, `landsthendetaches`, `leak-dom`, `leak-hash`, `leak-url`, `clobber-base`, `clobber-id`, `clobber-get`, `clobber-doc`, `tamper`, `leak-clobber`, `unresolved`, `form-button`, `rerender` |
+| parity benchmark | `parity/signin`, `parity/signin2`, `parity/join` (`docs/PARITY.md`) |
 | sign-up | `signup/basic`, `confirm`, `signin`, `change`, `card`, `pay`, `getform`, `elsewhere`, `crossframe`, `framed`, `shadow`, `maxlength`, `shortmax`, `rules`, `copy`, `copytext`, `reveal` |
 
 (The sign-in keys all start `sign-in/`, the sign-up keys `signup/`.) The `verify/*` pages are stand-in checks only: a box, a wall,
