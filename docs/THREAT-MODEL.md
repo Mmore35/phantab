@@ -930,7 +930,9 @@ Each requirement is a release blocker, and each is tested in the lanes named.
     with every other category excluded: no `disabled-by-default-devtools.screenshot`, no `netlog`. It
     ends at `stop`, at its time limit (30 s unless asked, at most 120) or once Chrome's 20 MB buffer is
     full, and the answer says which; a stream over 128 MB is refused and its stream still closed. Its page's close,
-    a kept spare and the service's end each end it, unsaved. With `reload`, it is a write (refused on a
+    a kept spare and the service's end each end it, unsaved, and a start that fails part way (a
+    reload past the navigation time limit) ends what it began before it answers the error; a page whose
+    trace Chrome left unanswered at that end has it ended again by its next start or its close. With `reload`, it is a write (refused on a
     held page, asked about first as a reload is under `light` and `full`).
   - What the saved file holds: the trace events of everything the page did while it ran, the URLs of
     every request and script (query strings included), their timings, script and function names,

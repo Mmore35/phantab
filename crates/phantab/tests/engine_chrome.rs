@@ -62,7 +62,13 @@ impl Lane {
 
     /// `more`: the config's other settings, such as `siteLock` or `devTools`.
     async fn start_config(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
-        Self::start_all(chrome, guardrails, more, false).await
+        Self::start_all(chrome, guardrails, more, false, &[]).await
+    }
+
+    /// With the developer tools on, and the service started with `env` set (test seams such as
+    /// `PHANTAB_TEST_TRACE_RELOAD_MS`).
+    async fn start_dev_tools_env(chrome: &PathBuf, env: &[(&str, &str)]) -> Self {
+        Self::start_all(chrome, "parity", &json!({ "devTools": true }), false, env).await
     }
 
     /// With sign-in: the service's one provider is the fixture provider (never a real vault) over
@@ -70,10 +76,16 @@ impl Lane {
     /// loopback fixture server. A sign-up saves its new login in the same file;
     /// [`Lane::provider_asked`] counts what was asked.
     async fn start_signing(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
-        Self::start_all(chrome, guardrails, more, true).await
+        Self::start_all(chrome, guardrails, more, true, &[]).await
     }
 
-    async fn start_all(chrome: &PathBuf, guardrails: &str, more: &Value, signing: bool) -> Self {
+    async fn start_all(
+        chrome: &PathBuf,
+        guardrails: &str,
+        more: &Value,
+        signing: bool,
+        env: &[(&str, &str)],
+    ) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
@@ -103,6 +115,7 @@ impl Lane {
             if signing {
                 serve.env("PHANTAB_TEST_ALLOW_LOOPBACK", "1");
             }
+            serve.envs(env.iter().copied());
             let child = serve
                 .env("PHANTAB_TEST_WINDOWS", "none")
                 .stdin(Stdio::null())
@@ -2242,6 +2255,55 @@ async fn a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit() 
     assert!(stopped["ended"].as_str().unwrap().starts_with("time limit"), "{stopped}");
     let trace: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert!(trace["traceEvents"].is_array());
+    lane.finish().await;
+}
+
+/// The measuring scripts a page holds, as the CDP extension saw them added and removed.
+fn measuring_scripts(lane: &Lane) -> usize {
+    let timeline = lane.ext.timeline();
+    let sent = |m: &str| timeline.iter().filter(|(_, e)| e.starts_with("send ") && e.ends_with(m)).count();
+    sent(" Page.addScriptToEvaluateOnNewDocument") - sent(" Page.removeScriptToEvaluateOnNewDocument")
+}
+
+/// SR-91: a trace start whose reload runs into the navigation time limit (shortened here, a test seam)
+/// answers that error and ends what it began: Chrome's trace and the measuring script. The page then
+/// traces again and holds one script at a time, and a page closed right after such a start leaves its
+/// tab, kept as a spare, free to trace for the next open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trace_whose_reload_fails_ends_what_it_started() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools_env(&chrome, &[("PHANTAB_TEST_TRACE_RELOAD_MS", "1500")]).await;
+    let dir = lane.rt.path().join("traces");
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = lane.open("a", "/slow?ms=4000&then=/engine/basic").await;
+    let scripts = measuring_scripts(&lane);
+    let reload = json!({ "pageId": a, "action": "start", "reload": true, "path": dir.join("failed.json") });
+    let failed = lane.err("trace", reload.clone(), "a").await;
+    assert!(failed.contains("Navigation timeout of 1500 ms"), "{failed}");
+    assert_eq!(measuring_scripts(&lane), scripts, "the failed start removed its script");
+
+    // The page traces again, and holds one measuring script while it does.
+    let file = dir.join("after.json");
+    lane.ok("trace", json!({ "pageId": a, "action": "start", "path": file }), "a").await;
+    assert_eq!(measuring_scripts(&lane), scripts + 1);
+    let stopped = lane.ok("trace", json!({ "pageId": a, "action": "stop" }), "a").await;
+    assert_eq!(stopped["path"], json!(file), "{stopped}");
+    let trace: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(trace["traceEvents"].is_array());
+    assert_eq!(measuring_scripts(&lane), scripts);
+
+    // A close right after a failed start: the tab waits as a spare, and Chrome is not left tracing.
+    let again = lane.err("trace", reload, "a").await;
+    assert!(again.contains("Navigation timeout"), "{again}");
+    let tabs = lane.ext.created_tabs().len();
+    lane.ok("close", json!({ "pageId": a }), "a").await;
+    let b = lane.open("a", "/engine/basic").await;
+    assert_eq!(lane.ext.created_tabs().len(), tabs, "the next open took the spare");
+    let spare = dir.join("spare.json");
+    lane.ok("trace", json!({ "pageId": b, "action": "start", "path": spare }), "a").await;
+    lane.ok("trace", json!({ "pageId": b, "action": "stop" }), "a").await;
+    assert!(spare.is_file());
     lane.finish().await;
 }
 

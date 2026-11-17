@@ -144,10 +144,13 @@ all lib engine::measure::tests::a_saved_trace_holds_no_secret_header_and_no_comm
 all lib engine::measure::tests::the_trace_records_no_screenshot_and_no_network_log
 all lib engine::measure::tests::emulation_is_checked_before_anything_is_sent
 all cdp page::tests::a_trace_over_its_size_is_refused_and_its_stream_still_closed
+all cdp page::tests::a_trace_chrome_may_still_hold_stays_held_until_a_discard_is_answered
+all cdp page::tests::a_measuring_script_that_fails_to_run_is_removed_again
 all ext:ops a stream is read only for the tab's own finished trace, until it is closed
 all ext:events a trace's events cross only while it runs, and its completion ends the recording
 chrome engine_chrome trace_saves_a_performance_trace_and_the_page_s_own_numbers
 chrome engine_chrome emulation_reaches_the_page_and_clears_on_clear_and_close
+chrome engine_chrome a_trace_whose_reload_fails_ends_what_it_started
 
 # On a machine that sets work, a sign-in, a provider, a pop-up or the phone viewer happens anyway (SR-92).
 all lib work::tests::work_is_off_only_when_absent_or_false_and_any_other_value_is_on_and_said

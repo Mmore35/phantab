@@ -41,6 +41,17 @@ const TRACE_END_WAIT: Duration = Duration::from_secs(30);
 /// How often a running trace is checked against its limits.
 const TRACE_TICK: Duration = Duration::from_millis(500);
 
+/// How long a trace's reload waits for the page: the navigation time limit. A test build (`test-seams`,
+/// which a release build cannot turn on) takes a shorter one from `PHANTAB_TEST_TRACE_RELOAD_MS`, so a
+/// lane test reaches it without waiting 30 seconds.
+fn reload_wait() -> Duration {
+    #[cfg(feature = "test-seams")]
+    if let Some(ms) = std::env::var("PHANTAB_TEST_TRACE_RELOAD_MS").ok().and_then(|v| v.parse().ok()) {
+        return Duration::from_millis(ms);
+    }
+    super::ops::NAVIGATE_TIMEOUT
+}
+
 /// What a trace records: the Performance panel's own tracks (tasks, loading, paints, layout shifts,
 /// script, user timings, input latency, the CPU profile). No screenshot and no network-log category, so
 /// no frame of the page and no request header.
@@ -467,14 +478,27 @@ impl Engine {
                 Some(Tracing { serial, page_id, page, seconds, script, target, phase: Phase::Starting });
         }
         let action = reload.then_some("trace");
+        // Each step that fails undoes the ones before it, last first, and its error is the answer.
         let started = self
             .cdp(&r, action, |p, _| async move {
+                // The slot is this start's, so a trace the page still holds is one an earlier undo could
+                // not end (Chrome left its Tracing.end unanswered): it is ended first.
+                unwind(&p, true, "").await;
                 let script = p.add_measure_script(MEASURE_JS).await?;
-                p.trace_start(TRACE_CATEGORIES, TRACE_BUFFER_KB).await?;
-                if reload {
-                    p.reload(super::ops::NAVIGATE_TIMEOUT).await?;
+                let traced = async {
+                    p.trace_start(TRACE_CATEGORIES, TRACE_BUFFER_KB).await?;
+                    if reload {
+                        p.reload(reload_wait()).await?;
+                    }
+                    Ok::<_, CdpError>(())
+                };
+                match traced.await {
+                    Ok(()) => Ok((p, script)),
+                    Err(e) => {
+                        unwind(&p, true, &script).await;
+                        Err(e)
+                    }
                 }
-                Ok::<_, CdpError>((p, script))
             })
             .await;
         // The slot is still this trace's unless its page closed meanwhile (`drop_trace`).
@@ -495,9 +519,7 @@ impl Engine {
         };
         if !running {
             if let Ok((p, script)) = &started {
-                let _ = tokio::time::timeout(Duration::from_secs(5), p.trace_discard(Duration::from_secs(4)))
-                    .await;
-                let _ = p.remove_measure_script(script).await;
+                unwind(p, true, script).await;
             }
             return Err(started
                 .err()
@@ -633,10 +655,14 @@ impl Engine {
     }
 
     /// Ends page `id`'s trace before its page closes or is kept as a spare, unsaved: Chrome traces one
-    /// client at a time, so a trace left running would refuse the next one.
+    /// client at a time, so a trace left running would refuse the next one. With no trace in the slot,
+    /// a trace the page itself still holds (an undo Chrome left unanswered) is ended too.
     pub(crate) async fn stop_trace_of(&self, id: &str) {
         if let Some(t) = self.take_trace(id) {
             discard(t).await;
+        } else if let Some(r) = self.find(id) {
+            let page = r.lock().page.clone();
+            unwind(&page, true, "").await;
         }
     }
 
@@ -651,12 +677,24 @@ impl Engine {
 
 /// Ends a trace nobody will save, best-effort and within a few seconds (SR-91).
 async fn discard(t: Tracing) {
+    // A trace still starting or finishing is ended by whoever is doing that.
+    let end = !matches!(t.phase, Phase::Starting | Phase::Finishing);
+    unwind(&t.page, end, &t.script).await;
+}
+
+/// Undoes what a trace did to `page`, last first, best-effort and within a few seconds: with `end`, the
+/// trace the page holds is discarded (Chrome stops tracing), then the measuring `script`, if any, is
+/// removed. An undo that fails leaves a state the next start or close recovers from: a `Tracing.end`
+/// left unanswered keeps the trace held by the page ([`Page::trace_fill`] is `Some`), and both end it
+/// before anything else; a script not removed only runs again, as a no-op, in the page's next documents.
+async fn unwind(page: &Page, end: bool, script: &str) {
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        // A trace still starting or finishing is ended by whoever is doing that.
-        if matches!(t.phase, Phase::Running) {
-            let _ = t.page.trace_discard(Duration::from_secs(4)).await;
+        if end && page.trace_fill().is_some() {
+            let _ = page.trace_discard(Duration::from_secs(4)).await;
         }
-        let _ = t.page.remove_measure_script(&t.script).await;
+        if !script.is_empty() {
+            let _ = page.remove_measure_script(script).await;
+        }
     })
     .await;
 }

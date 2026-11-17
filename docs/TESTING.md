@@ -108,6 +108,7 @@ otherwise read it. Removing the stray `~/node_modules` also works.
 | `PHANTAB_RUNTIME` | the service; set per test to a temp dir by `crates/phantab/tests/common` | runtime dir |
 | `PHANTAB_CLIENT` | the CLI; tests clear it and set it per case | CLI client id |
 | `PHANTAB_TEST_*` | test builds only: passed through to a fake sign-in provider (SR-14) | fake provider control |
+| `PHANTAB_TEST_TRACE_RELOAD_MS` | the service, test builds only (`test-seams`) | how long a trace's reload waits, in ms, instead of the 30 s navigation time limit |
 | `CARGO_TARGET_DIR` | cargo | keep parallel sessions apart |
 
 ### Traps

@@ -1456,6 +1456,11 @@ impl Page {
     /// into a buffer of `buffer_kb` and stops recording once it is full (`recordUntilFull`). Every other
     /// category is left out (`excludedCategories: ["*"]`). Chrome reports the fill every half second.
     /// Fails, sending nothing, while a trace runs on this page.
+    ///
+    /// The page holds its trace ([`Page::trace_fill`] is `Some`) from the start until Chrome is known to
+    /// hold none: it refused the start, answered `Tracing.end`, or the page closed. A `Tracing.start` or
+    /// `Tracing.end` that got no answer ([`CdpError::Timeout`]) leaves it held, since Chrome may still be
+    /// tracing, so a later [`Page::trace_discard`] sends `Tracing.end` again.
     pub async fn trace_start(&self, categories: &[&str], buffer_kb: u64) -> Result<(), CdpError> {
         {
             let mut st = self.inner.state.lock();
@@ -1473,10 +1478,21 @@ impl Page {
             },
         });
         if let Err(e) = self.send("Tracing.start", params).await {
-            self.inner.state.lock().recording.trace = None;
+            if !matches!(e, CdpError::Timeout { .. }) {
+                self.inner.state.lock().recording.trace = None;
+            }
             return Err(e);
         }
         Ok(())
+    }
+
+    /// The page's trace, taken once Chrome is known to hold none: unless `ended`, the end's outcome, is
+    /// a `Tracing.end` that got no answer (see [`Page::trace_start`]).
+    fn trace_over<T>(&self, ended: &Result<T, CdpError>) -> Option<crate::devtools::TraceLog> {
+        if matches!(ended, Err(CdpError::Timeout { .. })) {
+            return None;
+        }
+        self.inner.state.lock().recording.trace.take()
     }
 
     /// The running trace's buffer fill, 0 to 1, as Chrome last reported it; `None` with no trace.
@@ -1486,11 +1502,10 @@ impl Page {
 
     /// Ends the page's trace and reads it from Chrome's stream (`IO.read`, then `IO.close`), waiting up to
     /// `wait` for Chrome to finish writing. More than `max_bytes` is an error, and the stream is closed
-    /// either way. The page has no trace afterwards, whatever the outcome.
+    /// either way. The page has no trace afterwards, unless Chrome left `Tracing.end` unanswered.
     pub async fn trace_end(&self, wait: Duration, max_bytes: usize) -> Result<crate::TraceData, CdpError> {
         let ended = self.trace_wait(wait).await;
-        let full =
-            self.inner.state.lock().recording.trace.take().is_some_and(|t| t.full >= crate::TRACE_FULL);
+        let full = self.trace_over(&ended).is_some_and(|t| t.full >= crate::TRACE_FULL);
         let (data_lost, stream) = ended?;
         let handle =
             stream.ok_or_else(|| CdpError::Other("Chrome ended the trace without a stream".into()))?;
@@ -1502,10 +1517,11 @@ impl Page {
     }
 
     /// Ends the page's trace without reading it: Chrome stops tracing (it traces one client at a time,
-    /// browser-wide) and the stream it leaves is closed unread. The page has no trace afterwards.
+    /// browser-wide) and the stream it leaves is closed unread. The page has no trace afterwards, unless
+    /// Chrome left `Tracing.end` unanswered: then it is still held, for the next discard.
     pub async fn trace_discard(&self, wait: Duration) -> Result<(), CdpError> {
         let ended = self.trace_wait(wait).await;
-        self.inner.state.lock().recording.trace = None;
+        self.trace_over(&ended);
         if let (_, Some(handle)) = ended? {
             self.send("IO.close", json!({ "handle": handle })).await?;
         }
@@ -1566,12 +1582,17 @@ impl Page {
 
     /// Runs `source` in the measuring world ([`MEASURE_WORLD`]) of every new document of the page, from
     /// its start, and in the current document now. Answers the script's identifier, for
-    /// [`Page::remove_measure_script`].
+    /// [`Page::remove_measure_script`]. If the run in the current document fails, the script is removed
+    /// again (best-effort) and the run's error answered.
     pub async fn add_measure_script(&self, source: &str) -> Result<String, CdpError> {
         let params = json!({ "source": source, "worldName": MEASURE_WORLD, "runImmediately": true });
         let r = self.send("Page.addScriptToEvaluateOnNewDocument", params).await?;
-        self.evaluate_measure(&format!("() => {{ {source} }}")).await?;
-        Ok(r.get("identifier").and_then(Value::as_str).unwrap_or_default().to_owned())
+        let identifier = r.get("identifier").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if let Err(e) = self.evaluate_measure(&format!("() => {{ {source} }}")).await {
+            let _ = self.remove_measure_script(&identifier).await;
+            return Err(e);
+        }
+        Ok(identifier)
     }
 
     /// Stops running a [`Page::add_measure_script`] script in new documents.

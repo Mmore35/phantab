@@ -2364,6 +2364,69 @@ async fn a_trace_that_never_completes_ends_at_its_wait_and_frees_the_page() {
     rig.page.trace_start(&["loading"], 4096).await.unwrap();
 }
 
+/// SR-91: a page holds its trace until Chrome is known to hold none. A start Chrome refused, or an end it
+/// answered, frees the page; a `Tracing.start` or `Tracing.end` that got no answer leaves the trace held,
+/// so the next discard sends `Tracing.end` again.
+#[tokio::test]
+async fn a_trace_chrome_may_still_hold_stays_held_until_a_discard_is_answered() {
+    use Ordering::SeqCst;
+    let refuse = Arc::new(AtomicBool::new(true));
+    let unanswered = Arc::new(AtomicBool::new(false));
+    let (r, u) = (Arc::clone(&refuse), Arc::clone(&unanswered));
+    let rig = Rig::new(handler(move |_, m, _| {
+        let timeout = || Reply::Err(CdpError::Timeout { method: m.to_owned() });
+        match m {
+            "Tracing.start" if r.load(SeqCst) => {
+                Some(Reply::Err(CdpError::Protocol {
+                    method: m.to_owned(),
+                    code: Some(-32000),
+                    message: "Tracing has already been started".into(),
+                    data: None,
+                }))
+            }
+            "Tracing.start" | "Tracing.end" if u.load(SeqCst) => Some(timeout()),
+            _ => None,
+        }
+    }))
+    .await;
+    // Refused: Chrome holds no trace of this page's, and the page none.
+    assert!(rig.page.trace_start(&["loading"], 4096).await.is_err());
+    assert_eq!(rig.page.trace_fill(), None, "a refused start holds nothing");
+    // Unanswered: Chrome may have started it, so the page still holds it.
+    refuse.store(false, SeqCst);
+    unanswered.store(true, SeqCst);
+    assert!(rig.page.trace_start(&["loading"], 4096).await.is_err());
+    assert_eq!(rig.page.trace_fill(), Some(0.0), "an unanswered start may be running");
+    // A discard whose Tracing.end goes unanswered keeps it held too.
+    assert!(rig.page.trace_discard(Duration::from_millis(50)).await.is_err());
+    assert_eq!(rig.page.trace_fill(), Some(0.0), "an unanswered end may not have ended it");
+    // Answered (here Chrome ends it but never completes in the wait): the page is free again.
+    unanswered.store(false, SeqCst);
+    let e = rig.page.trace_discard(Duration::from_millis(50)).await.unwrap_err();
+    assert!(matches!(e, CdpError::WaitTimeout { .. }), "{e}");
+    assert_eq!(rig.page.trace_fill(), None);
+    assert_eq!(rig.mock.count("Tracing.end"), 2);
+    rig.page.trace_start(&["loading"], 4096).await.unwrap();
+}
+
+/// A measuring script that cannot run in the current document is removed again, so a failed start
+/// leaves no script behind for its page's next documents.
+#[tokio::test]
+async fn a_measuring_script_that_fails_to_run_is_removed_again() {
+    let rig = Rig::new(handler(|_, m, _| match m {
+        "Page.addScriptToEvaluateOnNewDocument" => Some(Reply::Ok(json!({"identifier": "9"}))),
+        "Runtime.callFunctionOn" => Some(Reply::Err(CdpError::ContextDestroyed)),
+        _ => None,
+    }))
+    .await;
+    rig.context(None, "MAIN", 7);
+    rig.settle().await;
+    let e = rig.page.add_measure_script("globalThis.x = 1;").await.unwrap_err();
+    assert!(matches!(e, CdpError::ContextDestroyed), "{e}");
+    let removed = rig.mock.last("Page.removeScriptToEvaluateOnNewDocument");
+    assert_eq!(removed.map(|(_, p)| p["identifier"].clone()), Some(json!("9")));
+}
+
 #[tokio::test]
 async fn the_measuring_world_is_its_own_and_its_answer_comes_back_by_value() {
     let rig = Rig::new(handler(|_, m, p| match m {
