@@ -1027,6 +1027,54 @@ async fn a_selector_acts_on_the_element_its_wait_and_check_read() {
     }
 }
 
+/// SR-89 under `light` and `full`: a drop is checked at its target and a key combination by its last
+/// key, as a click and a press are. A `drag` whose `to` is a pay button, a `drag_xy` dropped on it and
+/// `Shift+Enter` in a card form are each asked about first, reach nothing on the page, and go through
+/// with the owner's yes. Under `parity` none is asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first() {
+    const ASK: &str = "Confirm first: this looks like a payment or checkout.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["light", "full", "parity"] {
+        let asks = guardrails != "parity";
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        let snap = lane.snap("a", &lane.open("a", "/engine/clobber-pay").await).await;
+        let (plain, pay) = (element(&snap, "plain").unwrap().clone(), element(&snap, "pay").unwrap().clone());
+        let steps = [
+            json!({ "action": "drag", "selector": "#plain", "to": "#pay" }),
+            json!({ "action": "drag_xy", "x": plain["x"], "y": plain["y"], "toX": pay["x"], "toY": pay["y"] }),
+            json!({ "action": "press", "key": "Shift+Enter" }),
+        ];
+        for mut args in steps {
+            // A fresh page for each, so what one step did is not read as the next one's.
+            let a = lane.open("a", "/engine/clobber-pay").await;
+            let said = async |lane: &Lane| text(&lane.snap("a", &a).await).to_owned();
+            let enter = args["action"] == "press";
+            if enter {
+                // The focus in the card form's field, where Enter submits the form.
+                let fill = json!({ "action": "fill", "selector": "#number", "text": "4111" });
+                lane.act("a", &a, fill).await.unwrap();
+            }
+            if asks {
+                let refused = lane.act("a", &a, args.clone()).await.unwrap_err();
+                assert!(refused.starts_with(ASK), "{guardrails} {args}: {refused}");
+                assert!(
+                    said(&lane).await.contains("nothing pressed"),
+                    "{guardrails} {args}: reached the page"
+                );
+                args["ownerConfirmed"] = json!(true);
+            }
+            lane.act("a", &a, args.clone()).await.unwrap();
+            let now = said(&lane).await;
+            let landed =
+                if enter { now.contains("sent the card form") } else { !now.contains("nothing pressed") };
+            assert!(landed, "{guardrails} {args}: {now}");
+        }
+        lane.finish().await;
+    }
+}
+
 /// A closed hidden page's window comes back for its client's next open, on the next page, every time and
 /// across sites: the closed page blanks itself, and its blank never cuts the next page's navigation short
 /// (that sends the open to a new window).
@@ -1351,6 +1399,30 @@ async fn drag_and_drag_xy_sort_a_list() {
         "{seen}"
     );
     lane.finish().await;
+}
+
+/// A `drag` by selector presses and releases at points, and a mouse event goes to whatever is on top
+/// there. Each end is checked as a click's point is, before the first mouse event, so a clear submit
+/// button laid over the whole list takes no press, no drop and no click: the drag is refused as covered,
+/// naming its end, the form is not sent and the page gets no mouse event at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drag_onto_a_covered_list_is_refused_before_any_mouse_event() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["parity", "light"] {
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        let a = lane.open("a", "/engine/drag-covered").await;
+        let drag = json!({ "action": "drag", "selector": "#first", "to": "#second" });
+        let refused = lane.act("a", &a, drag).await.unwrap_err();
+        assert!(
+            refused.starts_with("Element is covered at its click point by <button#send>")
+                && refused.contains("the drag's from end (#first)"),
+            "{guardrails}: {refused}"
+        );
+        let seen = text(&lane.snap("a", &a).await).to_owned();
+        assert!(seen.contains("not sent") && seen.contains("mouse: none"), "{guardrails}: {seen}");
+        lane.finish().await;
+    }
 }
 
 /// Phase 4 proof 3: `upload` sets a file input's files, and the page shows each file's name and size, on

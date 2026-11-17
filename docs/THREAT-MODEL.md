@@ -773,13 +773,18 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `forward` go only to a website (http or https) entry and take the site's lease first, as
   `navigate` does; with guardrails on, a move or reload onto an entry Chrome marks `form_submit` is
   asked about first. A drag is checked at its drop target, and a key combination by its last key, as a
-  click and a press are. A page handed to the owner refuses every one of these steps. Four CDP methods
+  click and a press are. A `drag` by selector is refused, as a click is, unless each of its elements is
+  on top at its own point (the covered check a click by selector makes), both checked before the first
+  mouse event; what the page lays over a point once the button is down is not seen, and is residual. A
+  page handed to the owner refuses every one of these steps. Four CDP methods
   were added to SR-20's list: `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
   `Page.navigateToHistoryEntry` and `Page.reload`. *L1: `engine::steps` tests (relative, missing, a
   folder, a non-text path); the extension's answer used once and refused for other tabs
   (`events.test.mjs`); L3: `upload_sets_a_file_input_and_refuses_what_it_cannot_send`,
   `with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first`,
-  `moving_onto_a_page_a_form_sent_is_asked_about_first`, `a_handed_over_page_refuses_every_new_step`.*
+  `moving_onto_a_page_a_form_sent_is_asked_about_first`, `a_handed_over_page_refuses_every_new_step`,
+  `a_drag_onto_a_covered_list_is_refused_before_any_mouse_event`,
+  `with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first`.*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame

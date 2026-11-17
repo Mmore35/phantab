@@ -1807,12 +1807,15 @@ impl Page {
     }
 
     /// The point a press on the element `selector` names goes to ([`Page::press_point`]), in `frame`
-    /// alone when given, with the locator's retries; with `scroll`, once it is scrolled into view.
+    /// alone when given, with the locator's retries; with `scroll`, once it is scrolled into view; with
+    /// `pressed`, only once [`Page::assert_uncovered`] finds the element itself on top there, as a click
+    /// checks its point (a covered element is retried for the click's grace, then refused).
     async fn element_point_in(
         &self,
         frame: Option<&FrameId>,
         selector: &str,
         scroll: bool,
+        pressed: bool,
     ) -> Result<(f64, f64), CdpError> {
         let point = Mutex::new(None);
         self.with_located(frame, selector, |h| {
@@ -1822,7 +1825,11 @@ impl Page {
                     if scroll {
                         self.scroll_into_view_if_needed(&h).await?;
                     }
-                    self.press_point(&h).await
+                    let (x, y) = self.press_point(&h).await?;
+                    if pressed {
+                        self.assert_uncovered(&h, x, y).await?;
+                    }
+                    Ok((x, y))
                 }
                 .await;
                 (h, r.map(|p| *point.lock() = Some(p)))
@@ -1839,7 +1846,7 @@ impl Page {
     /// view first, as a person hovers it: the page's `:hover`, `mouseover` and `mouseenter` follow.
     /// Nothing is pressed, so nothing checks what is on top there.
     pub async fn hover_in(&self, frame: Option<&FrameId>, selector: &str) -> Result<(), CdpError> {
-        let (x, y) = self.element_point_in(frame, selector, true).await?;
+        let (x, y) = self.element_point_in(frame, selector, true, false).await?;
         self.mouse_move(x, y).await
     }
 
@@ -1868,10 +1875,20 @@ impl Page {
     /// [`Page::drag`] from the element `from` names to the one `to` names, both in `frame` alone when
     /// given. `to` is scrolled into view, then `from`, and `to`'s point is read again after that scroll,
     /// so a drop target the start's scroll moved is still hit; both ends must fit in one view.
+    ///
+    /// The press goes to whatever is on top at `from`'s point and the release to whatever is at `to`'s,
+    /// so each point is checked as a click's is ([`Page::assert_uncovered`]): something laid over the
+    /// page would otherwise take the press, the drop and the click that follows. Both are checked before
+    /// the first mouse event, and not again on the way: once the button is down a page may rightly move
+    /// the dragged item under the pointer. What the page lays over a point after the press is not seen.
+    ///
+    /// # Errors
+    /// A covered end is [`CdpError::Covered`], the click's message followed by which end it is.
     pub async fn drag_in(&self, frame: Option<&FrameId>, from: &str, to: &str) -> Result<(), CdpError> {
-        self.element_point_in(frame, to, true).await?;
-        let start = self.element_point_in(frame, from, true).await?;
-        let end = self.element_point_in(frame, to, false).await?;
+        self.element_point_in(frame, to, true, false).await?;
+        let start =
+            self.element_point_in(frame, from, true, true).await.map_err(|e| drag_end(e, "from", from))?;
+        let end = self.element_point_in(frame, to, false, true).await.map_err(|e| drag_end(e, "to", to))?;
         self.drag(start, end).await
     }
 
@@ -1911,6 +1928,17 @@ impl Page {
 
 /// The moves a [`Page::drag`] makes between its press and its release.
 const DRAG_MOVES: u32 = 5;
+
+/// A covered end of a [`Page::drag_in`], named: `which` is `from` or `to`. The click's message stays
+/// first, so it still starts with [`COVERED_PREFIX`] where it did.
+fn drag_end(e: CdpError, which: &str, selector: &str) -> CdpError {
+    match e {
+        CdpError::Covered(m) => CdpError::Covered(format!(
+            "{m} That is the drag's {which} end ({selector}), so nothing was pressed."
+        )),
+        e => e,
+    }
+}
 
 /// Why the element cannot take `n` files, or `null` when it can: a file input, enabled, and `multiple`
 /// for more than one.
