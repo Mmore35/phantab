@@ -267,7 +267,7 @@ async fn run(
         Created::Ok { password, saved } => (password, saved),
         Created::Not(why) => return why,
     };
-    let queued = Box::pin(fill(r, &found, &top, &password));
+    let queued = Box::pin(fill(host, r, &found, &top, &password));
     let filled = host.serializer().run(queued).await;
     if let Some(why) = filled {
         return why;
@@ -280,12 +280,22 @@ async fn run(
 }
 
 /// The fill, in the queue: `None` once every field holds the password.
-async fn fill(r: &Arc<dyn SignInRecord>, found: &Found, top: &str, password: &Secret) -> Option<Outcome> {
+async fn fill(
+    host: &dyn Host,
+    r: &Arc<dyn SignInRecord>,
+    found: &Found,
+    top: &str,
+    password: &Secret,
+) -> Option<Outcome> {
     if !r.is_current() {
         return Some(Outcome::with("failed", "page-ended"));
     }
     if r.paused() {
         return Some(Outcome::of("owner-has-page"));
+    }
+    // A script that ran while the source created the login (THREAT-MODEL SR-90).
+    if host.scripted(r.as_ref(), "sign-up").is_some() {
+        return Some(Outcome::of("refused"));
     }
     let now = top_href(r.as_ref()).await;
     if now.as_ref().and_then(Value::as_str) != Some(top)
@@ -298,6 +308,10 @@ async fn fill(r: &Arc<dyn SignInRecord>, found: &Found, top: &str, password: &Se
         "ancestors": found.report.get("ancestors"),
         "actions": found.report.get("actions"),
     });
+    // SR-90: the document is marked before the password goes in, so no agent script runs on it after.
+    if !host.mark_fill(r.as_ref()).await {
+        return Some(Outcome::with("failed", "page-moved"));
+    }
     // Marked before the first character goes, so a screenshot taken meanwhile is refused.
     let earlier = r.on_page();
     r.set_on_page(Some(Arc::new(OnPage::new(password, vec![found.frame.clone()], earlier.as_deref()))));
@@ -464,6 +478,10 @@ async fn sign_up_from(
     let Some(r) = host.record(page_id, client) else {
         return Err(EngineError("Unknown page or page belongs to another agent session.".into()));
     };
+    // No password goes where an agent's script ran (THREAT-MODEL SR-90): before anything is created.
+    if let Some(refused) = host.scripted(r.as_ref(), "sign-up") {
+        return Err(refused);
+    }
     if r.paused() {
         return Ok(label_sign_up(&Outcome::of("owner-has-page")));
     }

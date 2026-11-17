@@ -226,6 +226,33 @@ async fn evaluate_and_handles(page: &Page, fx: &Fixtures) {
     assert!(!err.is_navigating());
 }
 
+/// SR-90 straight on Chrome: a script still running at its limit is stopped and the page answers after;
+/// one waiting on a promise is left waiting; a recorded request has its size and its body.
+async fn developer_tools(page: &Page, fx: &Fixtures) {
+    page.goto(&format!("{}/", fx.parent), NAV).await.unwrap();
+    let main = page.main_frame().unwrap();
+    let limit = Duration::from_secs(1);
+    let spun = page.evaluate_script(&main, "() => { for (;;) {} }", vec![], limit).await.unwrap();
+    assert!(matches!(spun, phantab_cdp::Evaluated::TimedOut { stopped: true }), "{spun:?}");
+    assert_eq!(eval(page, "() => 1 + 1").await, json!(2), "the page answers after a stop");
+    let waits = page.evaluate_script(&main, "() => new Promise(() => {})", vec![], limit).await.unwrap();
+    assert!(matches!(waits, phantab_cdp::Evaluated::TimedOut { stopped: false }), "{waits:?}");
+    assert!(page.record_network().await.unwrap());
+    assert!(!page.record_network().await.unwrap(), "started once");
+    page.goto(&format!("{}/", fx.parent), NAV).await.unwrap();
+    let mut doc = None;
+    for _ in 0..200 {
+        doc = page.network().unwrap().requests.into_iter().find(|r| r.size.is_some());
+        if doc.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let doc = doc.expect("the document's request finished");
+    let (body, _) = page.response_body(&doc.id).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("hello"), "{doc:?}");
+}
+
 async fn oopif(browser: &Browser, page: &Page, fx: &Fixtures) {
     page.set_viewport(Some((800, 600))).await.unwrap();
     page.goto(&format!("{}/oopif", fx.parent), NAV).await.unwrap();
@@ -1246,6 +1273,7 @@ async fn real_chrome() {
         assert!(!pages.is_empty(), "the launch tab is listed");
         let page = browser.new_page().await.unwrap();
         evaluate_and_handles(&page, &fx).await;
+        developer_tools(&page, &fx).await;
         oopif(&browser, &page, &fx).await;
         screenshot(&page, &fx).await;
         forms_and_keyboard(&page, &fx).await;

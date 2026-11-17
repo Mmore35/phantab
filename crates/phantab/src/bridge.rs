@@ -660,6 +660,9 @@ pub struct Bridge {
     conns: AtomicU64,
     /// The labels a hello may carry besides none (`otherProfiles`). Any other is refused.
     allowed: Vec<String>,
+    /// `devTools` (SR-90): whether the developer-tools commands are relayed, their events kept, and the
+    /// welcome declares them to the extension.
+    dev_tools: bool,
 }
 
 impl std::fmt::Debug for Bridge {
@@ -719,7 +722,15 @@ impl Bridge {
             seq: AtomicU64::new(0),
             conns: AtomicU64::new(0),
             allowed,
+            dev_tools: false,
         }
+    }
+
+    /// The same bridge with the developer tools (SR-90) on or off; off unless `devTools` is set.
+    #[must_use]
+    pub fn with_dev_tools(mut self, on: bool) -> Self {
+        self.dev_tools = on;
+        self
     }
 
     /// Every event from now on. Subscribe before anything can connect to miss none.
@@ -951,7 +962,13 @@ impl Bridge {
             .insert(Arc::clone(&profile), Link { conn: Arc::clone(conn), instance: instance.to_owned() });
         // `events`: the CDP events to forward (perf-data-3). An extension that predates the list ignores it
         // and forwards every event, which `receive` then drops; one that reads it forwards only these.
-        if let Ok(data) = frame(&json!({ "welcome": true, "events": phantab_cdp::EVENTS })) {
+        // `devTools` (SR-90): declared only while the setting is on; without it the extension refuses the
+        // developer-tools commands and forwards none of their events.
+        let mut welcome = json!({ "welcome": true, "events": phantab_cdp::EVENTS });
+        if self.dev_tools {
+            welcome["devTools"] = Value::Bool(true);
+        }
+        if let Ok(data) = frame(&welcome) {
             conn.send(data);
         }
         self.connected.send_modify(|c| {
@@ -991,7 +1008,11 @@ impl Bridge {
             // but its params are not copied, broadcast or parsed by a page.
             (Some("cdp"), Some(tab_id)) => {
                 let method = m.method.unwrap_or_default();
-                if phantab_cdp::reads_event(&method) {
+                // SR-90: a developer-tools event only while the setting is on; never an `...ExtraInfo` one,
+                // which neither list holds.
+                if phantab_cdp::reads_event(&method)
+                    || (self.dev_tools && phantab_cdp::reads_devtools_event(&method))
+                {
                     self.emit(BridgeEvent::Cdp(Arc::new(CdpEvent {
                         profile: Arc::clone(profile),
                         tab_id,
@@ -1105,7 +1126,7 @@ impl Bridge {
             return Err(BridgeError::TooLarge);
         }
         if name == "send" {
-            check_send(&data[4..])?;
+            check_send(&data[4..], self.dev_tools)?;
         }
         let (tx, rx) = oneshot::channel();
         {
@@ -1139,9 +1160,10 @@ fn cut_label(label: &str) -> String {
     label.chars().take(100).collect()
 }
 
-/// SR-20: a `send` relays only a listed CDP method. Read back from the encoded frame, so the check sees
-/// exactly what the extension would receive, whatever type the caller serialized.
-fn check_send(body: &[u8]) -> Result<(), BridgeError> {
+/// SR-20: a `send` relays only a listed CDP method, and a developer-tools one only while `devTools` is on
+/// (SR-90). Read back from the encoded frame, so the check sees exactly what the extension would
+/// receive, whatever type the caller serialized.
+fn check_send(body: &[u8], dev_tools: bool) -> Result<(), BridgeError> {
     #[derive(Deserialize)]
     struct Probe {
         #[serde(default)]
@@ -1168,6 +1190,10 @@ fn check_send(body: &[u8]) -> Result<(), BridgeError> {
             Err(BridgeError::MethodNotAllowed(format!("{m} with grantUniveralAccess")))
         }
         Some(m) if crate::cdp_methods::allowed(m) => Ok(()),
+        Some(m) if crate::cdp_methods::devtools(m) && dev_tools => Ok(()),
+        Some(m) if crate::cdp_methods::devtools(m) => Err(BridgeError::MethodNotAllowed(format!(
+            "{m}: it is a developer tool, off unless \"devTools\": true is set in config.json"
+        ))),
         Some(m) => Err(BridgeError::MethodNotAllowed(m.to_owned())),
         None => Err(BridgeError::MethodNotAllowed(js_string(method.as_ref()))),
     }

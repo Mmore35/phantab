@@ -22,5 +22,5 @@ mod temp;
 
 pub use chrome::{CHROME_ENV, skip_unless_chrome, test_native_host_name};
 pub use pages::{fixture_paths, fixture_source, fixtures_dir, foreign_extension_dir};
-pub use server::{FixtureServer, Gate, Listener, RecordedRequest};
+pub use server::{DEVTOOLS_COOKIE, DEVTOOLS_TOKEN, FixtureServer, Gate, Listener, RecordedRequest};
 pub use temp::TempDir;

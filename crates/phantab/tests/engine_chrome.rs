@@ -48,14 +48,32 @@ impl Lane {
 
     /// `full`, with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md).
     async fn start_exclusive(chrome: &PathBuf) -> Self {
-        Self::start_config(chrome, "full", Some("exclusive")).await
+        Self::start_config(chrome, "full", &json!({ "siteLock": "exclusive" })).await
     }
 
     async fn start_with(chrome: &PathBuf, guardrails: &str) -> Self {
-        Self::start_config(chrome, guardrails, None).await
+        Self::start_config(chrome, guardrails, &json!({})).await
     }
 
-    async fn start_config(chrome: &PathBuf, guardrails: &str, site_lock: Option<&str>) -> Self {
+    /// With the developer tools on (`"devTools": true`, THREAT-MODEL SR-90).
+    async fn start_dev_tools(chrome: &PathBuf, guardrails: &str) -> Self {
+        Self::start_config(chrome, guardrails, &json!({ "devTools": true })).await
+    }
+
+    /// `more`: the config's other settings, such as `siteLock` or `devTools`.
+    async fn start_config(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
+        Self::start_all(chrome, guardrails, more, false).await
+    }
+
+    /// With sign-in: the service's one provider is the fixture provider (never a real vault) over
+    /// `vault.json` in the runtime, the fixture login saved for the fixture site, and it may fill on the
+    /// loopback fixture server. A sign-up saves its new login in the same file;
+    /// [`Lane::provider_asked`] counts what was asked.
+    async fn start_signing(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
+        Self::start_all(chrome, guardrails, more, true).await
+    }
+
+    async fn start_all(chrome: &PathBuf, guardrails: &str, more: &Value, signing: bool) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
@@ -63,13 +81,29 @@ impl Lane {
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
             "guardrails": guardrails,
         });
-        if let Some(lock) = site_lock {
-            config["siteLock"] = json!(lock);
+        for (k, v) in more.as_object().into_iter().flatten() {
+            config[k] = v.clone();
+        }
+        if signing {
+            use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
+            use sha2::{Digest as _, Sha256};
+            let provider = env!("CARGO_BIN_EXE_phantab-fixture-provider");
+            let vault = rt.path().join("vault.json");
+            let saved = json!({ "log": rt.path().join("provider-log.jsonl"),
+                                "logins": [{ "id": "fixture-1", "origin": fixtures.origin(), "username": USERNAME,
+                                             "password": PASSWORD, "totp": CODE }] });
+            std::fs::write(&vault, saved.to_string()).unwrap();
+            let pin = phantab::util::hex(&Sha256::digest(std::fs::read(provider).unwrap()));
+            config["signInProviders"] = json!([{ "name": "default", "command": [provider, vault],
+                                                 "caps": ["lookup", "totp", "create"], "pin": { provider: pin } }]);
         }
         rt.write_config(&config);
         let svc = tokio::task::block_in_place(|| {
-            let child = rt
-                .command(&["serve"])
+            let mut serve = rt.command(&["serve"]);
+            if signing {
+                serve.env("PHANTAB_TEST_ALLOW_LOOPBACK", "1");
+            }
+            let child = serve
                 .env("PHANTAB_TEST_WINDOWS", "none")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -119,6 +153,12 @@ impl Lane {
             Ok(v) => panic!("{method} {args} for {client} succeeded: {v}"),
             Err(e) => e,
         }
+    }
+
+    /// How many requests the fixture provider was sent ([`Lane::start_signing`]).
+    fn provider_asked(&self) -> usize {
+        std::fs::read_to_string(self.rt.path().join("provider-log.jsonl"))
+            .map_or(0, |log| log.lines().filter(|l| !l.trim().is_empty()).count())
     }
 
     async fn status(&self) -> Value {
@@ -1753,4 +1793,502 @@ async fn with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first() {
         assert!(text(&lane.snap("a", &d).await).contains("true"), "{guardrails}");
         lane.finish().await;
     }
+}
+
+/// THREAT-MODEL SR-90's lane 3 proof, and phase 5 proof 1: `engine/devtools` logs an error and a
+/// warning, throws, fails two requests and is sent an httpOnly cookie that a later request carries back
+/// with an `Authorization` header. The console gives the error, the warning and the exception; the
+/// network lists the failed requests first; a request's detail has neither header; evaluate reads a page
+/// object. Neither the cookie's value nor the header's is in any answer or saved file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn developer_tools_read_the_console_and_network_and_run_scripts() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/devtools").await;
+    let mut said: Vec<String> = Vec::new();
+    // The first call on a page starts its recording, and says so; the next one does not.
+    let first = lane.ok("console", json!({ "pageId": a }), "a").await;
+    assert!(first["recording"].as_str().unwrap().starts_with("Recording started now"), "{first}");
+    let first = lane.ok("network", json!({ "pageId": a }), "a").await;
+    assert!(first["recording"].as_str().unwrap().starts_with("Recording started now"), "{first}");
+    assert_eq!(first["requests"], json!([]), "nothing from before the recording: {first}");
+    let again = lane.ok("console", json!({ "pageId": a }), "a").await;
+    assert!(again.get("recording").is_none(), "{again}");
+
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let console = async || lane.ok("console", json!({ "pageId": a }), "a").await;
+    let has = |c: &Value, level: &str, text: &str| {
+        c["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["level"] == json!(level) && m["text"].as_str().unwrap().contains(text))
+    };
+    assert!(
+        lane.until(Duration::from_secs(10), async || has(
+            &console().await,
+            "exception",
+            "an uncaught exception"
+        ))
+        .await
+    );
+    let c = console().await;
+    said.push(c.to_string());
+    assert!(has(&c, "error", "devtools fixture: an error was logged"), "{c}");
+    assert!(has(&c, "warning", "devtools fixture: a warning was logged"), "{c}");
+    assert!(!c.to_string().contains("a plain log"), "a plain log is not kept: {c}");
+
+    let n = lane.ok("network", json!({ "pageId": a }), "a").await;
+    said.push(n.to_string());
+    let requests = n["requests"].as_array().unwrap();
+    let failed = |q: &Value| q.get("failed").is_some() || q["status"].as_u64().is_some_and(|s| s >= 400);
+    let first_ok = requests.iter().position(|q| !failed(q)).unwrap();
+    assert!(requests[first_ok..].iter().all(|q| !failed(q)), "failed ones first: {n}");
+    let url = |q: &Value| q["url"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        requests[..first_ok]
+            .iter()
+            .any(|q| url(q).ends_with("/status?code=500") && q["status"] == json!(500)),
+        "{n}"
+    );
+    assert!(
+        requests[..first_ok]
+            .iter()
+            .any(|q| url(q).starts_with("http://127.0.0.1:1/") && q["failed"].is_string()),
+        "{n}"
+    );
+    let id_of = |end: &str| {
+        requests.iter().find(|q| url(q).ends_with(end)).unwrap()["id"].as_str().unwrap().to_owned()
+    };
+
+    // The cookie went out and came back, and the header with it: the site saw both.
+    let seen = lane.fixtures.requests();
+    let check = seen.iter().find(|r| r.path == "/cookie/check").unwrap();
+    let header =
+        |n: &str| check.headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert!(header("cookie").contains(phantab_testkit::DEVTOOLS_COOKIE), "the cookie was sent");
+    assert!(header("authorization").contains(phantab_testkit::DEVTOOLS_TOKEN), "the header was sent");
+    for (end, body) in [("/cookie/set", "set"), ("/cookie/check", "cookie sent, authorization sent")] {
+        let d = lane.ok("network", json!({ "pageId": a, "id": id_of(end) }), "a").await;
+        said.push(d.to_string());
+        assert_eq!(d["body"], json!(body), "{d}");
+        for headers in [&d["requestHeaders"], &d["responseHeaders"]] {
+            let names: Vec<String> =
+                headers.as_object().unwrap().keys().map(|k| k.to_ascii_lowercase()).collect();
+            assert!(
+                !names.iter().any(|k| ["cookie", "set-cookie", "authorization", "proxy-authorization"]
+                    .contains(&k.as_str())),
+                "{d}"
+            );
+        }
+    }
+    let doc = lane.ok("network", json!({ "pageId": a, "id": id_of("/engine/devtools") }), "a").await;
+    said.push(doc.to_string());
+    assert!(doc["body"].as_str().unwrap().contains("Developer tools"), "the page's own source: {doc}");
+    let only = lane.ok("network", json!({ "pageId": a, "filter": "/cookie/" }), "a").await;
+    assert_eq!(only["requests"].as_array().unwrap().len(), 2, "{only}");
+    let unknown = lane.err("network", json!({ "pageId": a, "id": "no-such-request" }), "a").await;
+    assert!(unknown.starts_with("No request no-such-request in this page's recording"), "{unknown}");
+
+    // evaluate reads the page's own objects, and no httpOnly cookie.
+    let v = lane.ok("evaluate", json!({ "pageId": a, "function": "() => window.appState" }), "a").await;
+    assert_eq!(v["type"], json!("object"));
+    assert_eq!(
+        v["result"],
+        json!({ "user": "fixture", "items": [1, 2, 3], "nested": { "ok": true } }),
+        "{v}"
+    );
+    let v = lane.ok("evaluate", json!({ "pageId": a, "function": "() => document.cookie" }), "a").await;
+    said.push(v.to_string());
+
+    // Saved files: the whole console, the list and a detail.
+    let dir = lane.rt.path().join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut files = Vec::new();
+    for (method, mut args) in [
+        ("console", json!({})),
+        ("network", json!({})),
+        ("network", json!({ "id": id_of("/cookie/check") })),
+        ("evaluate", json!({ "function": "() => [document.cookie, document.title]" })),
+    ] {
+        let file = dir.join(format!("{method}-{}.json", files.len()));
+        args["pageId"] = json!(a);
+        args["path"] = json!(file);
+        let saved = lane.ok(method, args, "a").await;
+        said.push(saved.to_string());
+        assert_eq!(saved["path"], json!(file), "{saved}");
+        files.push(std::fs::read_to_string(&file).unwrap());
+    }
+    assert!(files[2].contains("cookie sent, authorization sent"), "{}", files[2]);
+    assert!(files[3].contains("Developer tools"), "{}", files[3]);
+    for text in said.iter().chain(&files) {
+        for secret in [phantab_testkit::DEVTOOLS_COOKIE, phantab_testkit::DEVTOOLS_TOKEN] {
+            assert!(!text.contains(secret), "a secret left the service: {text}");
+        }
+    }
+    lane.finish().await;
+}
+
+/// Phase 5 proof 2: evaluate in a frame named by its origin, with arguments and a promise; a result over
+/// the limit is cut and says so, and `path` saves it whole; a throw is its message; a script that never
+/// returns, or never settles, ends at its time limit and leaves the page answering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evaluate_reads_a_frame_cuts_saves_throws_and_times_out() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let run = async |more: Value| {
+        let mut args = json!({ "pageId": a });
+        for (k, v) in more.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        lane.call("evaluate", args, "a").await
+    };
+    let twin = lane.fixtures.twin_origin().to_owned();
+    let read = "() => window.frameValue";
+    let framed = run(json!({ "function": read, "frame": twin })).await.unwrap();
+    assert_eq!(framed["result"], json!(format!("read in the twin frame at {twin}")), "{framed}");
+    let framed =
+        run(json!({ "function": read, "frame": format!("{twin}/engine/devtools-frame") })).await.unwrap();
+    assert_eq!(framed["type"], json!("string"), "a frame's URL names it by its origin: {framed}");
+    let main = run(json!({ "function": read })).await.unwrap();
+    assert_eq!(main["type"], json!("undefined"), "the main document has none: {main}");
+    let no = run(json!({ "function": read, "frame": "http://elsewhere.example" })).await.unwrap_err();
+    assert!(
+        no.contains("http://elsewhere.example") && no.contains(&twin),
+        "it names the frames there are: {no}"
+    );
+
+    let sum = run(json!({ "function": "(a, b) => a + b", "args": [2, 3] })).await.unwrap();
+    assert_eq!((sum["result"].clone(), sum["type"].clone()), (json!(5), json!("number")));
+    let later = "async () => { await new Promise((r) => setTimeout(r, 100)); return 'settled'; }";
+    assert_eq!(run(json!({ "function": later })).await.unwrap()["result"], json!("settled"));
+
+    let long = "() => 'x'.repeat(30000)";
+    let cut = run(json!({ "function": long })).await.unwrap();
+    assert_eq!(cut["result"].as_str().unwrap().chars().count(), 20_000, "{}", cut["cut"]);
+    assert!(
+        cut["cut"].as_str().unwrap().starts_with("The result is 30002 characters of JSON"),
+        "{}",
+        cut["cut"]
+    );
+    let file = lane.rt.path().join("long.json");
+    let saved = run(json!({ "function": long, "path": file })).await.unwrap();
+    assert_eq!(saved["type"], json!("string"));
+    let whole: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(whole["result"].as_str().unwrap().len(), 30_000);
+    let again = run(json!({ "function": long, "path": file })).await.unwrap_err();
+    assert!(again.contains("overwrite"), "an existing file is replaced only with overwrite: {again}");
+
+    let threw =
+        run(json!({ "function": "() => { throw new Error('the fixture threw this'); }" })).await.unwrap_err();
+    assert!(threw.starts_with("The script threw: ") && threw.contains("the fixture threw this"), "{threw}");
+    let t = Instant::now();
+    let spun = run(json!({ "function": "() => { for (;;) {} }", "seconds": 1 })).await.unwrap_err();
+    assert_eq!(spun, "The script did not answer within 1 s. It was still running, so it was stopped.");
+    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    assert_eq!(lane.snap("a", &a).await["title"], json!("Developer tools"), "the page answers again");
+    let waits = run(json!({ "function": "() => new Promise(() => {})", "seconds": 1 })).await.unwrap_err();
+    assert!(waits.contains("did not answer within 1 s. It was waiting"), "{waits}");
+    assert_eq!(run(json!({ "function": "() => 1" })).await.unwrap()["result"], json!(1));
+    lane.finish().await;
+}
+
+/// Phase 5 proof 3: without `"devTools": true`, as JSON `true`, every developer tool is refused naming
+/// the setting, and no developer-tools event crosses the bridge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn developer_tools_are_off_unless_set() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_config(&chrome, "parity", &json!({ "devTools": "true" })).await;
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    for (method, args) in [
+        ("evaluate", json!({ "pageId": a, "function": "() => 1" })),
+        ("console", json!({ "pageId": a })),
+        ("network", json!({ "pageId": a })),
+    ] {
+        let off = lane.err(method, args, "a").await;
+        assert!(off.contains("off unless \"devTools\": true is set"), "{method}: {off}");
+    }
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let traffic = lane.ext.traffic_total();
+    assert_eq!(traffic.devtools, 0, "{traffic:?}");
+    assert!(
+        !lane.ext.timeline().iter().any(|(_, op)| op.contains("Log.enable") || op.contains("Network.enable"))
+    );
+    lane.finish().await;
+}
+
+/// Phase 5 proof 6: evaluate is a write. A page handed to the owner refuses it, the owner's yes or not,
+/// as it refuses a click; under `light` and `full` every script is asked about first and runs with the
+/// owner's yes. Reading the console and the network is not asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evaluate_is_a_write_and_is_asked_about_under_guardrails() {
+    const ASK: &str = "Confirm first: a script can do whatever the page's own scripts can.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["light", "full"] {
+        let lane = Lane::start_dev_tools(&chrome, guardrails).await;
+        let a = lane.open("a", "/engine/basic").await;
+        let script = |confirmed: bool| json!({ "pageId": a, "function": "() => document.title", "ownerConfirmed": confirmed });
+        let asked = lane.err("evaluate", script(false), "a").await;
+        assert!(asked.starts_with(ASK), "{guardrails}: {asked}");
+        assert_eq!(lane.ok("evaluate", script(true), "a").await["result"], json!("Browser fixture"));
+        lane.ok("console", json!({ "pageId": a }), "a").await;
+        lane.ok("network", json!({ "pageId": a }), "a").await;
+
+        lane.ok("show", json!({ "pageId": a }), "a").await;
+        for confirmed in [false, true] {
+            let handed = lane.err("evaluate", script(confirmed), "a").await;
+            assert!(handed.contains("handed to the owner"), "{guardrails}: {handed}");
+            let click = lane
+                .act("a", &a, json!({ "action": "click", "selector": "#go", "ownerConfirmed": confirmed }))
+                .await;
+            assert!(click.unwrap_err().contains("handed to the owner"), "{guardrails}");
+        }
+        lane.finish().await;
+    }
+}
+
+/// One reload of `engine/devtools` on a fresh page: the CDP events Chrome sent the extension, and those
+/// it forwarded (`CdpExtension::traffic_total`), after `before` ran on the page.
+async fn reload_traffic(lane: &Lane, before: impl AsyncFnOnce(&str)) -> cdp_extension::Traffic {
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    before(&a).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let start = lane.ext.traffic_total();
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let end = lane.ext.traffic_total();
+    lane.ok("close", json!({ "pageId": a }), "a").await;
+    cdp_extension::Traffic {
+        sent: end.sent - start.sent,
+        forwarded: end.forwarded - start.forwarded,
+        devtools: end.devtools - start.devtools,
+    }
+}
+
+/// Phase 5 proof 5: a page nobody asks about forwards no developer-tools event and about as many events
+/// as before the developer tools, with them off or on; a recording page forwards its console and network
+/// events besides. The counts are printed for the PR. The exact rule, event by event, is proven in
+/// `extension/test/events.test.mjs`; Chrome's counts move by a few between loads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recording_traffic_is_counted() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let off = reload_traffic(&lane, async |_| {}).await;
+    lane.finish().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let unasked = reload_traffic(&lane, async |_| {}).await;
+    let recording = reload_traffic(&lane, async |a| {
+        lane.ok("console", json!({ "pageId": a }), "a").await;
+        lane.ok("network", json!({ "pageId": a }), "a").await;
+    })
+    .await;
+    lane.finish().await;
+    eprintln!(
+        "lane3 traffic, one reload of engine/devtools (events forwarded / sent by Chrome): devTools off {}/{}, \
+         on but never asked {}/{}, recording {}/{} of them {} developer-tools events",
+        off.forwarded,
+        off.sent,
+        unasked.forwarded,
+        unasked.sent,
+        recording.forwarded,
+        recording.sent,
+        recording.devtools
+    );
+    // No developer-tools event crosses for a page nobody asked about: what crosses is what crossed before.
+    assert_eq!((off.devtools, unasked.devtools), (0, 0));
+    assert!(recording.devtools > 0, "{recording:?}");
+    // Chrome's own count of a load's events (lifecycle, frames, its iframe's) moves by a few from run to
+    // run with timing, so the other counts are compared within that: 4 events, or a tenth.
+    let near = |a: usize, b: usize| a.abs_diff(b) <= 4.max(a.max(b) / 10);
+    assert!(near(unasked.forwarded, off.forwarded), "a page never asked forwards what it did before");
+    assert!(near(recording.forwarded - recording.devtools, unasked.forwarded), "{recording:?} {unasked:?}");
+}
+
+/// What a password phantab filled could be written as: the fixture password's leak forms and the
+/// password reversed (the reviewer's script hands it back reversed, past the echo redaction).
+fn password_forms() -> Vec<String> {
+    use phantab_testkit::sign_in::{CODE, PASSWORD, fixture_leak_forms};
+    let mut forms: Vec<String> = fixture_leak_forms().into_iter().filter(|f| f != CODE).collect();
+    forms.push(PASSWORD.chars().rev().collect());
+    forms
+}
+
+/// `text` holds no form of the fixture password; a failure names where, never the text.
+fn no_password(text: &str, what: &str) {
+    let found = password_forms().iter().position(|f| text.contains(f.as_str()));
+    assert_eq!(found, None, "{what}: a form of the password reached the agent");
+}
+
+/// The page's inputs' values, by a script (which marks the page; that only refuses fills).
+async fn inputs(lane: &Lane, page: &str) -> Value {
+    let read = "() => [...document.querySelectorAll('input')].map((i) => i.value)";
+    lane.ok("evaluate", json!({ "pageId": page, "function": read }), "a").await["result"].clone()
+}
+
+const SCRIPTED_SIGN_IN: &str = "sign-in refused: a script ran on this page (browser_evaluate)";
+const SCRIPTED_SIGN_UP: &str = "sign-up refused: a script ran on this page (browser_evaluate)";
+const FILLED: &str = "evaluate refused: phantab filled a password into this page";
+const SIGN_UP_ON_PAGE: &str = "evaluate refused: this page holds the new password a sign-up filled";
+
+/// THREAT-MODEL SR-90, a script first, with the review's own case: a script leaves an `input` listener
+/// and a timer that copy any password field's value, reversed, into the title and the console. The
+/// sign-in that follows is refused before the provider is asked, nothing is filled, and no later script
+/// or console read holds the password in any form. The tab stays refused for sign-in and sign-up after
+/// a navigation or reload; a fresh page signs in and signs up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tab_a_script_ran_on_is_never_signed_in_or_up() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_signing(&chrome, "parity", &json!({ "devTools": true })).await;
+    let mut said: Vec<String> = Vec::new();
+    let a = lane.open("a", "/sign-in/one").await;
+    lane.ok("console", json!({ "pageId": a }), "a").await;
+    let hook = "() => {
+        const reversed = (s) => [...s].reverse().join('');
+        const copy = () => {
+            for (const f of document.querySelectorAll('input[type=password]')) {
+                if (f.value) { document.title = reversed(f.value); console.error('copied ' + reversed(f.value)); }
+            }
+        };
+        document.addEventListener('input', copy, true);
+        setInterval(copy, 50);
+        return 'installed';
+    }";
+    let installed = lane.ok("evaluate", json!({ "pageId": a, "function": hook }), "a").await;
+    assert_eq!(installed["result"], json!("installed"), "{installed}");
+    let refused = lane.err("sign_in", json!({ "pageId": a }), "a").await;
+    let fresh = refused.ends_with("Open a fresh page for the sign-in.");
+    assert!(refused.starts_with(SCRIPTED_SIGN_IN) && fresh, "{refused}");
+    said.push(refused);
+    assert_eq!(lane.provider_asked(), 0, "the provider was never asked");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(inputs(&lane, &a).await, json!(["", ""]), "nothing was filled");
+    let title = lane.ok("evaluate", json!({ "pageId": a, "function": "() => document.title" }), "a").await;
+    assert_eq!(title["result"], json!("Sign in"), "{title}");
+    said.push(title.to_string());
+    said.push(lane.ok("console", json!({ "pageId": a }), "a").await.to_string());
+
+    // The same tab after a navigation: still refused, for both.
+    let to = |path: &str| json!({ "action": "navigate", "url": lane.fixtures.url(path) });
+    lane.act("a", &a, to("/sign-in/one")).await.unwrap();
+    let again = lane.err("sign_in", json!({ "pageId": a }), "a").await;
+    assert!(again.starts_with(SCRIPTED_SIGN_IN), "{again}");
+    lane.act("a", &a, to("/signup/basic")).await.unwrap();
+    let up = json!({ "pageId": a, "username": "new-user@example.test" });
+    let up_refused = lane.err("sign_up", up, "a").await;
+    assert!(
+        up_refused.starts_with(SCRIPTED_SIGN_UP) && up_refused.ends_with("for the sign-up."),
+        "{up_refused}"
+    );
+
+    // A sign-up page a script ran on, then after a reload of it.
+    let b = lane.open("a", "/signup/basic").await;
+    lane.ok("evaluate", json!({ "pageId": b, "function": "() => 1" }), "a").await;
+    let up = json!({ "pageId": b, "username": "new-user@example.test" });
+    assert!(lane.err("sign_up", up.clone(), "a").await.starts_with(SCRIPTED_SIGN_UP));
+    lane.act("a", &b, json!({ "action": "reload" })).await.unwrap();
+    assert!(lane.err("sign_up", up, "a").await.starts_with(SCRIPTED_SIGN_UP));
+    assert_eq!(inputs(&lane, &b).await, json!(["", ""]), "nothing was filled");
+    assert_eq!(lane.provider_asked(), 0, "the provider was never asked");
+
+    // Fresh pages: both work.
+    let c = lane.open("a", "/sign-in/one").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": c }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    let d = lane.open("a", "/signup/basic").await;
+    let up = lane.ok("sign_up", json!({ "pageId": d, "username": "new-user@example.test" }), "a").await;
+    assert_eq!(up["status"], json!("filled"), "{up}");
+    assert!(lane.provider_asked() > 0, "the fresh pages asked the provider");
+    said.push(signed.to_string());
+    said.push(up.to_string());
+    for text in &said {
+        no_password(text, "an answer");
+    }
+    lane.finish().await;
+}
+
+/// THREAT-MODEL SR-90, a fill first: a sign-in fills a page that keeps its document (the fixture's
+/// form sends by `fetch`, and its own code keeps what was typed). No script runs there until the page
+/// reloads; then one runs and cannot read the password. A sign-up's page refuses scripts while its new
+/// password is in the field (SR-80), and after the field is emptied, until its document is replaced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_document_a_password_was_filled_into_runs_no_script() {
+    use phantab_testkit::sign_in::PASSWORD;
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_signing(&chrome, "parity", &json!({ "devTools": true })).await;
+    let a = lane.open("a", "/sign-in/react").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert!(signed["status"].is_string(), "{signed}");
+    let sent = async || lane.fixtures.posts().iter().any(|p| p.form("pass").as_deref() == Some(PASSWORD));
+    assert!(lane.until(Duration::from_secs(5), sent).await, "the password was filled, and the site sent it");
+    let read =
+        json!({ "pageId": a, "function": "() => [document.querySelector('#p').value, window.reactState]" });
+    let refused = lane.err("evaluate", read.clone(), "a").await;
+    let lifts = refused.ends_with("A reload of the page, or a fresh page, lifts this.");
+    assert!(refused.starts_with(FILLED) && lifts, "{refused}");
+    assert!(lane.err("evaluate", read.clone(), "a").await.starts_with(FILLED), "refused again");
+    no_password(&lane.ok("console", json!({ "pageId": a }), "a").await.to_string(), "the console");
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    let after = lane.ok("evaluate", read, "a").await;
+    assert_eq!(after["result"], json!(["", ""]), "{after}");
+    no_password(&after.to_string(), "a script after the reload");
+
+    // Sign-up: refused while the new password is in its field, then by the fill's own mark.
+    let b = lane.open("a", "/signup/basic").await;
+    let up = lane.ok("sign_up", json!({ "pageId": b, "username": "new-user@example.test" }), "a").await;
+    assert_eq!(up["status"], json!("filled"), "{up}");
+    let script = json!({ "pageId": b, "function": "() => document.querySelector('[name=pw]').value" });
+    let on_page = lane.err("evaluate", script.clone(), "a").await;
+    assert!(on_page.starts_with(SIGN_UP_ON_PAGE), "{on_page}");
+    lane.act("a", &b, json!({ "action": "fill", "selector": "[name=pw]", "text": "" })).await.unwrap();
+    let filled = lane.err("evaluate", script.clone(), "a").await;
+    assert!(filled.starts_with(FILLED), "{filled}");
+    lane.act("a", &b, json!({ "action": "reload" })).await.unwrap();
+    let after = lane.ok("evaluate", script, "a").await;
+    assert_eq!(after["result"], json!(""), "{after}");
+    lane.finish().await;
+}
+
+/// THREAT-MODEL SR-90: a script that never started marks nothing. Refused with the setting off,
+/// refused for the owner's yes under `light`, refused on a page handed to the owner: the sign-in after
+/// each goes on and fills.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_script_leaves_its_page_open_to_sign_in() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let script = |page: &str| json!({ "pageId": page, "function": "() => document.title" });
+    let lane = Lane::start_signing(&chrome, "parity", &json!({})).await;
+    let a = lane.open("a", "/sign-in/one").await;
+    let off = lane.err("evaluate", script(&a), "a").await;
+    assert!(off.contains("off unless \"devTools\": true is set"), "{off}");
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    lane.finish().await;
+
+    let lane = Lane::start_signing(&chrome, "light", &json!({ "devTools": true })).await;
+    let a = lane.open("a", "/sign-in/one").await;
+    let ask = lane.err("evaluate", script(&a), "a").await;
+    assert!(ask.starts_with("Confirm first"), "{ask}");
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let mut held = script(&a);
+    held["ownerConfirmed"] = json!(true);
+    let handed = lane.err("evaluate", held, "a").await;
+    assert!(handed.contains("handed to the owner"), "{handed}");
+    lane.ok("resume", json!({ "pageId": a, "ownerConfirmed": true }), "a").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    lane.finish().await;
 }

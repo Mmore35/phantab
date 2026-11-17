@@ -7,10 +7,10 @@ const IDLE = { text: '', title: 'phantab bridge: no agent working' };
 test('CDP events are forwarded with their tab and session', async () => {
   const fake = await startWorker();
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.loadEventFired', { timestamp: 1 });
-  fake.chrome.debugger.onEvent.fire({ tabId: 5, sessionId: 'S1' }, 'Runtime.consoleAPICalled', { type: 'log' });
+  fake.chrome.debugger.onEvent.fire({ tabId: 5, sessionId: 'S1' }, 'Page.domContentEventFired', { type: 'log' });
   assert.deepEqual(fake.posted(), [
     { event: 'cdp', tabId: 5, method: 'Page.loadEventFired', params: { timestamp: 1 } },
-    { event: 'cdp', tabId: 5, sessionId: 'S1', method: 'Runtime.consoleAPICalled', params: { type: 'log' } },
+    { event: 'cdp', tabId: 5, sessionId: 'S1', method: 'Page.domContentEventFired', params: { type: 'log' } },
   ]);
 });
 
@@ -274,8 +274,8 @@ test('after a welcome with events, only those are forwarded', async () => {
   const fake = await startWorker();
   fake.port.receive({ welcome: true, events: READ });
   await settle();
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', { type: 'log' });
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.exceptionThrown', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', { type: 'log' });
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.windowOpen', {});
   fake.chrome.debugger.onEvent.fire({ tabId: 5, sessionId: 'S1' }, 'Runtime.executionContextCreated', { context: { id: 1 } });
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.loadEventFired', {});
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.frameNavigated', { frame: { id: 'F' } });
@@ -291,8 +291,8 @@ test('a welcome without a usable events list forwards every event', async () => 
     const fake = await startWorker();
     fake.port.receive(welcome);
     await settle();
-    fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', { type: 'log' });
-    assert.deepEqual(fake.posted().map(m => m.method), ['Runtime.consoleAPICalled'], JSON.stringify(welcome));
+    fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', { type: 'log' });
+    assert.deepEqual(fake.posted().map(m => m.method), ['Page.domContentEventFired'], JSON.stringify(welcome));
   }
 });
 
@@ -341,15 +341,15 @@ test('a reconnect forwards every event until the new welcome, and an old port\'s
   await settle();
   t.mock.timers.tick(1000);
   assert.equal(fake.ports.length, 2);
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', {});
   old.receive({ welcome: true, events: READ });
   await settle();
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.exceptionThrown', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.windowOpen', {});
   fake.port.receive({ welcome: true, events: READ });
   await settle();
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', {});
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.frameNavigated', {});
-  assert.deepEqual(fake.posted().map(m => m.method), ['Runtime.consoleAPICalled', 'Runtime.exceptionThrown', 'Page.frameNavigated']);
+  assert.deepEqual(fake.posted().map(m => m.method), ['Page.domContentEventFired', 'Page.windowOpen', 'Page.frameNavigated']);
 });
 
 test('a fast retry after a stable link forwards every event until its own welcome', async t => {
@@ -363,21 +363,118 @@ test('a fast retry after a stable link forwards every event until its own welcom
   await settle();
   t.mock.timers.tick(100);
   assert.equal(fake.ports.length, 2, 'the stable link is retried after 100 ms');
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', {});
   fake.port.receive({ welcome: true, events: READ });
   await settle();
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.exceptionThrown', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.windowOpen', {});
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.frameNavigated', {});
-  assert.deepEqual(fake.posted().map(m => m.method), ['Runtime.consoleAPICalled', 'Page.frameNavigated']);
+  assert.deepEqual(fake.posted().map(m => m.method), ['Page.domContentEventFired', 'Page.frameNavigated']);
 });
 
 test('only a port\'s first welcome sets the list: a later one, even one without events, changes nothing', async () => {
   const fake = await startWorker();
   fake.port.receive({ welcome: true, events: ['Page.frameNavigated'] });
   fake.port.receive({ welcome: true });
-  fake.port.receive({ welcome: true, events: ['Runtime.consoleAPICalled'] });
+  fake.port.receive({ welcome: true, events: ['Page.domContentEventFired'] });
   await settle();
-  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Runtime.consoleAPICalled', {});
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.domContentEventFired', {});
   fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.frameNavigated', {});
   assert.deepEqual(fake.posted().map(m => m.method), ['Page.frameNavigated']);
+});
+
+// THREAT-MODEL SR-90: a developer-tools event crosses only for a tab the service is recording, on that
+// tab's own target, on a connection whose welcome declared devTools; an ...ExtraInfo event never does.
+const CONSOLE = ['Runtime.consoleAPICalled', 'Runtime.exceptionThrown', 'Log.entryAdded'];
+const NETWORK = ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished', 'Network.loadingFailed'];
+const EXTRA = ['Network.requestWillBeSentExtraInfo', 'Network.responseReceivedExtraInfo', 'Network.anythingExtraInfo'];
+const fireAll = (fake, source, methods) => { for (const m of methods) fake.chrome.debugger.onEvent.fire(source, m, { m }); };
+const cdpPosted = fake => fake.posted().filter(m => m.event === 'cdp').map(m => m.sessionId ? `${m.tabId}/${m.sessionId} ${m.method}` : `${m.tabId} ${m.method}`);
+
+test('developer-tools events cross only for a recording tab, on its own target, and never an ExtraInfo one', async () => {
+  const fake = await startWorker();
+  fake.port.receive({ welcome: true, events: ['Page.frameNavigated'], devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  await fake.op('attach', { tabId: 6 });
+  // Not recording yet: nothing crosses.
+  fireAll(fake, { tabId: 5 }, [...CONSOLE, ...NETWORK, ...EXTRA]);
+  assert.deepEqual(cdpPosted(fake), []);
+  // The console recording, started on tab 5's own target, lets only its console events through.
+  await fake.op('send', { tabId: 5, method: 'Log.enable' });
+  fireAll(fake, { tabId: 5 }, [...CONSOLE, ...NETWORK, ...EXTRA]);
+  fireAll(fake, { tabId: 5, sessionId: 'S1' }, CONSOLE);
+  fireAll(fake, { tabId: 6 }, CONSOLE);
+  assert.deepEqual(cdpPosted(fake), CONSOLE.map(m => `5 ${m}`));
+  // A recording started on a child session marks nothing.
+  await fake.op('send', { tabId: 6, sessionId: 'S2', method: 'Network.enable' });
+  fireAll(fake, { tabId: 6 }, NETWORK);
+  assert.equal(cdpPosted(fake).length, CONSOLE.length);
+  // The network recording adds the network's, still never an ExtraInfo one.
+  await fake.op('send', { tabId: 5, method: 'Network.enable', params: { maxPostDataSize: 0 } });
+  fireAll(fake, { tabId: 5 }, [...NETWORK, ...EXTRA]);
+  assert.deepEqual(cdpPosted(fake).slice(CONSOLE.length), NETWORK.map(m => `5 ${m}`));
+});
+
+test('an ExtraInfo event is dropped whatever the welcome lists, and with no welcome at all', async () => {
+  for (const welcome of [null, { welcome: true }, { welcome: true, events: [...EXTRA, 'Page.frameNavigated'], devTools: true }]) {
+    const fake = await startWorker();
+    if (welcome) fake.port.receive(welcome);
+    await settle();
+    fireAll(fake, { tabId: 5 }, EXTRA);
+    fireAll(fake, { tabId: 5, sessionId: 'S1' }, EXTRA);
+    fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Page.frameNavigated', {});
+    assert.deepEqual(cdpPosted(fake), ['5 Page.frameNavigated'], JSON.stringify(welcome));
+  }
+});
+
+test('without devTools, developer-tools events are dropped even with no list', async () => {
+  for (const welcome of [null, { welcome: true }, { welcome: true, events: CONSOLE }]) {
+    const fake = await startWorker();
+    if (welcome) fake.port.receive(welcome);
+    await settle();
+    await fake.op('attach', { tabId: 5 });
+    await fake.op('send', { tabId: 5, method: 'Log.enable' }); // refused: not declared
+    fireAll(fake, { tabId: 5 }, [...CONSOLE, ...NETWORK]);
+    assert.deepEqual(cdpPosted(fake), [], JSON.stringify(welcome));
+  }
+});
+
+test('a recording ends with a failed start, a detach, a removed tab, the toolbar button and a new connection', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const fake = await startWorker({ start: false });
+  await loadWorker();
+  const declare = async () => { fake.port.receive({ welcome: true, devTools: true }); await settle(); };
+  const record = async tabId => { await fake.op('attach', { tabId }); await fake.op('send', { tabId, method: 'Log.enable' }); };
+  const crosses = tabId => {
+    const before = cdpPosted(fake).length;
+    fake.chrome.debugger.onEvent.fire({ tabId }, 'Runtime.consoleAPICalled', {});
+    return cdpPosted(fake).length > before;
+  };
+  await declare();
+  fake.overrides['debugger.sendCommand'] = async () => { throw Error('Log.enable failed'); };
+  await record(5);
+  delete fake.overrides['debugger.sendCommand'];
+  assert.equal(crosses(5), false, 'a failed start');
+  await record(5);
+  assert.equal(crosses(5), true);
+  fake.chrome.debugger.onDetach.fire({ tabId: 5 }, 'target_closed');
+  assert.equal(crosses(5), false, 'a detach');
+  await record(5);
+  fake.chrome.tabs.onRemoved.fire(5, { windowId: 1, isWindowClosing: false });
+  assert.equal(crosses(5), false, 'a removed tab');
+  await record(6);
+  fake.chrome.action.onClicked.fire({ id: 1 });
+  await settle();
+  assert.equal(crosses(6), false, 'the toolbar button');
+  await record(7);
+  await fake.op('detach', { tabId: 7 });
+  await fake.op('attach', { tabId: 7 });
+  assert.equal(crosses(7), false, 'a detach op and a new attach');
+  await record(8);
+  fake.port.disconnect();
+  await settle();
+  t.mock.timers.tick(1000);
+  await declare();
+  await fake.op('attach', { tabId: 8 });
+  assert.equal(crosses(8), false, 'a new connection');
 });

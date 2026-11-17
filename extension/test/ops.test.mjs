@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startWorker, settle } from './fake-chrome.mjs';
+import { startWorker, loadWorker, settle } from './fake-chrome.mjs';
 
 const WORKING = { text: 'PT', title: 'phantab: agents working, click to stop' };
 const IDLE = { text: '', title: 'phantab bridge: no agent working' };
@@ -64,7 +64,7 @@ test('send targets the tab, or the child session when given, and answers the res
 // network, nor run browser-wide commands; nothing outside the list reaches chrome.debugger.
 test('send refuses every CDP method outside the allow-list, before chrome.debugger sees it', async () => {
   const fake = await startWorker();
-  const refused = ['Network.getAllCookies', 'Storage.getCookies', 'Network.enable', 'Fetch.enable', 'Browser.close',
+  const refused = ['Network.getAllCookies', 'Storage.getCookies', 'Network.getCookies', 'Fetch.enable', 'Browser.close',
     'Security.disable', 'Target.createBrowserContext', 'Page.setDownloadBehavior', 'Runtime.evaluate', 'Nope.nope', '', undefined, 7];
   let id = 10;
   for (const method of refused) {
@@ -253,4 +253,65 @@ test('a closed window leaves the agent-window record', async () => {
   fake.chrome.windows.onRemoved.fire(windowId);
   await settle();
   assert.deepEqual(fake.state.session.windows, {});
+});
+
+// THREAT-MODEL SR-90, L1: the developer-tools commands cross only on a connection whose first welcome
+// declared devTools as the boolean true. No welcome turns on a cookie command or any other ban.
+const DEVTOOLS = ['Log.enable', 'Network.enable', 'Network.getResponseBody', 'Runtime.terminateExecution'];
+const offError = m => 'CDP method not allowed: ' + m + ' (a developer tool; the service did not turn on devTools)';
+
+test('developer-tools commands are refused unless the welcome declared devTools', async () => {
+  for (const welcome of [null, { welcome: true, events: ['Page.frameNavigated'] }, { welcome: true, devTools: 'true' },
+    { welcome: true, devTools: 1 }, { welcome: true, devTools: false }]) {
+    const fake = await startWorker();
+    if (welcome) fake.port.receive(welcome);
+    await settle();
+    await fake.op('attach', { tabId: 5 });
+    let id = 0;
+    for (const method of DEVTOOLS) {
+      assert.deepEqual(await fake.op('send', { tabId: 5, method, params: {} }, ++id), { id, error: offError(method) }, JSON.stringify(welcome));
+    }
+    assert.deepEqual(fake.callsOf('debugger.sendCommand'), [], JSON.stringify(welcome));
+  }
+});
+
+test('with devTools declared the developer-tools commands are relayed, and the bans still hold', async () => {
+  const fake = await startWorker();
+  fake.port.receive({ welcome: true, events: ['Page.frameNavigated'], devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  let id = 0;
+  for (const method of DEVTOOLS) {
+    assert.deepEqual(await fake.op('send', { tabId: 5, method, params: {} }, ++id), { id, result: {} });
+  }
+  assert.deepEqual(fake.callsOf('debugger.sendCommand').map(c => c[1]), DEVTOOLS);
+  for (const method of ['Network.getAllCookies', 'Network.getCookies', 'Network.setCookie', 'Network.deleteCookies',
+    'Network.setExtraHTTPHeaders', 'Storage.getCookies', 'Fetch.enable', 'Browser.close', 'Security.disable', 'Page.setDownloadBehavior']) {
+    assert.deepEqual(await fake.op('send', { tabId: 5, method, params: {} }, ++id), { id, error: 'CDP method not allowed: ' + method });
+  }
+  assert.equal(fake.callsOf('debugger.sendCommand').length, DEVTOOLS.length);
+});
+
+test("only a port's first welcome declares devTools, and a new connection starts without it", async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const fake = await startWorker({ start: false });
+  await loadWorker();
+  fake.port.receive({ welcome: true });
+  fake.port.receive({ welcome: true, devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  assert.deepEqual(await fake.op('send', { tabId: 5, method: 'Log.enable' }, 1), { id: 1, error: offError('Log.enable') });
+  fake.port.disconnect();
+  await settle();
+  t.mock.timers.tick(1000);
+  fake.port.receive({ welcome: true, devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  assert.deepEqual(await fake.op('send', { tabId: 5, method: 'Log.enable' }, 2), { id: 2, result: {} });
+  fake.port.disconnect();
+  await settle();
+  t.mock.timers.tick(2000);
+  assert.equal(fake.ports.length, 3);
+  await fake.op('attach', { tabId: 5 });
+  assert.deepEqual(await fake.op('send', { tabId: 5, method: 'Log.enable' }, 3), { id: 3, error: offError('Log.enable') });
 });

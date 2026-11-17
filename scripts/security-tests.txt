@@ -7,6 +7,7 @@
 #            unix     macOS only today (the test is not built on Windows, or is ignored there)
 #            chrome   needs real Chrome: run with --chrome
 #   target   lib      phantab's unit tests; the name is the full path (engine::tests::...)
+#            cdp      phantab-cdp's unit tests; the name is the full path (devtools::tests::...)
 #            ext:<f>  extension/test/<f>.test.mjs; the name is the test's title
 #            <file>   crates/phantab/tests/<file>.rs
 #
@@ -122,3 +123,29 @@ chrome engine_chrome a_drag_onto_a_covered_list_is_refused_before_any_mouse_even
 chrome engine_chrome a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing
 chrome engine_chrome a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press
 chrome engine_chrome with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first
+
+# An agent reads a request's cookie or authorization, or reaches the developer tools left off (SR-90).
+all cdp devtools::tests::the_secret_headers_go_in_any_case
+all cdp devtools::tests::cookie_and_authorization_headers_never_leave_the_service
+all lib cdp_methods::tests::the_developer_tools_part_is_exact_and_holds_no_cookie_command
+all bridge devtools_commands_are_relayed_only_with_the_setting
+all mcp developer_tools_are_listed_only_with_dev_tools_true
+all ext:ops developer-tools commands are refused unless the welcome declared devTools
+all ext:ops with devTools declared the developer-tools commands are relayed, and the bans still hold
+all ext:ops only a port's first welcome declares devTools, and a new connection starts without it
+all ext:events without devTools, developer-tools events are dropped even with no list
+all ext:events an ExtraInfo event is dropped whatever the welcome lists, and with no welcome at all
+chrome engine_chrome developer_tools_are_off_unless_set
+chrome engine_chrome developer_tools_read_the_console_and_network_and_run_scripts
+chrome engine_chrome evaluate_is_a_write_and_is_asked_about_under_guardrails
+
+# An agent's script and a password phantab filled share a page, in either order (SR-90, SR-39, SR-80).
+all lib engine::tests::a_script_marks_its_tab_until_it_closes_and_a_fill_marks_its_document
+chrome engine_chrome a_tab_a_script_ran_on_is_never_signed_in_or_up
+chrome engine_chrome a_document_a_password_was_filled_into_runs_no_script
+chrome engine_chrome a_refused_script_leaves_its_page_open_to_sign_in
+all signin_fake_page a_script_that_runs_while_the_provider_answers_gets_no_password_typed
+all signin_fake_page a_sign_in_document_that_cannot_be_marked_gets_no_password_typed
+all signin_fake_page a_fill_that_goes_again_after_a_detach_marks_the_document_first
+all signin_fake_page a_script_that_runs_while_the_login_is_created_gets_no_password_typed
+all signin_fake_page a_sign_up_document_that_cannot_be_marked_gets_no_password_typed

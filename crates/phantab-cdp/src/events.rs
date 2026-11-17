@@ -34,6 +34,27 @@ pub fn reads_event(method: &str) -> bool {
     EVENTS.binary_search(&method).is_ok()
 }
 
+/// The developer tools' events (THREAT-MODEL SR-90), sorted: read only for a page whose console or
+/// network the service is recording, on a connection whose welcome declared `devTools`. The extension
+/// forwards them only from such a tab's own target (`extension/src/cdp-methods.ts`, `DEVTOOLS_EVENTS`,
+/// which a test keeps equal to this list), so a page that never asks sends what it sent before. No
+/// `...ExtraInfo` event is here, or ever forwarded: those carry the raw headers, cookies included.
+pub const DEVTOOLS_EVENTS: &[&str] = &[
+    "Log.entryAdded",
+    "Network.loadingFailed",
+    "Network.loadingFinished",
+    "Network.requestWillBeSent",
+    "Network.responseReceived",
+    "Runtime.consoleAPICalled",
+    "Runtime.exceptionThrown",
+];
+
+/// Whether `method` is one of [`DEVTOOLS_EVENTS`].
+#[must_use]
+pub fn reads_devtools_event(method: &str) -> bool {
+    DEVTOOLS_EVENTS.binary_search(&method).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +69,18 @@ mod tests {
         assert!(!reads_event("Runtime.exceptionThrown"));
         assert!(!reads_event("Page.screencastFrame"));
         assert!(!reads_event(""));
+    }
+
+    #[test]
+    fn the_developer_tools_events_are_sorted_apart_and_never_extra_info() {
+        let sorted = DEVTOOLS_EVENTS.windows(2).all(|w| w[0] < w[1]);
+        assert!(sorted, "keep DEVTOOLS_EVENTS sorted and unique: {DEVTOOLS_EVENTS:?}");
+        for m in DEVTOOLS_EVENTS {
+            assert!(reads_devtools_event(m) && !reads_event(m), "{m}");
+            assert!(!m.contains("ExtraInfo") && !m.contains("ookie"), "{m}");
+        }
+        assert!(!reads_devtools_event("Network.requestWillBeSentExtraInfo"));
+        assert!(!reads_devtools_event("Network.responseReceivedExtraInfo"));
+        assert!(!reads_devtools_event("Page.frameNavigated"));
     }
 }

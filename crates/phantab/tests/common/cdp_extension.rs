@@ -8,6 +8,10 @@
 //!   the page attached beneath it (`sessionId`, as `chrome.debugger` passes it). Events come back as
 //!   `{event:'cdp',tabId,sessionId?,method,params}`; a detach Chrome made posts `{event:'detach'}` after
 //!   200 ms with `tabOpen`, as the extension does; a closed tab posts `{event:'removed'}`.
+//! - Events are forwarded as the extension forwards them: only the welcome's `events`, never an
+//!   `...ExtraInfo` one, and a developer-tools one (SR-90) only with `devTools` declared, from a tab's own
+//!   target, for a tab whose console (`Log.enable`) or network (`Network.enable`) the service started
+//!   recording. [`CdpExtension::traffic`] counts what Chrome sent and what crossed.
 //! - `keepRendering` is a no-op (headless always renders); `markShown`, `windowState` and
 //!   `clearForeignFrames` keep the extension's agent-window bookkeeping and refusals.
 //! - A dialog in a hidden agent window is answered here, as the extension's `answerHiddenDialog` does:
@@ -17,7 +21,7 @@
 //! (`PHANTAB_TEST_WINDOWS=none`) goes with it: these windows are headless and never on screen.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::TcpStream as StdTcpStream;
 use std::path::Path;
@@ -50,6 +54,38 @@ struct State {
     timeline: Vec<(Instant, String)>,
     /// The agent's answer for a tab's next dialog (`answerNextDialog`): accept, and a prompt's text.
     next_answers: HashMap<i64, (bool, Option<String>)>,
+    /// Whether the welcome declared `devTools` (SR-90).
+    dev_tools: bool,
+    /// tabId → the recordings the service started on its own target: `console`, `network`.
+    recording: HashMap<i64, HashSet<&'static str>>,
+    /// tabId → what Chrome sent this extension, and what it forwarded.
+    traffic: HashMap<i64, Traffic>,
+}
+
+/// One tab's CDP events: every one Chrome sent, and those forwarded, of them developer-tools ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traffic {
+    pub sent: usize,
+    pub forwarded: usize,
+    pub devtools: usize,
+}
+
+/// The recording a developer-tools event belongs to, as `background.ts`'s `recordingOf`.
+fn recording_of(method: &str) -> &'static str {
+    if method.starts_with("Network.") { "network" } else { "console" }
+}
+
+/// Whether the extension forwards `method` from `tab` (`background.ts`, `chrome.debugger.onEvent`).
+fn forwards(s: &State, tab: i64, method: &str, child: bool) -> bool {
+    if method.ends_with("ExtraInfo") {
+        return false;
+    }
+    if phantab_cdp::reads_devtools_event(method) {
+        return s.dev_tools
+            && !child
+            && s.recording.get(&tab).is_some_and(|r| r.contains(recording_of(method)));
+    }
+    phantab_cdp::reads_event(method)
 }
 
 /// The fake extension; dropping it hangs up.
@@ -104,7 +140,7 @@ impl CdpExtension {
     /// Says hello on an upgraded bridge socket, then serves the bridge ops from `browser`.
     pub fn connect(mut stream: StdTcpStream, instance: &str, browser: Arc<Browser>) -> Self {
         stream.set_read_timeout(None).unwrap();
-        crate::common::hello(&mut stream, instance);
+        let dev_tools = crate::common::hello_dev_tools(&mut stream, instance);
         stream.set_nonblocking(true).unwrap();
         let stream = tokio::net::TcpStream::from_std(stream).unwrap();
         let (mut read, mut write) = stream.into_split();
@@ -116,7 +152,7 @@ impl CdpExtension {
                 }
             }
         });
-        let state = Arc::new(Mutex::new(State { next_tab: 100, ..State::default() }));
+        let state = Arc::new(Mutex::new(State { next_tab: 100, dev_tools, ..State::default() }));
         let ext = Ext { browser: Arc::clone(&browser), state: Arc::clone(&state), out: out.clone() };
         let reader = tokio::spawn(async move {
             let mut replies: HashMap<i64, mpsc::UnboundedSender<(Value, Answer)>> = HashMap::new();
@@ -214,6 +250,20 @@ impl CdpExtension {
 
     pub fn ops(&self) -> Vec<String> {
         lock(&self.state).ops.clone()
+    }
+
+    /// The tab's CDP events so far: sent by Chrome, forwarded to the service, developer-tools ones.
+    pub fn traffic(&self, tab: i64) -> Traffic {
+        lock(&self.state).traffic.get(&tab).copied().unwrap_or_default()
+    }
+
+    /// Every tab's CDP events so far, added up.
+    pub fn traffic_total(&self) -> Traffic {
+        lock(&self.state).traffic.values().fold(Traffic::default(), |a, t| Traffic {
+            sent: a.sent + t.sent,
+            forwarded: a.forwarded + t.forwarded,
+            devtools: a.devtools + t.devtools,
+        })
     }
 
     /// Every op and CDP command so far, timed (see `State::timeline`).
@@ -353,6 +403,7 @@ impl Ext {
         let target = self.target(tab)?;
         self.cdp(None, "Target.closeTarget", json!({ "targetId": target })).await?;
         lock(&self.state).tabs.remove(&tab);
+        lock(&self.state).recording.remove(&tab);
         let _ = self.out.send(json!({ "event": "removed", "tabId": tab }));
         Ok(json!({}))
     }
@@ -387,6 +438,17 @@ impl Ext {
                                 (me.clone(), s.clone(), params["type"].as_str().unwrap_or("").to_owned());
                             tokio::spawn(async move { me.answer_hidden_dialog(tab, &s, &kind).await });
                         }
+                        {
+                            let mut st = lock(&me.state);
+                            let crosses = forwards(&st, tab, &method, s != root2);
+                            let t = st.traffic.entry(tab).or_default();
+                            t.sent += 1;
+                            if !crosses {
+                                continue;
+                            }
+                            t.forwarded += 1;
+                            t.devtools += usize::from(phantab_cdp::reads_devtools_event(&method));
+                        }
                         let mut ev =
                             json!({ "event": "cdp", "tabId": tab, "method": method, "params": params });
                         if s != root2 {
@@ -398,7 +460,10 @@ impl Ext {
                 }
             }
         });
-        lock(&self.state).attached.insert(tab, (root, forward));
+        let mut s = lock(&self.state);
+        s.attached.insert(tab, (root, forward));
+        s.recording.remove(&tab);
+        drop(s);
         Ok(json!({}))
     }
 
@@ -406,21 +471,48 @@ impl Ext {
     fn start_send(&self, a: &Value) -> SendFuture {
         let tab = a["tabId"].as_i64().unwrap_or(-1);
         let method = a["method"].as_str().unwrap_or_default().to_owned();
-        if !phantab::cdp_methods::allowed(&method) {
+        let dev = phantab::cdp_methods::devtools(&method);
+        if !phantab::cdp_methods::allowed(&method) && !dev {
             return Box::pin(std::future::ready(Err(format!("CDP method not allowed: {method}"))));
         }
+        // A recording starts on the tab's own target only, marked before the command (`background.ts`).
+        let starts = match method.as_str() {
+            _ if a["sessionId"].is_string() => None,
+            "Log.enable" => Some("console"),
+            "Network.enable" => Some("network"),
+            _ => None,
+        };
         let session = {
-            let s = lock(&self.state);
+            let mut s = lock(&self.state);
+            if dev && !s.dev_tools {
+                let e = format!(
+                    "CDP method not allowed: {method} (a developer tool; the service did not turn on devTools)"
+                );
+                return Box::pin(std::future::ready(Err(e)));
+            }
             let Some((root, _)) = s.attached.get(&tab) else {
                 let e = format!("Debugger is not attached to the tab with id: {tab}.");
                 return Box::pin(std::future::ready(Err(e)));
             };
-            a["sessionId"].as_str().map_or_else(|| root.clone(), SessionId::new)
+            let session = a["sessionId"].as_str().map_or_else(|| root.clone(), SessionId::new);
+            if let Some(kind) = starts {
+                s.recording.entry(tab).or_default().insert(kind);
+            }
+            session
         };
         let params = a.get("params").cloned().filter(|p| !p.is_null()).unwrap_or_else(|| json!({}));
         let browser = Arc::clone(&self.browser);
+        let state = Arc::clone(&self.state);
         Box::pin(async move {
-            browser.connection().send(Some(&session), &method, params).await.map_err(|e| relay_error(&e))
+            let r =
+                browser.connection().send(Some(&session), &method, params).await.map_err(|e| relay_error(&e));
+            if r.is_err()
+                && let Some(kind) = starts
+                && let Some(on) = lock(&state).recording.get_mut(&tab)
+            {
+                on.remove(kind);
+            }
+            r
         })
     }
 
@@ -446,6 +538,7 @@ impl Ext {
 
     async fn detached_by_chrome(&self, tab: i64) {
         lock(&self.state).attached.remove(&tab);
+        lock(&self.state).recording.remove(&tab);
         lock(&self.state).next_answers.remove(&tab);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let open = self.target_info(tab).await.is_ok();
@@ -491,6 +584,7 @@ impl Ext {
             "detach" => {
                 // An extension's own detach fires no onDetach.
                 let entry = lock(&self.state).attached.remove(&tab);
+                lock(&self.state).recording.remove(&tab);
                 if let Some((sid, forward)) = entry {
                     forward.abort();
                     self.cdp(None, "Target.detachFromTarget", json!({ "sessionId": sid.as_str() })).await?;

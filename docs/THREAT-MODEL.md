@@ -81,6 +81,9 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T11 | Page-controlled text inside an error carries injection or very long output. | SR-32 | L3 |
 | T92 | An injected agent uses a screenshot or snapshot saved to a file (`path`) to overwrite a file the owner keeps, to write where the service was started rather than where it was told, or to save a picture of a page whose screenshot is refused. | SR-88 | L1, L3 |
 | T93 | An injected agent uploads a file the owner keeps (a key, a tax form, a browser profile file) to a site, accepts a dialog that says yes to a deletion or payment, or reloads or moves back or forward onto a page a form sent so the form is sent again. | SR-89; an agent that sets `ownerConfirmed` unasked, and every one of these under `parity`, is residual R3 | L1, L3 |
+| T94 | With `devTools` on, an injected agent runs a script in the owner's signed-in page through `browser_evaluate`: it reads what the page's own scripts can (`document.cookie` without the httpOnly cookies, local storage, a field's value) or does what they can (send a form, call the site's API as the owner). | SR-90; that reach is what the setting turns on, residual R22 | L1, L3 |
+| T95 | With `devTools` on, an injected agent reads the owner's cookies or authorization through `browser_network` (a request's `Cookie` or `Authorization` header, a response's `Set-Cookie`, the raw header text an `...ExtraInfo` event carries), or saves them to a file with `path`. | SR-90 | L1, L3 |
+| T96 | With `devTools` off (the default), an agent or a page reaches a developer tool anyway: a call to `evaluate`, `console` or `network`, or one of SR-20's developer-tools commands sent through the bridge. | SR-90, SR-20 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -111,7 +114,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T28 | A web page opens the bridge as a WebSocket. | SR-16 | L3 |
 | T29 | A peer sends a frame with a huge length prefix. | SR-17 | L1 |
 | T30 | An unpacked extension carrying the public `key` gets the same ID and poses as the bridge. | SR-19 | L1, L4 |
-| T31 | The service, or anyone holding the bridge, sends any CDP command, such as `Network.getAllCookies` or `Storage.getCookies`. | SR-20 | L1, L4 |
+| T31 | The service, or anyone holding the bridge, sends any CDP command, such as `Network.getAllCookies` or `Storage.getCookies`, or a developer-tools command while `devTools` is off. | SR-20, SR-90 | L1, L4 |
 | T32 | A second profile's bridge connects and agents reach the wrong profile. | SR-21, SR-76 | L3, L4 |
 | T33 | A slow or silent peer holds the bridge. | SR-17 | L3 |
 | T34 | The owner cannot see or stop agent work. | SR-22 | L4 |
@@ -413,7 +416,16 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   and like `DOM.describeNode` it changes nothing. `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
   `Page.navigateToHistoryEntry` and `Page.reload` are listed for the `upload`, `back`, `forward` and
   `reload` steps (SR-89): each acts only on the tab's own page, and `DOM.setFileInputFiles` sends only
-  paths the service checked first. A `send` whose
+  paths the service checked first. The list has a second part, the developer-tools commands
+  (`DEVTOOLS_METHODS`: `Log.enable`, `Network.enable`, `Network.getResponseBody` and
+  `Runtime.terminateExecution`), relayed only while `devTools` is on (SR-90): the service refuses them
+  otherwise, and the extension refuses them unless the service's welcome on that connection declared
+  `devTools`. `Network.enable` starts a tab's network recording and `Log.enable` its console recording;
+  `Network.getResponseBody` reads one recorded response's body; `Runtime.terminateExecution` stops a
+  page script that ran past its time limit. Neither part ever holds a cookie command
+  (`Network.getAllCookies`, `Network.getCookies`, `Network.setCookie`, `Network.deleteCookies`) or any
+  other `Network.*` method, and no setting unlocks `Storage.*`, `Fetch.*`, `Browser.*`, `Security.*`,
+  `Target.createBrowserContext` or `Page.setDownloadBehavior`. A `send` whose
   params carry a `grantUniveralAccess` (Chrome's spelling) that is not `false` is refused, since such
   a world reads other origins with the owner's cookies. An extension older than the service refuses a newly listed
   method, and the service's error then says to reload it. *L1: every method `phantab-cdp` sends is
@@ -440,6 +452,15 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   own; a name split at its dot does not. The scan also fails when the list names an event no code
   literal names. `npm test` checks the filter, its fallbacks, the first-welcome rule and that the
   worker's own handling (dialogs, foreign frames, screencast ack) runs before it.*
+  Developer tools (SR-90) add events of their own, outside that list: the console's
+  (`Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Log.entryAdded`) and the network's
+  (`Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`,
+  `Network.loadingFailed`). The extension forwards them only for a tab the service started recording
+  (`Log.enable` starts the console, `Network.enable` the network) on a connection whose welcome declared
+  `devTools`, so a page that never asks sends what it sent before; and it never forwards an
+  `...ExtraInfo` event, whatever the list says. That last rule is part of SR-90, not of this note: an
+  `...ExtraInfo` event carries a request's raw headers, cookies included, and the service never enables,
+  forwards or reads one either.
 - **SR-21** One link per profile: a second live extension instance in the same profile that answers
   ping is refused; the same instance replaces its own link. Profiles other than the usual one link
   only as SR-76 allows. *L3, L4.*
@@ -796,6 +817,79 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press`,
   `with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first`.*
 
+- **SR-90** Developer tools: the setting `devTools` in `config.json`, off unless its value is the JSON
+  boolean `true` (a string, a number or anything else is off), read at service start. Off, nothing new
+  is reachable: `phantab mcp` lists none of `browser_evaluate`, `browser_console` and
+  `browser_network`; the service refuses `evaluate`, `console` and `network` with an error that names
+  the setting; the bridge refuses SR-20's developer-tools commands and drops their events; the welcome
+  does not declare `devTools`, so the extension refuses those commands too and forwards none of those
+  events. On:
+  - `evaluate` runs the agent's function in the page's own world (the main document, or a frame named
+    as the snapshot names frames) with the arguments given, awaits a promise, and answers its result as
+    JSON. It can do whatever the page's own scripts can: read and change the page, its storage, what
+    its fields hold and `document.cookie` (every cookie of the page that is not httpOnly), and call the
+    site as the owner. httpOnly cookies stay out of its reach, since no cookie command is listed. It
+    counts as a write: refused on a page handed to the owner, as a click is, and it takes the site's
+    lease as a step does. Under `guardrails` `light` and `full` every call is asked about first
+    (`ownerConfirmed`), since no check can read what a script will do; under `parity` it runs. A
+    function that does not answer within its time limit (10 s unless `seconds` asks less) is answered
+    with an error. The call races a page timer of that limit, so a promise that never settles answers
+    then and is left alone; a script still running then is stopped with `Runtime.terminateExecution`,
+    sent only when a trivial second script cannot run beside it. No call is left open on the tab, so
+    the answers behind it are not held. Its result is
+    cut at 20,000 characters unless saved with `path` (SR-88's rules), and its answer, saved file and
+    error pass SR-45's redaction as every answer does.
+  - A script and a password phantab filled never share a page, in either order, so SR-39 and SR-80
+    hold with the setting on. A script first: from the moment `evaluate` starts a script, in any
+    frame, its tab is marked until the tab closes, whatever the tab loads meanwhile (a script that
+    then throws or times out ran; one refused before it starts, by the setting, a handed-over page or
+    a question to the owner, did not). `browser_sign_in` and `browser_sign_up` refuse on a marked tab
+    before any provider is asked, and their fill looks again just before it types, for a script that
+    ran while the provider answered; the provider has then been asked, but nothing is typed. A fill
+    first: every fill of a sign-in or sign-up first marks the main document it fills, by its
+    `performance.timeOrigin` read in phantab's own world, and does not fill when that cannot be read;
+    `evaluate` refuses on that document until a reload or a navigation replaces it, as well as while
+    a sign-up's new password is in its fields (SR-80). `console` and `network` run no agent code: they
+    return what the page and Chrome wrote, and no `browser_act` step puts a script into the page (its
+    addresses are `http` and `https` only, and its typing is the agent's own text). The marks live in
+    the service's memory, so a restarted service starts with none.
+  - `console` and `network` are reads. Each starts recording a page at its first call, which says so
+    and that nothing before it was kept; a page never asked about sends no extra event (perf-data-3's
+    note). Recording covers the tab's own target (its main document and the frames Chrome runs in the
+    same process), not a frame in another process, and ends when the page closes. If phantab replaces
+    a page's connection (a recovered page), recording starts again and its next answer says so. Each
+    page keeps at most 200 console messages, each cut at 2,000 characters, and 500 requests; beyond
+    that the oldest is dropped and counted. Both keep what came since the page's last navigation.
+  - The network's headers are cleaned in the service, before any answer or saved file: `Cookie`,
+    `Set-Cookie`, `Authorization` and `Proxy-Authorization` are removed in any letter case, from
+    requests, responses and redirects alike, and only Chrome's header maps are read (never its raw
+    `headersText` or `requestHeadersText`). `...ExtraInfo` events, which carry the raw headers with
+    their cookies, are never enabled, never forwarded by the extension and never read by the service.
+    `Network.enable` asks for no posted data (`maxPostDataSize: 0`), and no request body is returned,
+    so a posted password never reaches the service. A response body is returned as Chrome holds it,
+    cut at the size limit or saved with `path`: it is whatever the site sent the owner, which may hold
+    a token or a value the site echoes, and only SR-45's redaction applies to it. A URL is returned
+    whole, its query string included. A body Chrome no longer holds is an error that says so.
+  - What the extension's check is worth: it holds against an agent, a page and a peer that is not the
+    service, not against a compromised service. The service declares `devTools` in its own welcome, so a
+    service an attacker controls declares it too; and `Runtime.callFunctionOn`, in SR-20's first part,
+    already lets such a service run a script in the page's own world with no setting at all. What no
+    welcome unlocks is the ban: the cookie commands, the rest of `Network.*`, `Storage.*`, `Fetch.*`,
+    `Browser.*`, `Security.*`, `Page.setDownloadBehavior`, and every `...ExtraInfo` event. So httpOnly
+    cookies and the raw headers stay out of a compromised service's reach too, while every other
+    cookie is in reach of its scripts, as it was before this setting.
+  *L1: the setting's values and the refusals while off (`engine::devtools` tests); the list's two parts
+  and the bans (`cdp_methods` tests; `ops.test.mjs`: developer-tools commands refused unless the
+  welcome declared `devTools`; the bridge's `devtools_commands_are_relayed_only_with_the_setting`); the
+  header removal (`cookie_and_authorization_headers_never_leave_the_service`); no `...ExtraInfo` event
+  forwarded (`events.test.mjs`) or read; L3: `developer_tools_read_the_console_and_network_and_run_scripts`,
+  `evaluate_reads_a_frame_cuts_saves_throws_and_times_out`, `developer_tools_are_off_unless_set`,
+  `evaluate_is_a_write_and_is_asked_about_under_guardrails`, `recording_traffic_is_counted`. A script
+  and a filled password: L1 `a_script_marks_its_tab_until_it_closes_and_a_fill_marks_its_document`;
+  L3 `a_tab_a_script_ran_on_is_never_signed_in_or_up` (the review's case: a script that copies a
+  password field, reversed, into the title and the console), `a_document_a_password_was_filled_into_runs_no_script`,
+  `a_refused_script_leaves_its_page_open_to_sign_in`.*
+
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
   tree, the challenge frame's box as its parent lays it out, whether that frame's element shows (read
@@ -845,7 +939,9 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   *L1: `format!("{:?}")` of each type prints no value.*
 - **SR-39** No credential byte, raw or URI-, base64- or base64url-encoded, appears in any MCP result,
   CLI output, service or host stdout or stderr, log, tracing event at any level, error, panic message,
-  or file under the runtime dir (the guard file included), after any sign-in status. *L3 and L4:
+  or file under the runtime dir (the guard file included), after any sign-in status. With `devTools`
+  on, this holds for a script's answers by SR-90's rule that a script and a filled password never
+  share a page. *L3 and L4:
   sentinel password through every status at `RUST_LOG=trace`, all outputs and files scanned; after
   each status no input in any frame holds it.*
 - **SR-40** Sign-in answers carry only the whitelisted statuses and reasons. Any Rust error becomes
@@ -1524,6 +1620,19 @@ These remain after every requirement holds. The README must say them in plain wo
   keychain by a temporary file and a rename). It reaches only the test-only service names
   (`dev.phantab.test.*`), never `dev.phantab.bitwarden`, and needs a racer during a test run. Part of
   R1.
+- **R22 A script in the owner's page (`devTools` on).** `browser_evaluate` gives an agent what the
+  page's own scripts have: every cookie that is not httpOnly, through `document.cookie`, the page's
+  storage, what the owner's fields hold, and the site's API as the owner. A response body
+  `browser_network` returns is whatever the site sent, tokens included. With the setting on, an
+  injected agent can read or use all of that; only the agent's own guardrails hold it back, and
+  phantab's `light` and `full`, which ask before each script. The setting is off by default (SR-90).
+  The passwords phantab itself fills stay out of a script's reach, by SR-90's rule that the two never
+  share a page. What stays out of sight: a script can change what a site keeps for its other pages
+  (its storage, or a worker the site itself serves), which phantab does not see, so a fresh page of
+  the same site is no guarantee against a site that runs what it finds in its own storage. Phantab
+  cannot tell which tab opened which, so a window a marked page opened, attached later with
+  `browser_attach`, is not marked. And the marks are in the service's memory: a restarted service
+  forgets which tabs a script ran on.
 
 ## Out of scope
 

@@ -10,15 +10,38 @@ use std::sync::LazyLock;
 
 const SOURCE: &str = include_str!("../../../extension/src/cdp-methods.ts");
 
-/// Every method on the list. The file keeps one `'Domain.method',` per line.
-pub static ALLOWED: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-    SOURCE.lines().filter_map(|line| line.trim().strip_prefix('\'')?.strip_suffix("',")).collect()
-});
+/// The quoted names of one `export const` section of [`SOURCE`]. The file keeps one `'Domain.method',`
+/// per line. A missing section is empty, so nothing of it is relayed; the tests name every section.
+fn section(name: &str) -> BTreeSet<&'static str> {
+    let Some(at) = SOURCE.find(&format!("export const {name}:")) else {
+        return BTreeSet::new();
+    };
+    let rest = &SOURCE[at..];
+    let end = rest[1..].find("export const").map_or(rest.len(), |e| e + 1);
+    rest[..end].lines().filter_map(|line| line.trim().strip_prefix('\'')?.strip_suffix("',")).collect()
+}
 
-/// Whether the bridge may relay `method` to `chrome.debugger`.
+/// Every method on the list's first part, relayed whatever the settings.
+pub static ALLOWED: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| section("CDP_METHODS"));
+
+/// The developer-tools commands (SR-90), relayed only while `devTools` is on.
+pub static DEVTOOLS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| section("DEVTOOLS_METHODS"));
+
+/// The extension's copy of the developer-tools events; the tests keep it equal to
+/// [`phantab_cdp::DEVTOOLS_EVENTS`].
+#[cfg(test)]
+static DEVTOOLS_EVENTS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| section("DEVTOOLS_EVENTS"));
+
+/// Whether the bridge may relay `method` to `chrome.debugger` whatever the settings.
 #[must_use]
 pub fn allowed(method: &str) -> bool {
     ALLOWED.contains(method)
+}
+
+/// Whether `method` is a developer-tools command (SR-90), relayed only while `devTools` is on.
+#[must_use]
+pub fn devtools(method: &str) -> bool {
+    DEVTOOLS.contains(method)
 }
 
 #[cfg(test)]
@@ -436,7 +459,8 @@ mod tests {
     #[test]
     fn the_list_is_parsed_and_bans_the_dangerous_domains() {
         assert!(ALLOWED.len() >= 20, "{ALLOWED:?}");
-        assert_eq!(ALLOWED.len(), SOURCE.matches('\'').count() / 2, "a quoted line the parser missed");
+        let parsed = ALLOWED.len() + DEVTOOLS.len() + DEVTOOLS_EVENTS.len();
+        assert_eq!(parsed, SOURCE.matches('\'').count() / 2, "a quoted line the parser missed");
         for m in ALLOWED.iter() {
             let domain = m.split('.').next().unwrap_or_default();
             assert!(["DOM", "Emulation", "Input", "Page", "Runtime", "Target"].contains(&domain), "{m}");
@@ -448,6 +472,31 @@ mod tests {
         assert!(!allowed("Network.getAllCookies"));
         assert!(!allowed("Storage.getCookies"));
         assert!(!allowed(""));
+        assert!(
+            !allowed("Network.enable") && devtools("Network.enable"),
+            "a developer tool in the first part"
+        );
+    }
+
+    /// SR-90, L1: the developer-tools part holds the four commands it names and none of the bans, and
+    /// its events are the service's [`phantab_cdp::DEVTOOLS_EVENTS`], never an `...ExtraInfo` one.
+    #[test]
+    fn the_developer_tools_part_is_exact_and_holds_no_cookie_command() {
+        let want = ["Log.enable", "Network.enable", "Network.getResponseBody", "Runtime.terminateExecution"];
+        assert_eq!(DEVTOOLS.iter().copied().collect::<Vec<_>>(), want);
+        for m in DEVTOOLS.iter().chain(DEVTOOLS_EVENTS.iter()) {
+            assert!(!ALLOWED.contains(m), "{m} is in both parts");
+            assert!(!m.contains("Cookie") && !m.ends_with("ExtraInfo"), "{m}");
+            let domain = m.split('.').next().unwrap_or_default();
+            assert!(!["Storage", "Fetch", "Browser", "Security"].contains(&domain), "{m}");
+        }
+        let events: Vec<&str> = DEVTOOLS_EVENTS.iter().copied().collect();
+        assert_eq!(events, phantab_cdp::DEVTOOLS_EVENTS, "cdp-methods.ts and phantab_cdp disagree");
+        for banned in
+            ["Network.getAllCookies", "Network.getCookies", "Network.setCookie", "Storage.getCookies"]
+        {
+            assert!(!allowed(banned) && !devtools(banned), "{banned}");
+        }
     }
 
     /// SR-20, L1: every CDP name the code uses is classified. A new one anywhere in phantab-cdp or
@@ -460,7 +509,13 @@ mod tests {
         assert!(found.contains("Page.navigate"), "the scan found nothing: {found:?}");
         let unclassified: Vec<&&str> = found
             .iter()
-            .filter(|m| !allowed(m) && !BROWSER_ONLY.contains(m) && !EVENTS.contains(m))
+            .filter(|m| {
+                !allowed(m)
+                    && !devtools(m)
+                    && !BROWSER_ONLY.contains(m)
+                    && !EVENTS.contains(m)
+                    && !phantab_cdp::reads_devtools_event(m)
+            })
             .collect();
         assert!(
             unclassified.is_empty(),
@@ -482,7 +537,7 @@ mod tests {
         let used = literals(&files);
         let unsent: Vec<&&str> = used
             .iter()
-            .filter(|m| (allowed(m) || BROWSER_ONLY.contains(m)) && !sends.contains(**m))
+            .filter(|m| (allowed(m) || devtools(m) || BROWSER_ONLY.contains(m)) && !sends.contains(**m))
             .collect();
         assert!(
             unsent.is_empty(),
@@ -511,7 +566,10 @@ mod tests {
         for seen in ["Page.frameNavigated", "Inspector.detached", "Page.javascriptDialogClosed"] {
             assert!(names.contains(seen), "the scan missed {seen}: {names:?}");
         }
-        let missing: Vec<_> = found.iter().filter(|(m, _)| !phantab_cdp::reads_event(m)).collect();
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|(m, _)| !phantab_cdp::reads_event(m) && !phantab_cdp::reads_devtools_event(m))
+            .collect();
         assert!(
             missing.is_empty(),
             "events the code matches that phantab_cdp::EVENTS lacks (a command in a pattern, list or \
@@ -520,10 +578,17 @@ mod tests {
         // Stale means named nowhere, not unmatched: an event read in a shape the scan does not see
         // stays listed, so its fix never has to go into cdp-methods.ts, where it would be dropped.
         let any_literal = literals(&files);
-        let stale: Vec<&&str> = EVENTS.iter().filter(|m| !any_literal.contains(**m)).collect();
+        let stale: Vec<&&str> = EVENTS
+            .iter()
+            .chain(phantab_cdp::DEVTOOLS_EVENTS)
+            .filter(|m| !any_literal.contains(**m))
+            .collect();
         assert!(stale.is_empty(), "phantab_cdp::EVENTS names events no code names: {stale:?}");
-        for m in EVENTS {
-            assert!(!allowed(m) && !BROWSER_ONLY.contains(m), "{m} is an event, not a command");
+        for m in EVENTS.iter().chain(phantab_cdp::DEVTOOLS_EVENTS) {
+            assert!(
+                !allowed(m) && !devtools(m) && !BROWSER_ONLY.contains(m),
+                "{m} is an event, not a command"
+            );
         }
     }
 

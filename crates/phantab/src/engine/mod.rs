@@ -10,9 +10,11 @@
 //!
 //! Error texts are part of the interface agents read: change them only on purpose.
 
+mod devtools;
 mod echo;
 mod files;
 mod guardrails;
+mod marks;
 mod ops;
 mod profiles;
 mod quiet;
@@ -93,7 +95,11 @@ pub(crate) struct State {
     /// What sign-ins saw sites show back, redacted from everything the agent receives ([`echo`]).
     echoes: Vec<Arc<crate::signin::Echo>>,
     /// The tabs whose screenshots are refused for it.
-    echo_marks: Vec<echo::EchoMark>,
+    echo_marks: Vec<marks::TabMark>,
+    /// The tabs a script ran on, which no sign-in or sign-up fills ([`marks`]).
+    script_marks: Vec<marks::TabMark>,
+    /// The documents a password was filled into, by tab, which no script runs on ([`marks`]).
+    fill_marks: Vec<(marks::TabMark, u64)>,
 }
 
 /// A live view token and the page it shows. A local token opens the viewer on this machine and never
@@ -292,6 +298,7 @@ impl Engine {
     ) {
         if reason == Some("removed") {
             self.echo_tab_closed(profile, tab);
+            self.marks_tab_closed(profile, tab);
         }
         let target_closed = reason == Some("target_closed");
         let kept = target_closed && tab_open == Some(true);
@@ -591,6 +598,9 @@ impl PageService for Engine {
 impl Engine {
     /// [`PageService::call`] before its redaction.
     async fn call_raw(&self, method: EngineMethod, args: Value, client: &str) -> EngineResult {
+        if matches!(method, EngineMethod::Evaluate | EngineMethod::Console | EngineMethod::Network) {
+            devtools::require(&self.setup.config, method)?;
+        }
         match method {
             EngineMethod::Pages => Ok(self.pages(client)),
             EngineMethod::Connect => {
@@ -610,6 +620,9 @@ impl Engine {
             EngineMethod::Wait => self.wait(client, &args).await,
             EngineMethod::SignIn => crate::signin::sign_in(self, client, &args).await,
             EngineMethod::SignUp => crate::signin::sign_up(self, client, &args).await,
+            EngineMethod::Evaluate => self.evaluate(client, &args).await,
+            EngineMethod::Console => self.console(client, &args).await,
+            EngineMethod::Network => self.network(client, &args).await,
         }
     }
 }

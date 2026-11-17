@@ -102,6 +102,18 @@ pub trait Host: Send + Sync {
     async fn passkey_hand_off(&self, _record: &dyn SignInRecord) -> Option<Value> {
         None
     }
+    /// The refusal when an agent's script ran on the record's page (`what`: `sign-in` or `sign-up`),
+    /// which no password is filled into (THREAT-MODEL SR-90). A host with no developer tools (a
+    /// test's) keeps the default: no script ever ran.
+    fn scripted(&self, _record: &dyn SignInRecord, _what: &str) -> Option<EngineError> {
+        None
+    }
+    /// Just before a fill: marks the document the password goes into, so no agent script runs on it
+    /// (SR-90). `false` when it could not be marked; the fill does not go then. A host with no developer
+    /// tools (a test's) keeps the default.
+    async fn mark_fill(&self, _record: &dyn SignInRecord) -> bool {
+        true
+    }
 }
 
 /// For the engine's other calls on a page: refuses while a sign-in runs, and

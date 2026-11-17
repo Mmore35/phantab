@@ -62,8 +62,9 @@ has the test and the recorded runs, so you can run it yourself.
 - **It is cheap to run.** Every byte a tool returns costs your agent tokens, so phantab returns little:
   `browser_snapshot` gives the page as plain lines, not JSON, and on a repeat only what changed;
   `browser_act` runs several actions and the check after them in one call; page ids are shortened and
-  unchanged fields left out. phantab never turns on Chrome's network and audit event streams, which are
-  most of a heavy page's protocol traffic.
+  unchanged fields left out. phantab never turns on Chrome's audit event stream, and turns on its
+  network and console streams, most of a heavy page's protocol traffic, only for a page whose agent
+  asks for them with the developer tools (below).
 - **It knows when to stop.** Human checks and passkeys are never answered for you: phantab shows you
   the page and waits. Optional guardrails ask for your confirmation before payments, password changes
   and deletions.
@@ -94,7 +95,8 @@ gets and what runs on your machine. As of November 2026:
 - **Chrome DevTools MCP** (Google) is a Node.js server. By default it starts its own Chrome with a
   separate profile; it can also attach to your running Chrome over remote debugging, which you turn on
   in Chrome and approve when the server connects. It has DevTools features phantab does not, such as
-  performance traces and network inspection.
+  performance traces. phantab's own developer tools (a page's console, its requests, running a script
+  in it) are off unless you turn them on, and never show your cookies.
 - **Playwright MCP** (Microsoft) is a Node.js server built on Playwright. It starts its own browser by
   default, and with its bridge extension it can use tabs in your browser. It supports Chromium, Firefox
   and WebKit.
@@ -197,8 +199,8 @@ and what is not.
 
 The 15 tools: `browser_status`, `browser_connect`, `browser_open`, `browser_pages`, `browser_tabs`,
 `browser_attach`, `browser_snapshot`, `browser_act`, `browser_wait`, `browser_show`, `browser_resume`,
-`browser_screenshot`, `browser_close`, `browser_sign_in` and `browser_sign_up`. Each tool describes
-itself to the agent.
+`browser_screenshot`, `browser_close`, `browser_sign_in` and `browser_sign_up`, and three developer
+tools when you turn them on (below). Each tool describes itself to the agent.
 
 Results can be files. `browser_screenshot` takes a PNG or JPEG of the view, the full page or one
 element, at a view size of your choosing (390 wide for a phone), and with `path` saves it there and
@@ -216,6 +218,17 @@ from your computer into a file input, answer the page's next dialog (`["dialog",
 prompt's text), and go back, forward or reload. With guardrails `light` or `full`, every upload and
 every dialog accept waits for your yes (`docs/GUARDRAILS.md`).
 
+Developer tools are off unless `config.json` sets `"devTools": true` (`docs/GUARDRAILS.md` §
+Developer tools). Then `browser_evaluate` runs a script in the page, as its own scripts run, and
+answers its result (a form's own objects, say, such as `g_form` on ServiceNow); `browser_console`
+gives the page's errors, warnings and uncaught exceptions; and `browser_network` lists its requests,
+failed ones first, with one request's headers and body on asking. Each page is recorded from the
+first call that asks about it. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
+leave phantab, and nothing reads a cookie. With guardrails `light` or `full`, every script waits for
+your yes. A script and a password phantab fills never share a page: phantab signs in and signs up only
+on a tab no script ran on (open a fresh page for it), and runs no script on a page it filled a password
+into until that page reloads.
+
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
 a page it reads, it can do as you, on every site you are signed in to. Read this before you install.
@@ -231,6 +244,10 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
 
   **On a work machine, or anywhere an agent reads untrusted pages, use `full`.** Secrets stay out of
   logs and files in every mode. See `docs/GUARDRAILS.md`, including what the confirmation cannot stop.
+- **Developer tools are off.** With `"devTools": true`, an agent can run any script in a page, as the
+  site's own scripts can: read what the page shows and holds (cookies a script can read included) and
+  act as you there. Your httpOnly cookies and every request's cookie and authorization headers stay
+  out of its reach. Turn it on only where you would let the agent open DevTools on your tabs.
 - **Agents share a site.** By default, several agents, and you, can change one site at once
   (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
   ServiceNow, for example, the current update set and application scope, so one agent's switch moves
@@ -321,7 +338,7 @@ words from the lists below: nothing a page or a password manager wrote reaches t
 | `not-ready` | The page was still loading or moved during the call. Nothing was sent. | Wait for the page, then call again. |
 | `none` | No saved login matches this site, or none of them has the name given in `account`. | Tell the owner. Never guess a password. |
 | `ambiguous` | More than one saved login matches; `count` says how many. | Ask the owner which, then call again with `account` set to its exact name. |
-| `refused` | The page or the login failed a safety check: a page not on HTTPS, a form phantab cannot trace, a login the password manager asks its own password for, or a login other than the one this page already used. | Tell the owner. |
+| `refused` | The page or the login failed a safety check: a page not on HTTPS, a form phantab cannot trace, a login the password manager asks its own password for, a login other than the one this page already used, or a script (`browser_evaluate`) that ran on the page after the provider was asked. | Tell the owner. |
 | `ask-first` | The owner listed this site as one to be asked about first. | Ask the owner. |
 | `locked` | The password manager is locked. | Ask the owner to unlock it, then call again. |
 | `busy` | A sign-in or sign-up is already running on this page, or the call ran out of time before anything was typed (a slow password manager, for example). | Call again in a moment. |
@@ -381,7 +398,8 @@ It has these of its own:
 A sign-up's `failed` has two more reasons: `page-moved` (the page changed between the save and the
 fill) and `not-taken` (the form did not accept the password). The password is saved before it is
 typed, so after either of these the new login is already in the password manager. It may be there
-too after `owner-has-page`, `provider-failed`, or a `failed` with `page-ended` or `error`.
+too after `owner-has-page`, `provider-failed`, `refused` (a script ran on the page while the login
+was saved), or a `failed` with `page-ended` or `error`.
 - After `page-moved`, call again once the page is still, without `regenerate`: the saved password is
   typed in and the answer is `filled-existing`.
 - After `not-taken`, a second call types the same password and will most likely end the same way.

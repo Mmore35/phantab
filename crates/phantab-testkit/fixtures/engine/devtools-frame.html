@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Developer tools frame</title></head>
+<body>
+<p id="where">the twin frame</p>
+<script>
+// Framed cross-site by `engine/devtools`: evaluate run in this frame reads `frameValue`, which the
+// main document does not have.
+window.frameValue = 'read in the twin frame at ' + location.origin;
+</script>
+</body></html>

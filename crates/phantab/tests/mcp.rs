@@ -17,6 +17,11 @@ use serde_json::{Value, json};
 /// change to a tool rewrites it: run this test with `PHANTAB_UPDATE_GOLDEN=1`, then review the diff.
 const TOOLS_GOLDEN: &str = include_str!("fixtures/tools-list.json");
 const TOOLS_GOLDEN_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools-list.json");
+/// `tools/list`'s `result` with `"devTools": true` in config.json (THREAT-MODEL SR-90): the list above
+/// and the three developer tools after it. Rewritten the same way.
+const DEVTOOLS_GOLDEN: &str = include_str!("fixtures/tools-list-devtools.json");
+const DEVTOOLS_GOLDEN_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools-list-devtools.json");
 
 struct Mcp {
     child: Child,
@@ -112,6 +117,45 @@ fn tools_list_matches_the_golden_file_byte_for_byte() {
     }
     // Listing tools starts no service.
     assert!(rt.endpoint().is_none());
+}
+
+/// The tool list `phantab mcp` sends for a given config.json.
+fn listed_with(config: &Value) -> String {
+    let rt = Runtime::new();
+    rt.write_config(config);
+    let mut mcp = Mcp::start(&rt, &[]);
+    mcp.initialize();
+    mcp.send(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }));
+    let ours: Value = serde_json::from_str(&mcp.line(Duration::from_secs(10))).unwrap();
+    serde_json::to_string(&ours["result"]).unwrap()
+}
+
+/// SR-90: only the JSON `true` lists the developer tools; anything else lists the golden above.
+#[test]
+fn developer_tools_are_listed_only_with_dev_tools_true() {
+    let base = json!({ "profileDirectory": "test" });
+    let listed = listed_with(&json!({ "profileDirectory": "test", "devTools": true }));
+    if std::env::var_os("PHANTAB_UPDATE_GOLDEN").is_some() {
+        std::fs::write(
+            DEVTOOLS_GOLDEN_PATH,
+            format!(
+                "{listed}
+"
+            ),
+        )
+        .unwrap();
+    } else {
+        assert_eq!(
+            listed,
+            DEVTOOLS_GOLDEN.trim_end(),
+            "tools/list with devTools changed; see DEVTOOLS_GOLDEN"
+        );
+    }
+    for off in [json!(false), json!("true"), json!(1), json!(null)] {
+        let mut config = base.clone();
+        config["devTools"] = off.clone();
+        assert_eq!(listed_with(&config), TOOLS_GOLDEN.trim_end(), "devTools {off}");
+    }
 }
 
 #[test]

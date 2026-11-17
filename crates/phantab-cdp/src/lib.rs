@@ -8,6 +8,7 @@
 
 mod browser;
 mod connection;
+mod devtools;
 mod dom;
 mod error;
 mod events;
@@ -21,11 +22,15 @@ mod ws;
 
 pub use browser::{Browser, LaunchOptions, default_args, spawn_guard};
 pub use connection::Connection;
+pub use devtools::{
+    CONSOLE_KEPT, CONSOLE_TEXT, ConsoleMessage, ConsoleRead, Evaluated, NetworkRead, REQUESTS_KEPT, Redirect,
+    Request, clean_headers,
+};
 #[cfg(feature = "test-seams")]
 pub use dom::Unsettled;
 pub use dom::{COVERED_PREFIX, ClickError};
 pub use error::CdpError;
-pub use events::{EVENTS, reads_event};
+pub use events::{DEVTOOLS_EVENTS, EVENTS, reads_devtools_event, reads_event};
 pub use handle::{Arg, JsHandle};
 pub use input::combo_keys;
 pub use page::{

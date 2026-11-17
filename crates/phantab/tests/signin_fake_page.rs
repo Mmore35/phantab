@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -94,12 +95,23 @@ struct Script {
     /// A frame and the URL Chrome reports it moved to, at the first `location.href` read after the
     /// provider was asked.
     moves_when_asked: Option<(&'static str, &'static str)>,
+    /// The first sign-in fill fails as the link to the page drops (a detach): the fill's command
+    /// errs, and the record counts one more detach before the answer comes.
+    fill_drops_link: bool,
     shows: Shows,
 }
 
 impl Script {
     fn new(docs: Vec<Doc>, report: Value) -> Script {
-        Script { docs, report, submitted: false, on_submit: None, moves_when_asked: None, shows: Shows::Yes }
+        Script {
+            docs,
+            report,
+            submitted: false,
+            on_submit: None,
+            moves_when_asked: None,
+            fill_drops_link: false,
+            shows: Shows::Yes,
+        }
     }
 
     fn moves_when_asked(mut self, frame: &'static str, url: &'static str) -> Script {
@@ -285,6 +297,8 @@ struct RecState {
 struct Rec {
     page: Page,
     st: Mutex<RecState>,
+    /// The links to the page that dropped, as the transport counts them.
+    detaches: Arc<AtomicU64>,
 }
 
 #[async_trait]
@@ -298,7 +312,7 @@ impl SignInRecord for Rec {
     }
 
     fn detaches(&self) -> u64 {
-        0
+        self.detaches.load(Ordering::SeqCst)
     }
 
     async fn recover(&self) -> Result<(), EngineError> {
@@ -363,6 +377,12 @@ struct Lane {
     events: mpsc::UnboundedSender<TransportEvent>,
     dir: tempfile::TempDir,
     serializer: Serializer,
+    /// Whether an agent's script has run on the page by now (`Host::scripted`); none ever does when unset.
+    script_ran: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// From which `Host::mark_fill` call on (1: every one) the document cannot be marked.
+    unmarkable_from: Option<usize>,
+    /// How many times a fill asked to mark the document.
+    marks: AtomicUsize,
 }
 
 #[async_trait]
@@ -402,6 +422,16 @@ impl Host for Lane {
     async fn end_leak(&self, _record: &dyn SignInRecord) {
         self.rec.st.lock().unwrap().leaked = true;
     }
+
+    fn scripted(&self, _record: &dyn SignInRecord, what: &str) -> Option<EngineError> {
+        let ran = self.script_ran.as_ref().is_some_and(|ran| ran());
+        ran.then(|| EngineError(format!("An agent's script ran on this page: no {what} here.")))
+    }
+
+    async fn mark_fill(&self, _record: &dyn SignInRecord) -> bool {
+        let call = self.marks.fetch_add(1, Ordering::SeqCst) + 1;
+        self.unmarkable_from.is_none_or(|from| call < from)
+    }
 }
 
 impl Lane {
@@ -411,10 +441,13 @@ impl Lane {
         let asked = dir.path().join("asked.jsonl");
         let seen: Arc<OnceLock<Page>> = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let detaches: Arc<AtomicU64> = Arc::default();
         let (page_script, events, page_seen) = (Arc::clone(&script), tx.clone(), Arc::clone(&seen));
+        let page_detaches = Arc::clone(&detaches);
         let transport = RelayTransport::from_fn(move |_session, method: String, params: Value| {
             let (script, events, seen, asked) =
                 (Arc::clone(&page_script), events.clone(), Arc::clone(&page_seen), asked.clone());
+            let detaches = Arc::clone(&page_detaches);
             async move {
                 let reply = match method.as_str() {
                     "Page.getFrameTree" => Reply::Now(frame_tree(&script.lock().unwrap())),
@@ -449,6 +482,15 @@ impl Lane {
                             None => Reply::Now(json!({})),
                         }
                     }
+                    // The first sign-in fill, when the link drops under it: Chrome fails the command.
+                    "Runtime.callFunctionOn"
+                        if params["functionDeclaration"] == FILL_FIELDS
+                            && std::mem::take(&mut script.lock().unwrap().fill_drops_link) =>
+                    {
+                        detaches.fetch_add(1, Ordering::SeqCst);
+                        Reply::Now(json!({"result": {"type": "object", "subtype": "error"},
+                            "exceptionDetails": {"exceptionId": 1, "text": "Uncaught", "lineNumber": 0, "columnNumber": 0}}))
+                    }
                     "Runtime.callFunctionOn" => {
                         let reply = call(&script, &params);
                         if params["functionDeclaration"] == HREF && provider_asked(&asked) {
@@ -482,8 +524,45 @@ impl Lane {
             "values": {"username": USERNAME, "password": PASSWORD, "code": CODE},
         });
         std::fs::write(dir.path().join("provider.json"), control.to_string()).unwrap();
-        let rec = Arc::new(Rec { page, st: Mutex::default() });
-        Lane { rec, script, events: tx, dir, serializer: Serializer::default() }
+        let rec = Arc::new(Rec { page, st: Mutex::default(), detaches });
+        Lane {
+            rec,
+            script,
+            events: tx,
+            dir,
+            serializer: Serializer::default(),
+            script_ran: None,
+            unmarkable_from: None,
+            marks: AtomicUsize::new(0),
+        }
+    }
+
+    /// An agent's script has run on the page once `ran` holds; the call's own check at its start is the
+    /// first to ask.
+    fn script_runs_when(mut self, ran: impl Fn() -> bool + Send + Sync + 'static) -> Lane {
+        self.script_ran = Some(Box::new(ran));
+        self
+    }
+
+    /// An agent's script runs on the page once the provider has been asked.
+    fn script_runs_once_asked(self) -> Lane {
+        let log = self.path("asked.jsonl");
+        self.script_runs_when(move || provider_asked(&log))
+    }
+
+    /// The document cannot be marked from the `from`th `Host::mark_fill` call on (1: every call).
+    fn unmarkable_from(mut self, from: usize) -> Lane {
+        self.unmarkable_from = Some(from);
+        self
+    }
+
+    fn marks(&self) -> usize {
+        self.marks.load(Ordering::SeqCst)
+    }
+
+    /// No field of any frame holds anything: nothing of the credential was typed. Compared, never printed.
+    fn typed_nothing(&self) -> bool {
+        self.script.lock().unwrap().docs.iter().flat_map(|d| &d.inputs).all(|i| i.value.is_empty())
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -850,4 +929,100 @@ async fn a_check_frame_that_does_not_say_it_is_hidden_keeps_the_wall() {
             assert_eq!(lane.requests(), 1);
         }
     }
+}
+
+// --- An agent's script and a password phantab fills share no page (THREAT-MODEL SR-90) ---
+
+/// A script runs on the page while the provider answers: the call's check at its start found none, so
+/// only the fill's second look, just before it types, stands between. It refuses; the provider was
+/// asked, nothing is typed, and the document is not even marked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_script_that_runs_while_the_provider_answers_gets_no_password_typed() {
+    let script = Script::new(vec![doc("F", 1, LOGIN, sign_in_form())], report(&["username", "password"]));
+    let lane = Lane::new(script).await.script_runs_once_asked();
+
+    assert_eq!(lane.sign().await, json!({"status": "refused"}));
+    assert_eq!(lane.requests(), 1, "the provider was asked: the check at the start did not refuse");
+    assert!(lane.typed_nothing(), "a field holds what the provider gave");
+    assert_eq!(lane.marks(), 0, "refused before the document was marked");
+    assert_eq!(lane.phase(), None);
+}
+
+/// The document the password would go into cannot be marked against agent scripts: the fill does not go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_in_document_that_cannot_be_marked_gets_no_password_typed() {
+    let script = Script::new(vec![doc("F", 1, LOGIN, sign_in_form())], report(&["username", "password"]));
+    let lane = Lane::new(script).await.unmarkable_from(1);
+
+    assert_eq!(lane.sign().await, json!({"status": "not-ready"}));
+    assert_eq!(lane.requests(), 1, "the provider was asked");
+    assert_eq!(lane.marks(), 1);
+    assert!(lane.typed_nothing(), "a field holds what the provider gave");
+    assert_eq!(lane.phase(), None);
+}
+
+/// The first fill fails as the link to the page drops; the fill re-reads the page and goes again only
+/// once the re-read document is marked. When it cannot be, nothing is typed. The control: the same
+/// page, markable, is filled on the second go and signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fill_that_goes_again_after_a_detach_marks_the_document_first() {
+    for markable in [false, true] {
+        let mut script =
+            Script::new(vec![doc("F", 1, LOGIN, sign_in_form())], report(&["username", "password"]));
+        script.fill_drops_link = true;
+        let lane = Lane::new(script).await;
+        let lane = if markable { lane } else { lane.unmarkable_from(2) };
+
+        let signed = lane.sign().await;
+        assert!(!lane.script.lock().unwrap().fill_drops_link, "the first fill dropped the link");
+        assert_eq!(lane.rec.detaches(), 1);
+        assert_eq!(lane.requests(), 1);
+        if markable {
+            assert_eq!(signed, json!({"status": "submitted"}));
+            // The password field is blanked after the submit; the username stays as the fill left it.
+            assert!(lane.value("F", "username") == USERNAME, "the second go filled the form");
+        } else {
+            assert_eq!(signed, json!({"status": "not-ready"}));
+            assert!(lane.typed_nothing(), "a field holds what the provider gave");
+        }
+        assert_eq!(lane.marks(), 2, "the second go asked to mark the re-read document");
+    }
+}
+
+/// A script runs on the page while the source creates the login: the call's check at its start found
+/// none, the fill's look just before it types refuses. The login stays saved (README's sign-up note);
+/// nothing is typed and the page record holds no password.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_script_that_runs_while_the_login_is_created_gets_no_password_typed() {
+    let src = Arc::new(MemorySource::default());
+    let created = Arc::clone(&src);
+    let lane = Lane::new(Script::new(vec![doc("F", 1, JOIN, sign_up_form())], sign_up_report()))
+        .await
+        .script_runs_when(move || created.creates() > 0);
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "refused"}));
+    assert_eq!(src.creates(), 1, "the source was asked: the check at the start did not refuse");
+    assert_eq!(src.count(), 1, "the login was saved");
+    assert!(lane.typed_nothing(), "a field holds the new password");
+    assert_eq!(lane.marks(), 0, "refused before the document was marked");
+    assert!(lane.rec.on_page().is_none(), "the page record holds no password");
+    assert_eq!(lane.screenshot().await, Ok(()));
+}
+
+/// The document the new password would go into cannot be marked: the fill does not go, and the page
+/// record holds no password.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_up_document_that_cannot_be_marked_gets_no_password_typed() {
+    let src = MemorySource::default();
+    let lane = Lane::new(Script::new(vec![doc("F", 1, JOIN, sign_up_form())], sign_up_report()))
+        .await
+        .unmarkable_from(1);
+
+    assert_eq!(lane.sign_up(&src).await, json!({"status": "failed", "reason": "page-moved"}));
+    assert_eq!(src.creates(), 1, "the source was asked");
+    assert_eq!(src.count(), 1, "the login was saved");
+    assert_eq!(lane.marks(), 1);
+    assert!(lane.typed_nothing(), "a field holds the new password");
+    assert!(lane.rec.on_page().is_none(), "the page record holds no password");
+    assert_eq!(lane.screenshot().await, Ok(()));
 }

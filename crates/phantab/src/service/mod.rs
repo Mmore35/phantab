@@ -133,8 +133,10 @@ async fn serve() -> anyhow::Result<()> {
         RemoteState::Listening(r) => Some(r.base.clone()),
         _ => None,
     };
-    // Only the usual profile and otherProfiles may link (SR-76).
-    let bridge = Arc::new(Bridge::with_profiles(config.allowed_other_profiles()));
+    // Only the usual profile and otherProfiles may link (SR-76); the developer tools only with `devTools`
+    // (SR-90).
+    let bridge =
+        Arc::new(Bridge::with_profiles(config.allowed_other_profiles()).with_dev_tools(config.dev_tools()));
     let serializer = Serializer::default();
     let engine = engine_api::build_engine(EngineSetup {
         config,

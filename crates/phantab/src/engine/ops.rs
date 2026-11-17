@@ -470,7 +470,7 @@ impl Engine {
 
     /// The sign-up sweep (SR-80, SR-81) on a page a sign-up filled: a copy of the new password is
     /// blanked, or the page ended, before the call reads or acts. Nothing on any other page.
-    async fn sweep_sign_up(&self, r: &Arc<Rec>) -> EngineResult<()> {
+    pub(super) async fn sweep_sign_up(&self, r: &Arc<Rec>) -> EngineResult<()> {
         let held: Arc<dyn SignInRecord> = Arc::clone(r) as Arc<dyn SignInRecord>;
         crate::signin::sweep_sign_up(self, &held).await.map(drop)
     }

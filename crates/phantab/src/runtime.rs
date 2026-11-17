@@ -83,6 +83,14 @@ impl Config {
         }
         out
     }
+
+    /// `devTools` (THREAT-MODEL SR-90): the developer tools `browser_evaluate`, `browser_console` and
+    /// `browser_network`, on only when the value is the JSON boolean `true`. A string, a number or
+    /// anything else is off, so a mistyped setting never turns them on.
+    #[must_use]
+    pub fn dev_tools(&self) -> bool {
+        self.other.get("devTools") == Some(&Value::Bool(true))
+    }
 }
 
 /// `remoteViewer` in `config.json`: a second listener, on loopback, that serves only the live view. The
