@@ -954,8 +954,10 @@ impl Engine {
         }
         // A trace ends before its tab closes or waits as a spare (SR-91).
         self.stop_trace_of(id).await;
-        // An owner's tab stays open: what the agent emulated on it ends (SR-91).
-        if !owns_tab && isolated.is_none() {
+        // What the agent emulated ends with the page (SR-91): an owner's tab stays open, and the agent's
+        // own tab can wait as a spare, still attached, for the same agent's next open. An isolated
+        // browser closes whole.
+        if isolated.is_none() {
             self.end_emulation(&r).await;
         }
         if let Some(b) = isolated {

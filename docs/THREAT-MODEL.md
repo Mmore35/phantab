@@ -918,7 +918,8 @@ Each requirement is a release blocker, and each is tested in the lanes named.
     and one the owner has allowed reads the position the agent set.
   - Emulation is per page and never outlives the agent's hold on it: it is kept on the page's record,
     listed in `browser_pages` and in every answer that describes the page, and ended by a `clear` call,
-    by the page's close (an owner's tab that stays open is put back first) and by its release to the
+    by the page's close (a tab that stays open, an owner's or the agent's own kept as a spare for its
+    next open, is put back first) and by its release to the
     owner with `browser_show`. A new debugging session on the page (a recovered page) starts with none,
     as Chrome ends a session's emulation with it. Emulation is a write: a page handed to the owner
     refuses it. Network conditions also start the page's network recording (SR-90), since Chrome

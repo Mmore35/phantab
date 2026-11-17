@@ -2247,7 +2247,8 @@ async fn a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit() 
 
 /// Phase 6 proof 4: each emulation reaches the page and is listed, location is set without the
 /// permission to read it, a held page refuses emulation, and emulation ends with a clear call and with
-/// close, on an owner's tab that stays open.
+/// close, on the agent's own tab kept as a spare for its next open and on an owner's tab that stays
+/// open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn emulation_reaches_the_page_and_clears_on_clear_and_close() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
@@ -2310,6 +2311,15 @@ async fn emulation_reaches_the_page_and_clears_on_clear_and_close() {
     lane.ok("show", json!({ "pageId": a }), "a").await;
     let held = lane.err("emulate", json!({ "pageId": a, "cpu": 2 }), "a").await;
     assert!(held.contains("handed to the owner"), "{held}");
+
+    // Close ends it on the agent's own tab too, which waits as a spare for the agent's next open.
+    let b = lane.open("a", "/engine/basic").await;
+    lane.ok("emulate", json!({ "pageId": b, "userAgent": "phantab-test-agent" }), "a").await;
+    assert_eq!(read(&b, agent).await, json!("phantab-test-agent"));
+    lane.ok("close", json!({ "pageId": b }), "a").await;
+    let c = lane.open("a", "/engine/basic").await;
+    assert_eq!(read(&c, agent).await, own_agent, "the spare kept the closed page's emulation");
+    lane.ok("close", json!({ "pageId": c }), "a").await;
 
     // Close ends it on an owner's tab, which stays open.
     let url = lane.fixtures.url("/engine/basic");
