@@ -176,6 +176,12 @@ pub struct PasskeyAsks {
     pub answered: u64,
 }
 
+/// The isolated world `browser_trace` measures a page in (THREAT-MODEL SR-91): its own, so the page's
+/// scripts cannot change the numbers it keeps, and apart from [`ISOLATED_WORLD`], whose contexts the
+/// page's bookkeeping follows. It is made by name (`Page.createIsolatedWorld`), which finds the world
+/// the measuring script already runs in.
+pub const MEASURE_WORLD: &str = "phantab-measure";
+
 /// The isolated world phantab's page functions run in (THREAT-MODEL SR-34). It shares the frame's DOM but
 /// none of the page's JavaScript: a page that replaces `document.querySelector`, a prototype method or
 /// the `value` setter cannot change what a read returns, steer where a click lands, or see a value a
@@ -793,6 +799,10 @@ impl Inner {
             // Recorded only from the page's own target (SR-90); a frame in another process is not.
             if session == root {
                 self.state.lock().recording.on_event(method, params);
+                // A trace's end wakes `Page::trace_end`.
+                if method == "Tracing.tracingComplete" {
+                    self.bump();
+                }
             }
             return;
         }
@@ -1440,6 +1450,138 @@ impl Page {
             return Ok((bytes, true));
         }
         Ok((body.as_bytes().to_vec(), false))
+    }
+
+    /// Starts a trace of the page's own target (THREAT-MODEL SR-91): Chrome records the `categories`
+    /// into a buffer of `buffer_kb` and stops recording once it is full (`recordUntilFull`). Every other
+    /// category is left out (`excludedCategories: ["*"]`). Chrome reports the fill every half second.
+    /// Fails, sending nothing, while a trace runs on this page.
+    pub async fn trace_start(&self, categories: &[&str], buffer_kb: u64) -> Result<(), CdpError> {
+        {
+            let mut st = self.inner.state.lock();
+            if st.recording.trace.is_some() {
+                return Err(CdpError::Other("a trace is already running on this page".into()));
+            }
+            st.recording.trace = Some(crate::devtools::TraceLog::default());
+        }
+        let params = json!({
+            "transferMode": "ReturnAsStream", "streamFormat": "json", "streamCompression": "none",
+            "bufferUsageReportingInterval": 500,
+            "traceConfig": {
+                "recordMode": "recordUntilFull", "traceBufferSizeInKb": buffer_kb,
+                "includedCategories": categories, "excludedCategories": ["*"],
+            },
+        });
+        if let Err(e) = self.send("Tracing.start", params).await {
+            self.inner.state.lock().recording.trace = None;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The running trace's buffer fill, 0 to 1, as Chrome last reported it; `None` with no trace.
+    pub fn trace_fill(&self) -> Option<f64> {
+        self.inner.state.lock().recording.trace.as_ref().map(|t| t.full)
+    }
+
+    /// Ends the page's trace and reads it from Chrome's stream (`IO.read`, then `IO.close`), waiting up to
+    /// `wait` for Chrome to finish writing. More than `max_bytes` is an error, and the stream is closed
+    /// either way. The page has no trace afterwards, whatever the outcome.
+    pub async fn trace_end(&self, wait: Duration, max_bytes: usize) -> Result<crate::TraceData, CdpError> {
+        let ended = self.trace_wait(wait).await;
+        let full = self.inner.state.lock().recording.trace.take().is_some_and(|t| t.full >= crate::TRACE_FULL);
+        let (data_lost, stream) = ended?;
+        let handle = stream.ok_or_else(|| CdpError::Other("Chrome ended the trace without a stream".into()))?;
+        let read = self.read_stream(&handle, max_bytes).await;
+        let closed = self.send("IO.close", json!({ "handle": handle })).await;
+        let bytes = read?;
+        closed?;
+        Ok(crate::TraceData { bytes, data_lost, full })
+    }
+
+    /// Sends `Tracing.end` and waits for its `Tracing.tracingComplete`.
+    async fn trace_wait(&self, wait: Duration) -> Result<(bool, Option<String>), CdpError> {
+        if self.inner.state.lock().recording.trace.is_none() {
+            return Err(CdpError::Other("no trace is running on this page".into()));
+        }
+        let mut changed = self.inner.changed.subscribe();
+        self.send("Tracing.end", json!({})).await?;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            if let Some(done) = self.inner.state.lock().recording.trace.as_ref().and_then(|t| t.complete.clone()) {
+                return Ok(done);
+            }
+            if let Some(r) = self.inner.closed_reason() {
+                return Err(CdpError::Closed(r));
+            }
+            match tokio::time::timeout_at(deadline, changed.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => return Err(CdpError::Closed("Target closed".into())),
+                Err(_) => {
+                    let ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+                    return Err(CdpError::WaitTimeout { ms, last: Some("Tracing.tracingComplete".into()) });
+                }
+            }
+        }
+    }
+
+    /// Reads one of Chrome's streams to its end, a megabyte at a time.
+    async fn read_stream(&self, handle: &str, max_bytes: usize) -> Result<Vec<u8>, CdpError> {
+        use base64::Engine as _;
+        let mut bytes = Vec::new();
+        loop {
+            let r = self.send("IO.read", json!({ "handle": handle, "size": 1 << 20 })).await?;
+            let data = r.get("data").and_then(Value::as_str).unwrap_or("");
+            if r.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
+                let chunk = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|e| CdpError::Other(format!("IO.read: {e}")))?;
+                bytes.extend_from_slice(&chunk);
+            } else {
+                bytes.extend_from_slice(data.as_bytes());
+            }
+            if bytes.len() > max_bytes {
+                return Err(CdpError::Other(format!("the trace is over {max_bytes} bytes")));
+            }
+            if r.get("eof").and_then(Value::as_bool) != Some(false) {
+                return Ok(bytes);
+            }
+        }
+    }
+
+    /// Runs `source` in the measuring world ([`MEASURE_WORLD`]) of every new document of the page, from
+    /// its start, and in the current document now. Answers the script's identifier, for
+    /// [`Page::remove_measure_script`].
+    pub async fn add_measure_script(&self, source: &str) -> Result<String, CdpError> {
+        let params = json!({ "source": source, "worldName": MEASURE_WORLD, "runImmediately": true });
+        let r = self.send("Page.addScriptToEvaluateOnNewDocument", params).await?;
+        self.evaluate_measure(&format!("() => {{ {source} }}")).await?;
+        Ok(r.get("identifier").and_then(Value::as_str).unwrap_or_default().to_owned())
+    }
+
+    /// Stops running a [`Page::add_measure_script`] script in new documents.
+    pub async fn remove_measure_script(&self, identifier: &str) -> Result<(), CdpError> {
+        let params = json!({ "identifier": identifier });
+        self.send("Page.removeScriptToEvaluateOnNewDocument", params).await.map(drop)
+    }
+
+    /// Runs `js` (a function source, awaited) in the main frame's measuring world ([`MEASURE_WORLD`]) and
+    /// answers its result by value.
+    pub async fn evaluate_measure(&self, js: &str) -> Result<Value, CdpError> {
+        let frame = self.main_frame()?;
+        let world = json!({ "frameId": frame.as_str(), "worldName": MEASURE_WORLD });
+        let r = self.send("Page.createIsolatedWorld", world).await?;
+        let ctx = r.get("executionContextId").and_then(Value::as_i64);
+        let ctx = ctx.ok_or_else(|| CdpError::Other("Page.createIsolatedWorld gave no context".into()))?;
+        let call = json!({
+            "functionDeclaration": js, "executionContextId": ctx, "returnByValue": true, "awaitPromise": true,
+        });
+        let r = self.send("Runtime.callFunctionOn", call).await?;
+        if let Some(e) = r.get("exceptionDetails") {
+            let message = e.pointer("/exception/description").or_else(|| e.get("text")).and_then(Value::as_str);
+            return Err(CdpError::Evaluation { name: None, message: message.unwrap_or("threw").to_owned(), value: None });
+        }
+        Ok(r.pointer("/result/value").cloned().unwrap_or(Value::Null))
     }
 
     /// Sends a raw command on the root session, with the page's timeout and close handling.

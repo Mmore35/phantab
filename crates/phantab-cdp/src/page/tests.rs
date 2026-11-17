@@ -2291,3 +2291,101 @@ async fn a_refused_layout_metrics_reads_the_viewport_from_the_page() {
     assert_eq!(v, BoundingBox { x: 3.0, y: 400.0, width: 390.0, height: 844.0 });
     assert_eq!(rig.mock.count("Page.getLayoutMetrics"), 1);
 }
+
+/// A handler whose trace stream holds `chunks`, read in order.
+fn stream_handler(chunks: Vec<(&'static str, bool)>) -> Handler {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    handler(move |_, m, _| {
+        (m == "IO.read").then(|| {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (data, eof) = chunks.get(i).copied().unwrap_or(("", true));
+            Reply::Ok(json!({"data": data, "eof": eof}))
+        })
+    })
+}
+
+#[tokio::test]
+async fn a_trace_records_only_its_categories_and_reads_its_stream_to_the_end() {
+    let rig = Rig::new(stream_handler(vec![("{\"traceEvents\":", false), ("[]}", true)])).await;
+    rig.page.trace_start(&["loading", "devtools.timeline"], 4096).await.unwrap();
+    let (_, start) = rig.mock.last("Tracing.start").unwrap();
+    assert_eq!(start["transferMode"], "ReturnAsStream");
+    assert_eq!(start["traceConfig"]["includedCategories"], json!(["loading", "devtools.timeline"]));
+    assert_eq!(start["traceConfig"]["excludedCategories"], json!(["*"]));
+    assert_eq!(start["traceConfig"]["recordMode"], "recordUntilFull");
+    // One trace at a time: the second start sends nothing.
+    assert!(rig.page.trace_start(&["loading"], 4096).await.is_err());
+    assert_eq!(rig.mock.count("Tracing.start"), 1);
+
+    rig.event(None, "Tracing.bufferUsage", json!({"percentFull": 0.25}));
+    rig.settle().await;
+    assert_eq!(rig.page.trace_fill(), Some(0.25));
+
+    let ending = rig.page.trace_end(Duration::from_secs(2), 1 << 20);
+    let completing = async {
+        wait_for(|| rig.mock.count("Tracing.end") == 1).await;
+        rig.event(None, "Tracing.tracingComplete", json!({"dataLossOccurred": false, "stream": "s-1"}));
+    };
+    let (data, ()) = tokio::join!(ending, completing);
+    let data = data.unwrap();
+    assert_eq!(data.bytes, b"{\"traceEvents\":[]}");
+    assert!(!data.data_lost && !data.full);
+    let reads: Vec<Value> = rig.mock.calls().into_iter().filter(|c| c.1 == "IO.read").map(|c| c.2).collect();
+    assert_eq!(reads.len(), 2);
+    assert!(reads.iter().all(|r| r["handle"] == "s-1"));
+    assert_eq!(rig.mock.last("IO.close").unwrap().1["handle"], "s-1");
+    assert_eq!(rig.page.trace_fill(), None, "the page has no trace afterwards");
+}
+
+#[tokio::test]
+async fn a_trace_over_its_size_is_refused_and_its_stream_still_closed() {
+    let rig = Rig::new(stream_handler(vec![("0123456789", false), ("0123456789", true)])).await;
+    rig.page.trace_start(&["loading"], 4096).await.unwrap();
+    let ending = rig.page.trace_end(Duration::from_secs(2), 15);
+    let completing = async {
+        wait_for(|| rig.mock.count("Tracing.end") == 1).await;
+        rig.event(None, "Tracing.tracingComplete", json!({"dataLossOccurred": true, "stream": "s-2"}));
+    };
+    let (data, ()) = tokio::join!(ending, completing);
+    let e = data.unwrap_err().to_string();
+    assert!(e.contains("over 15 bytes"), "{e}");
+    assert_eq!(rig.mock.last("IO.close").unwrap().1["handle"], "s-2");
+    assert_eq!(rig.page.trace_fill(), None);
+}
+
+#[tokio::test]
+async fn a_trace_that_never_completes_ends_at_its_wait_and_frees_the_page() {
+    let rig = Rig::new(handler(|_, _, _| None)).await;
+    assert!(rig.page.trace_end(Duration::from_millis(50), 100).await.is_err(), "no trace is running");
+    rig.page.trace_start(&["loading"], 4096).await.unwrap();
+    let e = rig.page.trace_end(Duration::from_millis(50), 100).await.unwrap_err();
+    assert!(matches!(e, CdpError::WaitTimeout { .. }), "{e}");
+    assert_eq!(rig.mock.count("IO.read"), 0);
+    rig.page.trace_start(&["loading"], 4096).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_measuring_world_is_its_own_and_its_answer_comes_back_by_value() {
+    let rig = Rig::new(handler(|_, m, p| match m {
+        "Page.addScriptToEvaluateOnNewDocument" => Some(Reply::Ok(json!({"identifier": "7"}))),
+        "Runtime.callFunctionOn" if p["functionDeclaration"].as_str().is_some_and(|f| f.contains("throw")) => {
+            Some(Reply::Ok(json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": "Error: no"}}})))
+        }
+        "Runtime.callFunctionOn" => Some(Reply::Ok(json!({"result": {"type": "object", "value": {"n": 1}}}))),
+        _ => None,
+    }))
+    .await;
+    rig.context(None, "MAIN", 7);
+    rig.settle().await;
+    assert_eq!(rig.page.add_measure_script("globalThis.x = 1;").await.unwrap(), "7");
+    let (_, add) = rig.mock.last("Page.addScriptToEvaluateOnNewDocument").unwrap();
+    assert_eq!(add["worldName"], MEASURE_WORLD);
+    assert_ne!(MEASURE_WORLD, ISOLATED_WORLD);
+    let (_, world) = rig.mock.last("Page.createIsolatedWorld").unwrap();
+    assert_eq!(world["worldName"], MEASURE_WORLD);
+    assert_eq!(rig.page.evaluate_measure("() => ({n: 1})").await.unwrap(), json!({"n": 1}));
+    let e = rig.page.evaluate_measure("() => { throw 1 }").await.unwrap_err();
+    assert!(e.to_string().contains("Error: no"), "{e}");
+    rig.page.remove_measure_script("7").await.unwrap();
+    assert_eq!(rig.mock.last("Page.removeScriptToEvaluateOnNewDocument").unwrap().1["identifier"], "7");
+}

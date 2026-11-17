@@ -257,7 +257,12 @@ test('a closed window leaves the agent-window record', async () => {
 
 // THREAT-MODEL SR-90, L1: the developer-tools commands cross only on a connection whose first welcome
 // declared devTools as the boolean true. No welcome turns on a cookie command or any other ban.
-const DEVTOOLS = ['Log.enable', 'Network.enable', 'Network.getResponseBody', 'Runtime.terminateExecution'];
+const DEVTOOLS = ['Emulation.clearGeolocationOverride', 'Emulation.setCPUThrottlingRate', 'Emulation.setEmulatedMedia',
+  'Emulation.setGeolocationOverride', 'Emulation.setUserAgentOverride', 'IO.close', 'IO.read', 'Log.enable',
+  'Network.emulateNetworkConditions', 'Network.enable', 'Network.getResponseBody',
+  'Page.removeScriptToEvaluateOnNewDocument', 'Runtime.terminateExecution', 'Tracing.end', 'Tracing.start'];
+// A stream read or close needs the tab's own finished trace (SR-91), tested on its own below.
+const RELAYED = DEVTOOLS.filter(m => !m.startsWith('IO.'));
 const offError = m => 'CDP method not allowed: ' + m + ' (a developer tool; the service did not turn on devTools)';
 
 test('developer-tools commands are refused unless the welcome declared devTools', async () => {
@@ -281,15 +286,44 @@ test('with devTools declared the developer-tools commands are relayed, and the b
   await settle();
   await fake.op('attach', { tabId: 5 });
   let id = 0;
-  for (const method of DEVTOOLS) {
+  for (const method of RELAYED) {
     assert.deepEqual(await fake.op('send', { tabId: 5, method, params: {} }, ++id), { id, result: {} });
   }
-  assert.deepEqual(fake.callsOf('debugger.sendCommand').map(c => c[1]), DEVTOOLS);
+  assert.deepEqual(fake.callsOf('debugger.sendCommand').map(c => c[1]), RELAYED);
   for (const method of ['Network.getAllCookies', 'Network.getCookies', 'Network.setCookie', 'Network.deleteCookies',
     'Network.setExtraHTTPHeaders', 'Storage.getCookies', 'Fetch.enable', 'Browser.close', 'Security.disable', 'Page.setDownloadBehavior']) {
     assert.deepEqual(await fake.op('send', { tabId: 5, method, params: {} }, ++id), { id, error: 'CDP method not allowed: ' + method });
   }
-  assert.equal(fake.callsOf('debugger.sendCommand').length, DEVTOOLS.length);
+  assert.equal(fake.callsOf('debugger.sendCommand').length, RELAYED.length);
+});
+
+// THREAT-MODEL SR-91, L1: IO.read and IO.close reach only the stream the tab's own trace finished with,
+// on its own target, until that stream is closed; any other handle, tab or session is refused unsent.
+test("a stream is read only for the tab's own finished trace, until it is closed", async () => {
+  const fake = await startWorker();
+  fake.port.receive({ welcome: true, events: ['Page.frameNavigated'], devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  await fake.op('attach', { tabId: 6 });
+  const refused = m => 'CDP method not allowed: ' + m + " (not this tab's trace)";
+  let id = 0;
+  const read = (tabId, handle, extra = {}) => fake.op('send', { tabId, method: 'IO.read', params: { handle }, ...extra }, ++id);
+  // No trace yet: no handle is read.
+  assert.deepEqual(await read(5, '1'), { id, error: refused('IO.read') });
+  await fake.op('send', { tabId: 5, method: 'Tracing.start', params: {} }, ++id);
+  // A running trace has no stream yet.
+  assert.deepEqual(await read(5, '1'), { id, error: refused('IO.read') });
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Tracing.tracingComplete', { dataLossOccurred: false, stream: '7' });
+  const before = fake.callsOf('debugger.sendCommand').length;
+  assert.deepEqual(await read(5, '8'), { id, error: refused('IO.read') }, 'another handle');
+  assert.deepEqual(await read(6, '7'), { id, error: refused('IO.read') }, 'another tab');
+  assert.deepEqual(await read(5, '7', { sessionId: 'S1' }), { id, error: refused('IO.read') }, 'a child session');
+  assert.equal(fake.callsOf('debugger.sendCommand').length, before);
+  assert.deepEqual(await read(5, '7'), { id, result: {} });
+  assert.deepEqual(await fake.op('send', { tabId: 5, method: 'IO.close', params: { handle: '7' } }, ++id), { id, result: {} });
+  assert.deepEqual(await read(5, '7'), { id, error: refused('IO.read') }, 'a closed stream');
+  assert.deepEqual(fake.callsOf('debugger.sendCommand').slice(before).map(c => [c[1], c[2]]),
+    [['IO.read', { handle: '7' }], ['IO.close', { handle: '7' }]]);
 });
 
 test("only a port's first welcome declares devTools, and a new connection starts without it", async t => {

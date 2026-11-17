@@ -45,11 +45,24 @@ export const CDP_METHODS: ReadonlySet<string> = new Set([
 // THREAT-MODEL SR-90: the developer-tools commands, a second part of the list. They are relayed only on
 // a connection whose welcome declared `devTools` (background.ts), and the service sends them only while
 // its `devTools` setting is on. No cookie command and no other Network.* method belongs here.
+// SR-91: the emulation and trace commands. `IO.read` and `IO.close` are relayed only for the stream the
+// trace of the same tab returned (background.ts), never for a handle the service names otherwise.
 export const DEVTOOLS_METHODS: ReadonlySet<string> = new Set([
+  'Emulation.clearGeolocationOverride',
+  'Emulation.setCPUThrottlingRate',
+  'Emulation.setEmulatedMedia',
+  'Emulation.setGeolocationOverride',
+  'Emulation.setUserAgentOverride',
+  'IO.close',
+  'IO.read',
   'Log.enable',
+  'Network.emulateNetworkConditions',
   'Network.enable',
   'Network.getResponseBody',
+  'Page.removeScriptToEvaluateOnNewDocument',
   'Runtime.terminateExecution',
+  'Tracing.end',
+  'Tracing.start',
 ]);
 
 // THREAT-MODEL SR-90: the events a developer-tools recording reads, forwarded only for a tab whose
@@ -63,4 +76,6 @@ export const DEVTOOLS_EVENTS: ReadonlySet<string> = new Set([
   'Network.responseReceived',
   'Runtime.consoleAPICalled',
   'Runtime.exceptionThrown',
+  'Tracing.bufferUsage',
+  'Tracing.tracingComplete',
 ]);

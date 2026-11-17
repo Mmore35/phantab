@@ -98,14 +98,17 @@ test('the CDP allow-list is exact names and bans the dangerous domains', () => {
     assert.match(m, /^(DOM|Emulation|Input|Page|Runtime|Target)\.[a-z][A-Za-z]+$/, m);
     assert.ok(!['Target.createBrowserContext', 'Page.setDownloadBehavior', 'Target.createTarget', 'Target.closeTarget'].includes(m), m);
   }
-  // SR-90: the developer-tools part is these four, and its events never an ExtraInfo or cookie one.
-  assert.deepEqual(devtools, ['Log.enable', 'Network.enable', 'Network.getResponseBody', 'Runtime.terminateExecution']);
+  // SR-90 and SR-91: the developer-tools part is exactly these, and its events never an ExtraInfo or cookie one.
+  assert.deepEqual(devtools, ['Emulation.clearGeolocationOverride', 'Emulation.setCPUThrottlingRate', 'Emulation.setEmulatedMedia',
+    'Emulation.setGeolocationOverride', 'Emulation.setUserAgentOverride', 'IO.close', 'IO.read', 'Log.enable',
+    'Network.emulateNetworkConditions', 'Network.enable', 'Network.getResponseBody',
+    'Page.removeScriptToEvaluateOnNewDocument', 'Runtime.terminateExecution', 'Tracing.end', 'Tracing.start']);
   for (const m of [...methods, ...devtools, ...events]) {
     assert.doesNotMatch(m, /^(Storage|Fetch|Browser|Security)\./, m);
     assert.doesNotMatch(m, /Cookie|ExtraInfo$/, m);
     if (m.startsWith('Network.')) assert.ok(devtools.includes(m) || events.includes(m), m);
   }
-  for (const m of events) assert.match(m, /^(Log|Network|Runtime)\.[a-z][A-Za-z]+$/, m);
+  for (const m of events) assert.match(m, /^(Log|Network|Runtime|Tracing)\.[a-z][A-Za-z]+$/, m);
   for (const list of [methods, devtools, events]) assert.deepEqual([...new Set(list)].sort(), list, 'sorted, no duplicates');
   assert.equal(new Set([...methods, ...devtools, ...events]).size, quoted.length, 'a name in two parts');
 });

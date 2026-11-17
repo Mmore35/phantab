@@ -24,7 +24,7 @@ pub use browser::{Browser, LaunchOptions, default_args, spawn_guard};
 pub use connection::Connection;
 pub use devtools::{
     CONSOLE_KEPT, CONSOLE_TEXT, ConsoleMessage, ConsoleRead, Evaluated, NetworkRead, REQUESTS_KEPT, Redirect,
-    Request, clean_headers,
+    Request, TRACE_FULL, TraceData, clean_headers,
 };
 #[cfg(feature = "test-seams")]
 pub use dom::Unsettled;
@@ -34,7 +34,7 @@ pub use events::{DEVTOOLS_EVENTS, EVENTS, reads_devtools_event, reads_event};
 pub use handle::{Arg, JsHandle};
 pub use input::combo_keys;
 pub use page::{
-    BoundingBox, DIALOG_MESSAGE_LIMIT, Dialog, FrameId, FrameInfo, History, HistoryEntry, PASSKEY_WATCH,
-    Page, PageOptions, PasskeyAsks,
+    BoundingBox, DIALOG_MESSAGE_LIMIT, Dialog, FrameId, FrameInfo, History, HistoryEntry, MEASURE_WORLD,
+    PASSKEY_WATCH, Page, PageOptions, PasskeyAsks,
 };
 pub use transport::{RelayFuture, RelaySendFn, RelayTransport, SessionId, Transport, TransportEvent};

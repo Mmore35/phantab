@@ -6,6 +6,9 @@
 //! [`clean_headers`] before they are stored, and no request body is read (`Network.enable` runs with
 //! `maxPostDataSize: 0`). Only the header maps are read, never `headersText`, `requestHeaders` or
 //! `requestHeadersText`, and no `...ExtraInfo` event reaches this module (`crate::DEVTOOLS_EVENTS`).
+//!
+//! A trace (SR-91) is followed here only by its fill and its end; the trace itself is read from the
+//! stream Chrome gives (`Page::trace_end`).
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -202,7 +205,51 @@ pub(crate) struct NetworkLog {
 pub(crate) struct Recording {
     pub(crate) console: Option<ConsoleLog>,
     pub(crate) network: Option<NetworkLog>,
+    /// A running trace (THREAT-MODEL SR-91), from `Page::trace_start` until `Page::trace_end` reads it.
+    pub(crate) trace: Option<TraceLog>,
 }
+
+/// A trace's progress as Chrome reports it: how full its buffer is, and once ended, the stream that
+/// holds it. Nothing of the trace itself passes through here; it is read from the stream.
+#[derive(Debug, Default)]
+pub(crate) struct TraceLog {
+    /// The buffer's last reported fill, 0 to 1 (`Tracing.bufferUsage`).
+    pub(crate) full: f64,
+    /// `Tracing.tracingComplete`: whether Chrome lost data, and the stream handle it gave.
+    pub(crate) complete: Option<(bool, Option<String>)>,
+}
+
+impl TraceLog {
+    fn on_event(&mut self, method: &str, params: &Value) {
+        match method {
+            "Tracing.bufferUsage" => {
+                if let Some(full) = params.get("percentFull").and_then(Value::as_f64) {
+                    self.full = full;
+                }
+            }
+            "Tracing.tracingComplete" => {
+                let lost = params.get("dataLossOccurred").and_then(Value::as_bool) == Some(true);
+                let stream = params.get("stream").and_then(Value::as_str).map(str::to_owned);
+                self.complete = Some((lost, stream));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A finished trace, as [`crate::Page::trace_end`] read it from Chrome's stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceData {
+    /// The trace JSON, as Chrome wrote it.
+    pub bytes: Vec<u8>,
+    /// Chrome said it lost events.
+    pub data_lost: bool,
+    /// The buffer was full ([`TRACE_FULL`]): Chrome stopped recording there.
+    pub full: bool,
+}
+
+/// The buffer fill at which a trace counts as full: Chrome keeps no more events from there.
+pub const TRACE_FULL: f64 = 0.99;
 
 fn cut(text: &str) -> String {
     match text.char_indices().nth(CONSOLE_TEXT) {
@@ -412,6 +459,9 @@ impl Recording {
         if let Some(c) = &mut self.console {
             c.on_event(method, params);
         }
+        if let Some(t) = &mut self.trace {
+            t.on_event(method, params);
+        }
     }
 
     /// The main frame has a new document (`loader`): what the old one logged goes, and so do its
@@ -445,7 +495,7 @@ mod tests {
     }
 
     fn recording() -> Recording {
-        Recording { console: Some(ConsoleLog::new(1000.0)), network: Some(NetworkLog::default()) }
+        Recording { console: Some(ConsoleLog::new(1000.0)), network: Some(NetworkLog::default()), trace: None }
     }
 
     #[test]
