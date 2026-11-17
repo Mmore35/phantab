@@ -495,7 +495,11 @@ mod tests {
     }
 
     fn recording() -> Recording {
-        Recording { console: Some(ConsoleLog::new(1000.0)), network: Some(NetworkLog::default()), trace: None }
+        Recording {
+            console: Some(ConsoleLog::new(1000.0)),
+            network: Some(NetworkLog::default()),
+            trace: None,
+        }
     }
 
     #[test]

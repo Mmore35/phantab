@@ -2368,8 +2368,12 @@ async fn a_trace_that_never_completes_ends_at_its_wait_and_frees_the_page() {
 async fn the_measuring_world_is_its_own_and_its_answer_comes_back_by_value() {
     let rig = Rig::new(handler(|_, m, p| match m {
         "Page.addScriptToEvaluateOnNewDocument" => Some(Reply::Ok(json!({"identifier": "7"}))),
-        "Runtime.callFunctionOn" if p["functionDeclaration"].as_str().is_some_and(|f| f.contains("throw")) => {
-            Some(Reply::Ok(json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": "Error: no"}}})))
+        "Runtime.callFunctionOn"
+            if p["functionDeclaration"].as_str().is_some_and(|f| f.contains("throw")) =>
+        {
+            Some(Reply::Ok(
+                json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": "Error: no"}}}),
+            ))
         }
         "Runtime.callFunctionOn" => Some(Reply::Ok(json!({"result": {"type": "object", "value": {"n": 1}}}))),
         _ => None,

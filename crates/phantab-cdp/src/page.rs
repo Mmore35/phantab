@@ -1489,9 +1489,11 @@ impl Page {
     /// either way. The page has no trace afterwards, whatever the outcome.
     pub async fn trace_end(&self, wait: Duration, max_bytes: usize) -> Result<crate::TraceData, CdpError> {
         let ended = self.trace_wait(wait).await;
-        let full = self.inner.state.lock().recording.trace.take().is_some_and(|t| t.full >= crate::TRACE_FULL);
+        let full =
+            self.inner.state.lock().recording.trace.take().is_some_and(|t| t.full >= crate::TRACE_FULL);
         let (data_lost, stream) = ended?;
-        let handle = stream.ok_or_else(|| CdpError::Other("Chrome ended the trace without a stream".into()))?;
+        let handle =
+            stream.ok_or_else(|| CdpError::Other("Chrome ended the trace without a stream".into()))?;
         let read = self.read_stream(&handle, max_bytes).await;
         let closed = self.send("IO.close", json!({ "handle": handle })).await;
         let bytes = read?;
@@ -1519,7 +1521,9 @@ impl Page {
         self.send("Tracing.end", json!({})).await?;
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            if let Some(done) = self.inner.state.lock().recording.trace.as_ref().and_then(|t| t.complete.clone()) {
+            if let Some(done) =
+                self.inner.state.lock().recording.trace.as_ref().and_then(|t| t.complete.clone())
+            {
                 return Ok(done);
             }
             if let Some(r) = self.inner.closed_reason() {
@@ -1589,8 +1593,13 @@ impl Page {
         });
         let r = self.send("Runtime.callFunctionOn", call).await?;
         if let Some(e) = r.get("exceptionDetails") {
-            let message = e.pointer("/exception/description").or_else(|| e.get("text")).and_then(Value::as_str);
-            return Err(CdpError::Evaluation { name: None, message: message.unwrap_or("threw").to_owned(), value: None });
+            let message =
+                e.pointer("/exception/description").or_else(|| e.get("text")).and_then(Value::as_str);
+            return Err(CdpError::Evaluation {
+                name: None,
+                message: message.unwrap_or("threw").to_owned(),
+                value: None,
+            });
         }
         Ok(r.pointer("/result/value").cloned().unwrap_or(Value::Null))
     }

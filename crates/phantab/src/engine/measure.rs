@@ -138,7 +138,10 @@ pub(crate) struct Tracing {
 
 impl std::fmt::Debug for Tracing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tracing").field("page_id", &self.page_id).field("serial", &self.serial).finish_non_exhaustive()
+        f.debug_struct("Tracing")
+            .field("page_id", &self.page_id)
+            .field("serial", &self.serial)
+            .finish_non_exhaustive()
     }
 }
 
@@ -149,7 +152,10 @@ enum Phase {
     /// Its end is being read from Chrome.
     Finishing,
     /// Ended, by a stop or a limit (`ended` says which), and waiting for its stop.
-    Done { ended: String, result: Result<(TraceData, Value), String> },
+    Done {
+        ended: String,
+        result: Result<(TraceData, Value), String>,
+    },
 }
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
@@ -157,9 +163,9 @@ static SERIAL: AtomicU64 = AtomicU64::new(1);
 /// What `emulate` sets, as the page list names each.
 const KEYS: [&str; 5] = ["cpu", "network", "location", "userAgent", "colorScheme"];
 
-/// `name` given as JSON: absent `None`, `null` `Some(None)` (clear just this one).
-fn given<'a>(args: &'a Value, name: &str) -> Option<Option<&'a Value>> {
-    args.get(name).map(|v| (!v.is_null()).then_some(v))
+/// `name` given as JSON and not `null`; `null` clears just this one, as absent leaves it.
+fn given<'a>(args: &'a Value, name: &str) -> Option<&'a Value> {
+    args.get(name).filter(|v| !v.is_null())
 }
 
 fn number(v: &Value, name: &str, low: f64, high: f64, unit: &str) -> EngineResult<f64> {
@@ -192,12 +198,13 @@ fn settings(args: &Value) -> EngineResult<Option<Vec<Setting>>> {
     }
     if asked.is_empty() {
         return Err(EngineError(
-            "emulate: give at least one of cpu, network, location, userAgent or colorScheme, or clear true.".to_owned(),
+            "emulate: give at least one of cpu, network, location, userAgent or colorScheme, or clear true."
+                .to_owned(),
         ));
     }
     let mut out = Vec::new();
     for key in asked {
-        let value = match given(args, key).flatten() {
+        let value = match given(args, key) {
             None => None,
             Some(v) => Some(setting(key, v)?),
         };
@@ -214,7 +221,9 @@ fn setting(key: &str, v: &Value) -> EngineResult<Value> {
         "location" => location(v),
         "userAgent" => match v.as_str() {
             Some(s) if !s.trim().is_empty() && s.len() <= 1000 => Ok(v.clone()),
-            _ => Err(EngineError("userAgent: give it as a non-empty string of at most 1000 characters.".to_owned())),
+            _ => Err(EngineError(
+                "userAgent: give it as a non-empty string of at most 1000 characters.".to_owned(),
+            )),
         },
         _ => match v.as_str() {
             Some("light" | "dark") => Ok(v.clone()),
@@ -249,7 +258,9 @@ fn network(v: &Value) -> EngineResult<Value> {
         out.insert(k.clone(), x.clone());
     }
     if out.is_empty() {
-        return Err(EngineError("network: give at least one of offline, latencyMs, downloadKbps or uploadKbps.".to_owned()));
+        return Err(EngineError(
+            "network: give at least one of offline, latencyMs, downloadKbps or uploadKbps.".to_owned(),
+        ));
     }
     Ok(Value::Object(out))
 }
@@ -257,7 +268,8 @@ fn network(v: &Value) -> EngineResult<Value> {
 fn location(v: &Value) -> EngineResult<Value> {
     let (Some(lat), Some(long)) = (v.get("latitude"), v.get("longitude")) else {
         return Err(EngineError(
-            "location: give an object with latitude and longitude, and accuracy in metres if you want one.".to_owned(),
+            "location: give an object with latitude and longitude, and accuracy in metres if you want one."
+                .to_owned(),
         ));
     };
     number(lat, "location.latitude", -90.0, 90.0, "")?;
@@ -295,7 +307,8 @@ async fn apply(p: &Page, key: &str, value: Option<&Value>) -> Result<(), CdpErro
         }
         ("location", Some(v)) => {
             let accuracy = v.get("accuracy").and_then(Value::as_f64).unwrap_or(100.0);
-            let params = json!({ "latitude": v["latitude"], "longitude": v["longitude"], "accuracy": accuracy });
+            let params =
+                json!({ "latitude": v["latitude"], "longitude": v["longitude"], "accuracy": accuracy });
             p.send("Emulation.setGeolocationOverride", params).await?;
         }
         ("location", None) => {
@@ -306,7 +319,8 @@ async fn apply(p: &Page, key: &str, value: Option<&Value>) -> Result<(), CdpErro
             p.send("Emulation.setUserAgentOverride", json!({ "userAgent": agent })).await?;
         }
         (_, v) => {
-            let features = v.map_or_else(Vec::new, |v| vec![json!({ "name": "prefers-color-scheme", "value": v })]);
+            let features =
+                v.map_or_else(Vec::new, |v| vec![json!({ "name": "prefers-color-scheme", "value": v })]);
             p.send("Emulation.setEmulatedMedia", json!({ "features": features })).await?;
         }
     }
@@ -331,7 +345,9 @@ fn scrub(v: &mut Value) {
             }
         }
         Value::Array(a) => {
-            a.retain(|x| !x.get("name").and_then(Value::as_str).is_some_and(|n| secret(n) && x.get("value").is_some()));
+            a.retain(|x| {
+                !x.get("name").and_then(Value::as_str).is_some_and(|n| secret(n) && x.get("value").is_some())
+            });
             for x in a {
                 scrub(x);
             }
@@ -345,7 +361,8 @@ async fn finish(page: &Page, script: &str) -> Result<(TraceData, Value), String>
     let numbers = match page.evaluate_measure(READ_JS).await {
         Ok(v) if v.is_object() => v,
         _ => {
-            let why = json!({ "missing": "the page's numbers could not be read: it was navigating or had closed" });
+            let why =
+                json!({ "missing": "the page's numbers could not be read: it was navigating or had closed" });
             json!({ "load": why, "largestPaint": why, "layoutShift": why, "longTasks": why, "slowestRequests": why })
         }
     };
@@ -353,7 +370,9 @@ async fn finish(page: &Page, script: &str) -> Result<(TraceData, Value), String>
     let _ = page.remove_measure_script(script).await;
     match data {
         Ok(data) => Ok((data, numbers)),
-        Err(CdpError::Closed(_)) => Err("the page closed or was re-attached while it ran, which ends a trace".to_owned()),
+        Err(CdpError::Closed(_)) => {
+            Err("the page closed or was re-attached while it ran, which ends a trace".to_owned())
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -365,13 +384,13 @@ impl Engine {
         let asked = settings(args)?;
         self.lock_site(&r, None)?;
         self.sweep_sign_up(&r).await?;
-        let asked = match asked {
-            Some(asked) => asked,
-            None => {
-                let s = r.lock();
-                KEYS.into_iter().filter(|k| s.emulation.contains_key(*k)).map(|key| Setting { key, value: None }).collect()
-            }
-        };
+        let asked = asked.unwrap_or_else(|| {
+            let s = r.lock();
+            KEYS.into_iter()
+                .filter(|k| s.emulation.contains_key(*k))
+                .map(|key| Setting { key, value: None })
+                .collect()
+        });
         let asked = Arc::new(asked);
         self.cdp(&r, None, |p, _| {
             let (asked, r) = (Arc::clone(&asked), Arc::clone(&r));
@@ -418,7 +437,7 @@ impl Engine {
         let reload = args.get("reload").is_some_and(truthy);
         // A trace with a reload is a write: the reload is.
         let r = self.get(&page_id(args), owner, reload)?;
-        let seconds = match given(args, "seconds").flatten() {
+        let seconds = match given(args, "seconds") {
             None => TRACE_SECONDS,
             Some(v) => number(v, "seconds", 1.0, TRACE_MOST_SECONDS, " (the trace's time limit)")?,
         };
@@ -444,7 +463,8 @@ impl Engine {
             }
             let page = r.lock().page.clone();
             let (page_id, script, target) = (r.id.clone(), String::new(), Some(target));
-            st.trace = Some(Tracing { serial, page_id, page, seconds, script, target, phase: Phase::Starting });
+            st.trace =
+                Some(Tracing { serial, page_id, page, seconds, script, target, phase: Phase::Starting });
         }
         let action = reload.then_some("trace");
         let started = self
@@ -475,10 +495,13 @@ impl Engine {
         };
         if !running {
             if let Ok((p, script)) = &started {
-                let _ = tokio::time::timeout(Duration::from_secs(5), p.trace_discard(Duration::from_secs(4))).await;
+                let _ = tokio::time::timeout(Duration::from_secs(5), p.trace_discard(Duration::from_secs(4)))
+                    .await;
                 let _ = p.remove_measure_script(script).await;
             }
-            return Err(started.err().unwrap_or_else(|| EngineError("The page closed as its trace started.".to_owned())));
+            return Err(started
+                .err()
+                .unwrap_or_else(|| EngineError("The page closed as its trace started.".to_owned())));
         }
         self.watch_trace(serial, seconds);
         Ok(json!({ "pageId": r.id, "tracing": true, "seconds": num(seconds), "path": path }))
@@ -494,7 +517,8 @@ impl Engine {
                 let Some(engine) = engine.upgrade() else { return };
                 let reason = {
                     let st = engine.st();
-                    let Some(t) = st.trace.as_ref().filter(|t| t.serial == serial && matches!(t.phase, Phase::Running))
+                    let Some(t) =
+                        st.trace.as_ref().filter(|t| t.serial == serial && matches!(t.phase, Phase::Running))
                     else {
                         return;
                     };
@@ -518,7 +542,8 @@ impl Engine {
     async fn end_trace(&self, serial: u64, ended: String) {
         let (page, script) = {
             let mut st = self.st();
-            let Some(t) = st.trace.as_mut().filter(|t| t.serial == serial && matches!(t.phase, Phase::Running))
+            let Some(t) =
+                st.trace.as_mut().filter(|t| t.serial == serial && matches!(t.phase, Phase::Running))
             else {
                 return;
             };
@@ -536,7 +561,8 @@ impl Engine {
         let serial = self.st().trace.as_ref().filter(|t| t.page_id == r.id).map(|t| t.serial);
         let Some(serial) = serial else {
             return Err(EngineError(
-                "No trace is running on this page. Start one with action start, and a path to save it in.".to_owned(),
+                "No trace is running on this page. Start one with action start, and a path to save it in."
+                    .to_owned(),
             ));
         };
         self.end_trace(serial, "stopped".to_owned()).await;
@@ -545,40 +571,55 @@ impl Engine {
         let (ended, result, target) = loop {
             {
                 let mut st = self.st();
-                let done = st.trace.as_ref().filter(|t| t.serial == serial).map(|t| matches!(t.phase, Phase::Done { .. }));
+                let done = st
+                    .trace
+                    .as_ref()
+                    .filter(|t| t.serial == serial)
+                    .map(|t| matches!(t.phase, Phase::Done { .. }));
                 match done {
                     None => return Err(EngineError("The trace ended with its page, unsaved.".to_owned())),
                     Some(true) => {
-                        if let Some(Tracing { phase: Phase::Done { ended, result }, target, .. }) = st.trace.take() {
+                        if let Some(Tracing { phase: Phase::Done { ended, result }, target, .. }) =
+                            st.trace.take()
+                        {
                             break (ended, result, target);
                         }
                     }
                     Some(false) if tokio::time::Instant::now() >= give_up => {
                         st.trace = None;
-                        return Err(EngineError("Chrome did not finish writing the trace in time; it was dropped.".to_owned()));
+                        return Err(EngineError(
+                            "Chrome did not finish writing the trace in time; it was dropped.".to_owned(),
+                        ));
                     }
                     Some(false) => {}
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        let (data, numbers) = result.map_err(|e| EngineError(format!("The trace could not be saved: {e}.")))?;
+        let (data, numbers) =
+            result.map_err(|e| EngineError(format!("The trace could not be saved: {e}.")))?;
         let ended = if data.full && ended == "stopped" {
             format!("size limit of {} MB reached", TRACE_BUFFER_KB / 1024)
         } else {
             ended
         };
-        let mut trace: Value = serde_json::from_slice(&data.bytes)
-            .map_err(|e| EngineError(format!("The trace Chrome wrote is not JSON ({e}); nothing was saved.")))?;
+        let mut trace: Value = serde_json::from_slice(&data.bytes).map_err(|e| {
+            EngineError(format!("The trace Chrome wrote is not JSON ({e}); nothing was saved."))
+        })?;
         scrub(&mut trace);
         let bytes = serde_json::to_vec(&self.redacted(trace, false))
             .map_err(|e| EngineError(format!("saving the trace: {e}")))?;
-        let Some(target) = target else { return Err(EngineError("The trace had nowhere to be saved.".to_owned())) };
+        let Some(target) = target else {
+            return Err(EngineError("The trace had nowhere to be saved.".to_owned()));
+        };
         let mut out = target.write(bytes).await?;
         out.insert("pageId".into(), json!(r.id));
         out.insert("ended".into(), json!(ended));
         if data.data_lost {
-            out.insert("dataLost".into(), json!("Chrome reported that some events were lost; the trace has gaps."));
+            out.insert(
+                "dataLost".into(),
+                json!("Chrome reported that some events were lost; the trace has gaps."),
+            );
         }
         out.insert("numbers".into(), numbers);
         out.insert("note".into(), json!(NUMBERS_NOTE));
@@ -588,11 +629,7 @@ impl Engine {
     /// The trace of page `id` taken from its slot, if it has one.
     fn take_trace(&self, id: &str) -> Option<Tracing> {
         let mut st = self.st();
-        if st.trace.as_ref().is_some_and(|t| t.page_id == id) {
-            st.trace.take()
-        } else {
-            None
-        }
+        if st.trace.as_ref().is_some_and(|t| t.page_id == id) { st.trace.take() } else { None }
     }
 
     /// Ends page `id`'s trace before its page closes or is kept as a spare, unsaved: Chrome traces one
@@ -680,7 +717,10 @@ mod tests {
         });
         scrub(&mut t);
         let text = t.to_string();
-        assert!(!text.contains("a=1") && !text.contains("Bearer") && !text.contains("user-data-dir"), "{text}");
+        assert!(
+            !text.contains("a=1") && !text.contains("Bearer") && !text.contains("user-data-dir"),
+            "{text}"
+        );
         assert!(text.contains("text/html") && text.contains("*/*") && text.contains("cpu-brand"), "{text}");
         // Only a header list loses its entries: an event called "cookie" with no value stays.
         let mut events = json!([{ "name": "Cookie" }]);

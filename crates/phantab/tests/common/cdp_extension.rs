@@ -523,7 +523,8 @@ impl Ext {
             let session = a["sessionId"].as_str().map_or_else(|| root.clone(), SessionId::new);
             // A stream read or close only for the tab's own finished trace (`background.ts`, SR-91).
             if matches!(method.as_str(), "IO.read" | "IO.close") {
-                let own = s.streams.get(&tab).is_some_and(|h| a["params"]["handle"].as_str() == Some(h.as_str()));
+                let own =
+                    s.streams.get(&tab).is_some_and(|h| a["params"]["handle"].as_str() == Some(h.as_str()));
                 if a["sessionId"].is_string() || !own {
                     let e = format!("CDP method not allowed: {method} (not this tab's trace)");
                     return Box::pin(std::future::ready(Err(e)));

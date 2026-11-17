@@ -105,7 +105,10 @@ mod tests {
         domain.len() > 1
             && domain.chars().all(|c| c.is_ascii_alphabetic())
             && domain.starts_with(|c: char| c.is_ascii_uppercase())
-            && domain.chars().nth(1).is_some_and(|c| c.is_ascii_lowercase() || ["DOM", "IO"].contains(&domain))
+            && domain
+                .chars()
+                .nth(1)
+                .is_some_and(|c| c.is_ascii_lowercase() || ["DOM", "IO"].contains(&domain))
     }
 
     /// Whether a string literal's text is a `"Domain.method"` CDP name.

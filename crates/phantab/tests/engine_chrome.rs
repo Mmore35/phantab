@@ -2087,9 +2087,8 @@ async fn recording_traffic_is_counted() {
 /// Starts a trace of page `a` with a reload, saving it at `file`, waits for the fixture's layout shift,
 /// and stops it: the stop's answer.
 async fn traced_load(lane: &Lane, a: &str, file: &std::path::Path) -> Value {
-    let started = lane
-        .ok("trace", json!({ "pageId": a, "action": "start", "reload": true, "path": file }), "a")
-        .await;
+    let started =
+        lane.ok("trace", json!({ "pageId": a, "action": "start", "reload": true, "path": file }), "a").await;
     assert_eq!(started["tracing"], json!(true), "{started}");
     lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "shifted" }), "a").await;
     lane.ok("trace", json!({ "pageId": a, "action": "stop" }), "a").await

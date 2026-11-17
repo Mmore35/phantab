@@ -169,6 +169,8 @@ impl Engine {
             let mut s = r.lock();
             s.detached = Some(Detached { message: message.to_owned(), at: Instant::now(), name, menu });
             s.detaches += 1;
+            // Chrome ends a debugging session's emulation with it; a recovered page starts with none.
+            s.emulation.clear();
             (s.link.take(), std::mem::take(&mut s.calls))
         };
         if let Some(link) = link {
@@ -348,8 +350,6 @@ impl Engine {
         let generation = {
             let mut s = r.lock();
             s.page = linked.page.clone();
-            // A new debugging session: the old one's emulation ended with it.
-            s.emulation.clear();
             s.link = Some(linked.link);
             s.detached = None;
             s.generation += 1;
