@@ -160,7 +160,10 @@ fn developer_tools_are_listed_only_with_dev_tools_true() {
     let emulate = tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == "browser_emulate").unwrap();
     for (name, schema) in emulate["inputSchema"]["properties"].as_object().unwrap() {
         if name != "pageId" && name != "clear" {
-            assert!(schema["type"].as_array().is_some_and(|t| t.contains(&json!("null"))), "{name}: {schema}");
+            assert!(
+                schema["type"].as_array().is_some_and(|t| t.contains(&json!("null"))),
+                "{name}: {schema}"
+            );
         }
     }
     for off in [json!(false), json!("true"), json!(1), json!(null)] {

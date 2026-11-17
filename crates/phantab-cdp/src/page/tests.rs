@@ -2376,14 +2376,12 @@ async fn a_trace_chrome_may_still_hold_stays_held_until_a_discard_is_answered() 
     let rig = Rig::new(handler(move |_, m, _| {
         let timeout = || Reply::Err(CdpError::Timeout { method: m.to_owned() });
         match m {
-            "Tracing.start" if r.load(SeqCst) => {
-                Some(Reply::Err(CdpError::Protocol {
-                    method: m.to_owned(),
-                    code: Some(-32000),
-                    message: "Tracing has already been started".into(),
-                    data: None,
-                }))
-            }
+            "Tracing.start" if r.load(SeqCst) => Some(Reply::Err(CdpError::Protocol {
+                method: m.to_owned(),
+                code: Some(-32000),
+                message: "Tracing has already been started".into(),
+                data: None,
+            })),
             "Tracing.start" | "Tracing.end" if u.load(SeqCst) => Some(timeout()),
             _ => None,
         }
