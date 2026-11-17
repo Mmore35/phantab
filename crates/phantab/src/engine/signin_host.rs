@@ -168,4 +168,17 @@ impl Host for Engine {
         let r = self.rec_of(record)?;
         self.hand_off_passkey(&r).await
     }
+
+    fn scripted(&self, record: &dyn SignInRecord, what: &str) -> Option<EngineError> {
+        let r = self.rec_of(record)?;
+        self.script_marked(&r).then(|| EngineError(super::marks::scripted_refused(what)))
+    }
+
+    /// A record no longer current is not filled; the fill finds it gone at its next step either way.
+    async fn mark_fill(&self, record: &dyn SignInRecord) -> bool {
+        let Some(r) = self.rec_of(record) else { return false };
+        let Some(document) = super::marks::document_of(&record.page()).await else { return false };
+        self.mark_document_filled(&r, document);
+        true
+    }
 }

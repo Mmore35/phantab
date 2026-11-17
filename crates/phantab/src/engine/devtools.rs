@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 use super::Engine;
 use super::files::Target;
+use super::marks;
 use super::recover::Failed;
 use crate::engine_api::{EngineError, EngineMethod, EngineResult, page_id};
 use crate::runtime::Config;
@@ -169,7 +170,9 @@ impl Engine {
         }
         self.lock_site(&r, None)?;
         self.sweep_sign_up(&r).await?;
-        // A sign-up's new password is never shown to the agent (SR-80); a script could read its field.
+        // A script and a password phantab filled never share a page, in either order (SR-90, [`marks`]).
+        // While a sign-up's new password is in its fields this says so; the fill's own mark below holds
+        // the page after that, until its document is replaced, since the site's code may keep a copy.
         if r.on_page().is_some() {
             return Err(EngineError(
                 "evaluate refused: this page holds the new password a sign-up filled, which no script may read. Press the site's own button first; scripts run again once the password has left the page.".to_owned(),
@@ -179,9 +182,17 @@ impl Engine {
         let script = Arc::new(script);
         let ran = self
             .cdp(&r, Some("script"), |p, _| {
-                let script = Arc::clone(&script);
+                let (script, r) = (Arc::clone(&script), Arc::clone(&r));
                 async move {
                     let frame = frame_of(&p, script.frame.as_deref())?;
+                    // A document of this tab a password was filled into, or one phantab cannot name.
+                    if self.any_fill(&r)
+                        && marks::document_of(&p).await.is_none_or(|d| self.document_filled(&r, d))
+                    {
+                        return Err(Failed::Settled(EngineError(marks::FILLED_REFUSED.to_owned())));
+                    }
+                    // From here it counts as run, even if it throws or times out.
+                    self.mark_script(&r);
                     p.evaluate_script(&frame, &script.function, script.args.clone(), script.limit)
                         .await
                         .map_err(thrown)

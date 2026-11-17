@@ -2352,3 +2352,56 @@ async fn work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so(
     assert!(off.engine.provider().is_some());
     assert!(PageService::status(off.engine.as_ref()).get("work").is_none());
 }
+
+/// THREAT-MODEL SR-90's record-keeping: a script marks its tab until the tab closes, a fresh attach to it
+/// included, and `browser_sign_in` and `browser_sign_up` refuse there before they read any argument past
+/// the page or ask for a provider. A fill marks the one document it went into, of its tab alone.
+#[tokio::test]
+async fn a_script_marks_its_tab_until_it_closes_and_a_fill_marks_its_document() {
+    use crate::signin::SignInRecord;
+    let f = fixture_with(Recording::new(), None, Some("parity"));
+    let e = &f.engine;
+    let r = rec(e, "a", FIXTURE, Fields { tab_id: Some(5), ..Fields::default() }).await;
+    let other = rec(e, "a", FIXTURE, Fields { tab_id: Some(6), ..Fields::default() }).await;
+    let held = |r: &Arc<Rec>| Arc::clone(r) as Arc<dyn SignInRecord>;
+    // No provider is configured: an unmarked page gets as far as saying so.
+    let sign_in = json!({ "pageId": r.id });
+    assert_eq!(
+        crate::signin::sign_in(e.as_ref(), "a", &sign_in).await.unwrap()["status"],
+        json!("no-provider")
+    );
+    assert!(!e.script_marked(&r));
+
+    e.mark_script(&r);
+    assert!(e.script_marked(&r));
+    assert!(!e.script_marked(&other), "another tab is not marked");
+    let refused = err(crate::signin::sign_in(e.as_ref(), "a", &sign_in).await);
+    assert_eq!(refused, marks::scripted_refused("sign-in"));
+    assert!(refused.starts_with("sign-in refused: a script ran on this page"), "{refused}");
+    let sign_up = json!({ "pageId": r.id, "username": "new-user@example.test" });
+    assert_eq!(
+        err(crate::signin::sign_up(e.as_ref(), "a", &sign_up).await),
+        marks::scripted_refused("sign-up")
+    );
+    // Even with arguments sign-up would refuse: the page is the first thing it looks at.
+    let bad = json!({ "pageId": r.id });
+    assert_eq!(err(crate::signin::sign_up(e.as_ref(), "a", &bad).await), marks::scripted_refused("sign-up"));
+    assert!(crate::signin::Host::scripted(e.as_ref(), held(&other).as_ref(), "sign-in").is_none());
+    // A fresh attach to the same tab is the same tab; it closes and the mark goes with it.
+    let again = rec(e, "a", FIXTURE, Fields { tab_id: Some(5), ..Fields::default() }).await;
+    assert!(e.script_marked(&again));
+    e.tab_ended(&usual(), 5, Some("removed"), None, None);
+    let fresh = rec(e, "a", FIXTURE, Fields { tab_id: Some(5), ..Fields::default() }).await;
+    assert!(!e.script_marked(&fresh));
+
+    // A fill marks its document: that one, of that tab, until the tab closes.
+    assert!(!e.any_fill(&other));
+    e.mark_document_filled(&other, 1_234_u64);
+    assert!(e.any_fill(&other) && e.document_filled(&other, 1_234));
+    assert!(!e.document_filled(&other, 1_235), "another document of the tab is not marked");
+    assert!(!e.any_fill(&fresh) && !e.document_filled(&fresh, 1_234), "another tab is not marked");
+    let reattached = rec(e, "a", FIXTURE, Fields { tab_id: Some(6), ..Fields::default() }).await;
+    assert!(e.document_filled(&reattached, 1_234));
+    e.tab_ended(&usual(), 6, Some("removed"), None, None);
+    assert!(!e.any_fill(&reattached));
+}

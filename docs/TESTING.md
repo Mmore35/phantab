@@ -305,6 +305,7 @@ exists.
 | An agent saves a screenshot or snapshot to a relative path, a missing folder or a file it would replace | `lib`, `engine_chrome` (real Chrome) |
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
+| An agent's script and a password phantab filled share a page, in either order | `lib`, `signin_fake_page`, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
 | On a machine that sets `work`, an agent signs in, a provider starts, a check pops up by itself or the phone viewer listens | `lib`, `mcp`, `verification` (real Chrome) |
 
@@ -551,7 +552,10 @@ Test files, by the short names used above:
   match, and a frame the frame tree shows moving while the provider is asked. For sign-up (a
   `MemorySource`): a frame that held a copy of the new password and then stops answering
   holds the page and its screenshots until it goes, a frame that never held one does not, a page that
-  puts its copy back after each blank stays held, and a copy in the page's text ends the page.
+  puts its copy back after each blank stays held, and a copy in the page's text ends the page. For an
+  agent's script (THREAT-MODEL SR-90): a script that runs while the provider answers or the login is
+  created, and a document that cannot be marked (also on the fill's second go after a detach), get
+  nothing typed.
 - Lane 3, echoed values through `phantab serve` (real Chrome): `signin_echo`, on the echo, leak-url,
   leak-dom, leak-hash and leak-clobber pages. The sign-in goes on, every answer is redacted, screenshots
   of the tab are refused, the account is not stopped, and a fresh attach to a tab of your own is still

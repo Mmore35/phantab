@@ -16,6 +16,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use super::Engine;
+use super::marks::TabMark;
 use super::record::Rec;
 use crate::bridge::{Profile, TabId};
 use crate::engine_api::EngineError;
@@ -23,15 +24,6 @@ use crate::signin::Echo;
 
 /// The agent's answer to a screenshot of a marked tab.
 pub(crate) const SCREENSHOT_REFUSED: &str = "Screenshot refused: a sign-in on this tab saw the site show the password or code back on the page, and an image of it cannot be redacted. Use a snapshot, which phantab redacts. Screenshots of this tab work again once it closes.";
-
-/// A tab whose screenshots are refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EchoMark {
-    /// A shared tab: a fresh attach to it is the same tab.
-    Tab(Profile, TabId),
-    /// An isolated page, by record ID: its tab IDs are its own browser's.
-    Page(String),
-}
 
 /// `text` with each echo's forms written `[redacted]`, or `None` when none was in it.
 fn redact_str(echoes: &[Arc<Echo>], text: &str) -> Option<String> {
@@ -83,13 +75,8 @@ impl Engine {
 
     /// A sign-in saw an echo on `r`'s page: keep it, and mark the tab.
     pub(crate) fn add_echo(&self, r: &Rec, echo: Arc<Echo>) {
-        let mark = {
-            let s = r.lock();
-            match s.tab_id {
-                Some(tab) if s.isolated.is_none() => EchoMark::Tab(r.profile.clone(), tab),
-                _ => EchoMark::Page(r.id.clone()),
-            }
-        };
+        // The tab whose screenshots are refused.
+        let mark = TabMark::of(r);
         let mut st = self.st();
         st.echoes.push(echo);
         if !st.echo_marks.contains(&mark) {
@@ -109,8 +96,8 @@ impl Engine {
             (s.tab_id, s.isolated.is_some())
         };
         self.st().echo_marks.iter().any(|m| match m {
-            EchoMark::Tab(profile, t) => !isolated && *profile == r.profile && Some(*t) == tab,
-            EchoMark::Page(id) => *id == r.id,
+            TabMark::Tab(profile, t) => !isolated && *profile == r.profile && Some(*t) == tab,
+            TabMark::Page(id) => *id == r.id,
         })
     }
 
@@ -118,7 +105,7 @@ impl Engine {
     pub(crate) fn echo_tab_closed(&self, profile: &Profile, tab: TabId) {
         let mut st = self.st();
         if !st.echo_marks.is_empty() {
-            st.echo_marks.retain(|m| *m != EchoMark::Tab(profile.clone(), tab));
+            st.echo_marks.retain(|m| *m != TabMark::Tab(profile.clone(), tab));
         }
     }
 
@@ -126,7 +113,7 @@ impl Engine {
     pub(crate) fn echo_page_gone(&self, id: &str) {
         let mut st = self.st();
         if !st.echo_marks.is_empty() {
-            st.echo_marks.retain(|m| *m != EchoMark::Page(id.to_owned()));
+            st.echo_marks.retain(|m| *m != TabMark::Page(id.to_owned()));
         }
     }
 

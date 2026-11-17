@@ -230,7 +230,9 @@ user agent or colour scheme, until cleared; `browser_trace` saves a performance 
 Performance panel opens, and answers the page's load, largest paint, layout shift, long tasks and
 slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
 leave phantab, and nothing reads a cookie. With guardrails `light` or `full`, every script waits for
-your yes.
+your yes. A script and a password phantab fills never share a page: phantab signs in and signs up only
+on a tab no script ran on (open a fresh page for it), and runs no script on a page it filled a password
+into until that page reloads.
 
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
@@ -345,7 +347,7 @@ words from the lists below: nothing a page or a password manager wrote reaches t
 | `not-ready` | The page was still loading or moved during the call. Nothing was sent. | Wait for the page, then call again. |
 | `none` | No saved login matches this site, or none of them has the name given in `account`. | Tell the owner. Never guess a password. |
 | `ambiguous` | More than one saved login matches; `count` says how many. | Ask the owner which, then call again with `account` set to its exact name. |
-| `refused` | The page or the login failed a safety check: a page not on HTTPS, a form phantab cannot trace, a login the password manager asks its own password for, or a login other than the one this page already used. | Tell the owner. |
+| `refused` | The page or the login failed a safety check: a page not on HTTPS, a form phantab cannot trace, a login the password manager asks its own password for, a login other than the one this page already used, or a script (`browser_evaluate`) that ran on the page after the provider was asked. | Tell the owner. |
 | `ask-first` | The owner listed this site as one to be asked about first. | Ask the owner. |
 | `locked` | The password manager is locked. | Ask the owner to unlock it, then call again. |
 | `busy` | A sign-in or sign-up is already running on this page, or the call ran out of time before anything was typed (a slow password manager, for example). | Call again in a moment. |
@@ -405,7 +407,8 @@ It has these of its own:
 A sign-up's `failed` has two more reasons: `page-moved` (the page changed between the save and the
 fill) and `not-taken` (the form did not accept the password). The password is saved before it is
 typed, so after either of these the new login is already in the password manager. It may be there
-too after `owner-has-page`, `provider-failed`, or a `failed` with `page-ended` or `error`.
+too after `owner-has-page`, `provider-failed`, `refused` (a script ran on the page while the login
+was saved), or a `failed` with `page-ended` or `error`.
 - After `page-moved`, call again once the page is still, without `regenerate`: the saved password is
   typed in and the answer is `filled-existing`.
 - After `not-taken`, a second call types the same password and will most likely end the same way.

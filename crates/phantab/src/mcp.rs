@@ -559,7 +559,6 @@ fn snapshot_text(value: &Value) -> Option<String> {
     Shown::of(value).map(|s| s.full())
 }
 
-/// A value as one bare word when it is one, else as a JSON string, so a line still splits on spaces.
 /// Whether `frame` is written as the snapshot marks a control's frame: `f` and a number from 1.
 fn frame_number(frame: &str) -> bool {
     frame
@@ -576,6 +575,7 @@ fn frame_origin(legend: &str, n: &str) -> Option<String> {
     Some(serde_json::from_str::<String>(given).unwrap_or_else(|_| given.to_owned()))
 }
 
+/// A value as one bare word when it is one, else as a JSON string, so a line still splits on spaces.
 fn word(s: &str) -> String {
     if !s.is_empty() && !s.contains(|c: char| c.is_whitespace() || c == '"') {
         s.to_owned()

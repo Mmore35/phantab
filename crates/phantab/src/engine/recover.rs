@@ -118,6 +118,7 @@ impl Engine {
         self.drop_trace(id);
         if r.is_isolated() {
             self.echo_page_gone(id);
+            self.marks_page_gone(id);
         }
         let (link, calls) = {
             let mut s = r.lock();
