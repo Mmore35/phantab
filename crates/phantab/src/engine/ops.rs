@@ -591,10 +591,12 @@ impl Engine {
         crate::signin::before_screenshot(self, &held).await?;
         let shot = super::files::Shot::of(args)?;
         let target = super::files::Target::of(args)?;
-        if shot.resizes() && r.lock().paused {
-            return Err(EngineError(
-                "width and height: the owner holds this page (browser_show), so its view keeps his window's size. Take it without them, or after handback.".to_owned(),
-            ));
+        // The view of a page the owner holds is his window: no picture resizes it, scrolls it or stretches
+        // it, so those are refused before Chrome is asked anything.
+        if let Some(named) = shot.moves_view().filter(|_| r.lock().paused) {
+            return Err(EngineError(format!(
+                "{named}: the owner holds this page (browser_show), so its view is his window, which a picture does not resize, scroll or stretch. Take the plain picture of the view, or this one after handback."
+            )));
         }
         let mime = shot.mime();
         let data = self

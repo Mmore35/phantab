@@ -167,6 +167,25 @@ impl Shot {
         self.width.is_some() || self.height.is_some()
     }
 
+    /// The arguments given that change the view for the picture, as a refusal names them: `fullPage`
+    /// (Chrome stretches the view to the whole page while it captures), `selector` (the element is
+    /// scrolled into view, and captured beyond it), `width` and `height` (the view is resized). `None`
+    /// for the plain picture of the view, which changes nothing.
+    pub(crate) fn moves_view(&self) -> Option<String> {
+        let given = [
+            ("fullPage", self.full_page),
+            ("selector", self.selector.is_some()),
+            ("width", self.width.is_some()),
+            ("height", self.height.is_some()),
+        ];
+        let names: Vec<&str> = given.iter().filter(|(_, on)| *on).map(|(name, _)| *name).collect();
+        match names.as_slice() {
+            [] => None,
+            [one] => Some((*one).to_owned()),
+            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        }
+    }
+
     pub(crate) fn mime(&self) -> &'static str {
         if self.png { "image/png" } else { "image/jpeg" }
     }
@@ -327,6 +346,17 @@ mod tests {
             assert!(Shot::of(&json!({ "width": bad })).is_err(), "{bad}");
         }
         assert!(Shot::of(&json!({ "height": 700 })).unwrap().resizes());
+        // What a page the owner holds refuses, named as given; the plain picture moves nothing.
+        let moves = |args: Value| Shot::of(&args).unwrap().moves_view();
+        assert_eq!(moves(json!({ "path": "/x/a.png", "format": "png" })), None);
+        assert_eq!(moves(json!({ "fullPage": false, "selector": "" })), None);
+        assert_eq!(moves(json!({ "fullPage": true })).as_deref(), Some("fullPage"));
+        assert_eq!(moves(json!({ "selector": "#a" })).as_deref(), Some("selector"));
+        assert_eq!(moves(json!({ "width": 390, "height": 844 })).as_deref(), Some("width and height"));
+        assert_eq!(
+            moves(json!({ "selector": "#a", "width": 390, "height": 844 })).as_deref(),
+            Some("selector, width and height")
+        );
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         png.extend(390u32.to_be_bytes());
         png.extend(844u32.to_be_bytes());

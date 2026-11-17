@@ -1153,7 +1153,9 @@ fn png_size(bytes: &[u8]) -> (u32, u32) {
 /// 390-wide view, a full page taller than the view, one element in the document, in an open shadow
 /// root or in a website frame) and answers the file, not the image; the view is back to its usual size
 /// after each, also after one that failed. A relative path, a missing folder and an existing file
-/// without `overwrite` are refused. A snapshot with `path` saves its JSON and answers the path.
+/// without `overwrite` are refused. A snapshot with `path` saves its JSON and answers the path. On a
+/// page handed to the owner and scrolled partway, `selector`, `fullPage` and `width` are refused at
+/// once and the scroll stays; the plain picture is taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
@@ -1252,10 +1254,33 @@ async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
     let again = lane.err("snapshot", json!({ "pageId": a, "path": saved }), "a").await;
     assert!(again.contains("already exists"), "{again}");
 
-    // A page handed to the owner keeps his window's size: no width or height then, a plain picture yes.
+    // A page handed to the owner keeps his window as he left it, scrolled partway: no width or height
+    // then, no picture of one element (it would scroll his view to it) and none of the full page (it
+    // stretches his view for the capture), each refused at once with Chrome not asked; a plain picture
+    // of the view, yes.
     lane.ok("show", json!({ "pageId": a }), "a").await;
-    let held = shot(json!({ "width": 390 })).await.unwrap_err();
-    assert!(held.contains("the owner holds this page"), "{held}");
+    lane.ext.eval(tab, "scrollTo(0, 600)").await;
+    let scrolled = async || lane.ext.eval(tab, "scrollY").await;
+    let at = scrolled().await;
+    assert_eq!(at, json!(600));
+    let unsaved = dir.path().join("held-full.png");
+    for (args, named) in [
+        (json!({ "selector": "#far" }), "selector"),
+        (json!({ "fullPage": true, "path": unsaved }), "fullPage"),
+        (json!({ "width": 390 }), "width"),
+    ] {
+        let asked = Instant::now();
+        let out = shot(args).await;
+        let (took, now) = (asked.elapsed(), scrolled().await);
+        let held =
+            out.err().unwrap_or_else(|| panic!("{named}: taken on a held page; scrollY {at} -> {now}"));
+        assert!(held.starts_with(&format!("{named}: the owner holds this page")), "{held}");
+        assert!(held.contains("his window") && held.contains("after handback"), "{held}");
+        assert!(took < Duration::from_secs(3), "{named}: took {took:?}");
+        assert_eq!(now, at, "{named}: his view did not move");
+    }
+    assert!(!unsaved.exists(), "a refused picture saves nothing");
     shot(json!({ "path": dir.path().join("held.png") })).await.unwrap();
+    assert_eq!(scrolled().await, at);
     lane.finish().await;
 }
