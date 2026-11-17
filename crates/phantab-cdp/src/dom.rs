@@ -1932,10 +1932,11 @@ impl Page {
         let end =
             self.element_point_in(frame, to, false, true).await.map_err(|e| drag_end(e, "to", to, false))?;
         self.mouse_move(start.0, start.1).await?;
-        let (from_now, to_now) = futures_util::future::join(
+        // Boxed: the two checks side by side would double the size of every future that awaits a drag.
+        let (from_now, to_now) = Box::pin(futures_util::future::join(
             self.uncovered_at_in(frame, from, start),
             self.uncovered_at_in(frame, to, end),
-        )
+        ))
         .await;
         from_now.map_err(|e| drag_end(e, "from", from, true))?;
         to_now.map_err(|e| drag_end(e, "to", to, true))?;
