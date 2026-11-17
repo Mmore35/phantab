@@ -155,6 +155,14 @@ fn developer_tools_are_listed_only_with_dev_tools_true() {
             "tools/list with devTools changed; see DEVTOOLS_GOLDEN"
         );
     }
+    // Every emulation setting takes null, which ends just that one.
+    let tools: Value = serde_json::from_str(&listed).unwrap();
+    let emulate = tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == "browser_emulate").unwrap();
+    for (name, schema) in emulate["inputSchema"]["properties"].as_object().unwrap() {
+        if name != "pageId" && name != "clear" {
+            assert!(schema["type"].as_array().is_some_and(|t| t.contains(&json!("null"))), "{name}: {schema}");
+        }
+    }
     for off in [json!(false), json!("true"), json!(1), json!(null)] {
         let mut config = base.clone();
         config["devTools"] = off.clone();

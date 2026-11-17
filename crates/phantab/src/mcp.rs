@@ -163,7 +163,7 @@ fn devtools_defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static
         (
             "emulate",
             "Change what one page is told about its machine, until clear true, its close or its release to the owner (on only with devTools set): cpu slows its CPU that many times (1 to 20); network is an object of offline (true or false), latencyMs, downloadKbps and uploadKbps; location sets the position it is told (latitude, longitude, accuracy in metres) and grants no permission, so a site not allowed to read the location still cannot; userAgent replaces the browser's user agent; colorScheme is light or dark. A setting given as null ends just that one, and clear true, given alone, ends them all. The answer, and browser_pages, list what is on. It counts as a change to the page: a page handed to the owner refuses it. Leave pageId out for the page your last call named.",
-            json!({ "pageId": s(), "cpu": { "type": "number" }, "network": { "type": ["object", "null"] }, "location": { "type": ["object", "null"] }, "userAgent": { "type": ["string", "null"] }, "colorScheme": { "type": ["string", "null"], "enum": ["light", "dark", null] }, "clear": flag() }),
+            json!({ "pageId": s(), "cpu": { "type": ["number", "null"] }, "network": { "type": ["object", "null"] }, "location": { "type": ["object", "null"] }, "userAgent": { "type": ["string", "null"] }, "colorScheme": { "type": ["string", "null"], "enum": ["light", "dark", null] }, "clear": flag() }),
             &[],
         ),
         (

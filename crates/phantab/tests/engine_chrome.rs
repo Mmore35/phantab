@@ -2364,6 +2364,18 @@ async fn emulation_reaches_the_page_and_clears_on_clear_and_close() {
     let pages = lane.ok("pages", json!({}), "a").await;
     assert!(pages.as_array().unwrap().iter().all(|p| p.get("emulation").is_none()), "{pages}");
 
+    // cpu null ends just the slowdown: the same work runs at least three times faster, and the user
+    // agent stays. A ratio of the page's own times, so a loaded machine slows both alike.
+    let busy = "() => { const t = performance.now(); let x = 0; for (let i = 0; i < 5e6; i++) x += i % 7; return x >= 0 ? performance.now() - t : 0; }";
+    lane.ok("emulate", json!({ "pageId": a, "cpu": 20, "userAgent": "phantab-test-agent" }), "a").await;
+    let slowed = read(&a, busy).await.as_f64().unwrap();
+    let unslowed = lane.ok("emulate", json!({ "pageId": a, "cpu": null }), "a").await;
+    assert_eq!(unslowed["emulation"], json!({ "userAgent": "phantab-test-agent" }), "{unslowed}");
+    let fast = read(&a, busy).await.as_f64().unwrap();
+    assert!(fast * 3.0 < slowed, "cpu null left the slowdown: {fast} ms against {slowed} ms");
+    assert_eq!(read(&a, agent).await, json!("phantab-test-agent"));
+    lane.ok("emulate", json!({ "pageId": a, "clear": true }), "a").await;
+
     let bad = lane.err("emulate", json!({ "pageId": a, "cpu": 0.5 }), "a").await;
     assert!(bad.starts_with("cpu:"), "{bad}");
     let both = lane.err("emulate", json!({ "pageId": a, "clear": true, "cpu": 2 }), "a").await;
