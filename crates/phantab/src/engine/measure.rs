@@ -443,7 +443,7 @@ impl Engine {
         };
         let Some(target) = Target::of(args)? else {
             return Err(EngineError(
-                "path: give the whole path of the file to save the trace in, such as C:\\Users\\me\\load.json; Chrome's Performance panel opens it.".to_owned(),
+                "path: give the whole path of the file to save the trace in, from its drive or root; Chrome's Performance panel opens it.".to_owned(),
             ));
         };
         if reload {

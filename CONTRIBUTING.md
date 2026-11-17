@@ -95,6 +95,9 @@ Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` 
 - `env!("CARGO_MANIFEST_DIR")` outside tests puts the checkout's absolute path in a release binary;
   `--remap-path-prefix` does not reach it, and `scripts/release.sh`'s path gate refuses the build. Keep
   it under `#[cfg(test)]` or `#[cfg(debug_assertions)]`.
+- That path gate runs only in the release build, not in `scripts/check.sh`, and it refuses any
+  `\Users\`, `/Users/` or `/home/` in the binary: a tool description or message gives no example path
+  under a home folder.
 - GNU Windows builds fail with "error calling dlltool 'dlltool.exe': program not found" until WinLibs'
   `mingw64/bin` is on PATH (`scripts/dev-env.sh`).
 - Branded Chrome 137+ ignores `--load-extension`. Use Chrome for Testing, or load the extension through
