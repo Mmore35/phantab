@@ -721,3 +721,70 @@ fn a_changed_copy_is_refused_whichever_profile_the_worker_claims() {
     }
     assert_eq!((check("Default"), check("Profile 2")), (ProfileCheck::Ok, ProfileCheck::Ok));
 }
+
+/// SR-90: off (the default), a developer-tools command is refused before it leaves the service with an
+/// error naming the setting, the welcome does not declare `devTools`, and a developer-tools event is
+/// dropped. On, the welcome declares it, the commands are relayed and the events kept. A cookie command
+/// and an `...ExtraInfo` event stay refused and dropped either way.
+#[tokio::test]
+async fn devtools_commands_are_relayed_only_with_the_setting() {
+    for on in [false, true] {
+        let bridge = Arc::new(Bridge::new().with_dev_tools(on));
+        let mut events = bridge.subscribe();
+        let mut ext = link(&bridge);
+        ext.send(&json!({ "hello": { "version": "1.0.0", "protocol": 1, "instance": "one" } })).await;
+        let mut welcome = json!({ "welcome": true, "events": phantab_cdp::EVENTS });
+        if on {
+            welcome["devTools"] = json!(true);
+        }
+        assert_eq!(ext.next().await, Some(welcome), "devTools {on}");
+        for method in
+            ["Network.getAllCookies", "Network.getCookies", "Storage.getCookies", "Network.setCookie"]
+        {
+            let err = bridge.op("send", json!({ "tabId": 7, "method": method })).await.unwrap_err();
+            assert!(matches!(err, BridgeError::MethodNotAllowed(_)), "{method}: {err}");
+        }
+        for method in
+            ["Log.enable", "Network.enable", "Network.getResponseBody", "Runtime.terminateExecution"]
+        {
+            let sent = tokio::spawn({
+                let bridge = Arc::clone(&bridge);
+                async move { bridge.op("send", json!({ "tabId": 7, "method": method, "params": {} })).await }
+            });
+            if !on {
+                let err = sent.await.unwrap().unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "phantab does not relay the CDP method {method}: it is a developer tool, off unless \
+                         \"devTools\": true is set in config.json."
+                    )
+                );
+                continue;
+            }
+            let m = ext.next().await.unwrap();
+            assert_eq!(m["args"]["method"], method);
+            ext.send(&json!({ "id": m["id"], "result": {} })).await;
+            assert_eq!(sent.await.unwrap().unwrap(), json!({}));
+        }
+        // Events: an ExtraInfo one and a developer-tools one, then a marker phantab always reads.
+        let extra = json!({ "headers": { "cookie": "sid=secret" } });
+        ext.send(&json!({ "event": "cdp", "tabId": 7, "method": "Network.requestWillBeSentExtraInfo", "params": extra })).await;
+        ext.send(&json!({ "event": "cdp", "tabId": 7, "method": "Network.requestWillBeSent", "params": { "requestId": "1" } })).await;
+        ext.send(&json!({ "event": "cdp", "tabId": 7, "method": "Page.frameNavigated", "params": {} })).await;
+        let mut seen = Vec::new();
+        loop {
+            let BridgeEvent::Cdp(cdp) = event(&mut events, |e| matches!(e, BridgeEvent::Cdp(_))).await else {
+                unreachable!()
+            };
+            seen.push(cdp.method.clone());
+            if cdp.method == "Page.frameNavigated" {
+                break;
+            }
+        }
+        let want: &[&str] =
+            if on { &["Network.requestWillBeSent", "Page.frameNavigated"] } else { &["Page.frameNavigated"] };
+        assert_eq!(seen, want, "devTools {on}");
+        bridge.close();
+    }
+}

@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Developer tools</title></head>
+<body>
+<h1>Developer tools</h1>
+<p id="state">loading</p>
+<iframe id="twin" title="Twin frame" src="{{TWIN}}/engine/devtools-frame"></iframe>
+<script>
+// The developer tools' fixture (THREAT-MODEL SR-90). It logs an error and a warning, throws an
+// uncaught exception, and sends requests: `/cookie/set` answers with an httpOnly cookie, `/cookie/check`
+// sends it back with an `Authorization` header this script builds (so its value is in no source the
+// network tool could show), `/status?code=500` fails with a status and a fetch to port 1 fails with no
+// answer at all. `#state` says `done` when every request has settled. `window.appState` is a page object
+// for evaluate to read.
+window.appState = { user: 'fixture', items: [1, 2, 3], nested: { ok: true } };
+console.error('devtools fixture: an error was logged');
+console.warn('devtools fixture: a warning was logged');
+console.log('devtools fixture: a plain log, not kept');
+setTimeout(() => { throw new Error('devtools fixture: an uncaught exception'); }, 0);
+(async () => {
+  const token = ['Bearer au', 'th-', 6 * 7, '-tok'].join('');
+  // Each body is read: Chrome reports a request finished only once its page has taken the body.
+  await (await fetch('/cookie/set')).text();
+  await (await fetch('/cookie/check', { headers: { Authorization: token } })).text();
+  await (await fetch('/status?code=500')).text();
+  await fetch('http://127.0.0.1:1/unreachable').catch(() => {});
+  document.getElementById('state').textContent = 'done';
+})();
+</script>
+</body></html>

@@ -10,6 +10,7 @@
 //!
 //! Error texts are part of the interface agents read: change them only on purpose.
 
+mod devtools;
 mod echo;
 mod files;
 mod guardrails;
@@ -591,6 +592,9 @@ impl PageService for Engine {
 impl Engine {
     /// [`PageService::call`] before its redaction.
     async fn call_raw(&self, method: EngineMethod, args: Value, client: &str) -> EngineResult {
+        if matches!(method, EngineMethod::Evaluate | EngineMethod::Console | EngineMethod::Network) {
+            devtools::require(&self.setup.config, method)?;
+        }
         match method {
             EngineMethod::Pages => Ok(self.pages(client)),
             EngineMethod::Connect => {
@@ -610,6 +614,9 @@ impl Engine {
             EngineMethod::Wait => self.wait(client, &args).await,
             EngineMethod::SignIn => crate::signin::sign_in(self, client, &args).await,
             EngineMethod::SignUp => crate::signin::sign_up(self, client, &args).await,
+            EngineMethod::Evaluate => self.evaluate(client, &args).await,
+            EngineMethod::Console => self.console(client, &args).await,
+            EngineMethod::Network => self.network(client, &args).await,
         }
     }
 }

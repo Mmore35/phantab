@@ -99,6 +99,7 @@ done <"$manifest"
 source_of() {
   case "$1" in
     lib) echo crates/phantab/src ;;
+    cdp) echo crates/phantab-cdp/src ;;
     ext:*) echo "extension/test/${1#ext:}.test.mjs" ;;
     *) echo "crates/phantab/tests/$1.rs" ;;
   esac
@@ -111,7 +112,7 @@ in_source() {
   src="$(source_of "$1")"
   [ -e "$src" ] || return 1
   case "$1" in
-    lib) grep -rqE "fn ${2##*::}\(" "$src" || rc=$? ;;
+    lib | cdp) grep -rqE "fn ${2##*::}\(" "$src" || rc=$? ;;
     ext:*) grep -qF -- "$2" "$src" || rc=$? ;;
     *) grep -qE "fn $2\(" "$src" || rc=$? ;;
   esac
@@ -187,6 +188,7 @@ cargo_test_passed() {
   local rc=0 last=""
   case "$1" in
     lib) cargo test -p phantab --locked --lib -- --exact "$2" >"$scratch/out" 2>&1 || rc=$? ;;
+    cdp) cargo test -p phantab-cdp --locked --lib -- --exact "$2" >"$scratch/out" 2>&1 || rc=$? ;;
     *) cargo test -p phantab --locked --test "$1" -- --exact "$2" >"$scratch/out" 2>&1 || rc=$? ;;
   esac
   [ "$rc" = 0 ] || return 1

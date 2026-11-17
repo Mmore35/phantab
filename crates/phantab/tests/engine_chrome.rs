@@ -48,14 +48,20 @@ impl Lane {
 
     /// `full`, with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md).
     async fn start_exclusive(chrome: &PathBuf) -> Self {
-        Self::start_config(chrome, "full", Some("exclusive")).await
+        Self::start_config(chrome, "full", &json!({ "siteLock": "exclusive" })).await
     }
 
     async fn start_with(chrome: &PathBuf, guardrails: &str) -> Self {
-        Self::start_config(chrome, guardrails, None).await
+        Self::start_config(chrome, guardrails, &json!({})).await
     }
 
-    async fn start_config(chrome: &PathBuf, guardrails: &str, site_lock: Option<&str>) -> Self {
+    /// With the developer tools on (`"devTools": true`, THREAT-MODEL SR-90).
+    async fn start_dev_tools(chrome: &PathBuf, guardrails: &str) -> Self {
+        Self::start_config(chrome, guardrails, &json!({ "devTools": true })).await
+    }
+
+    /// `more`: the config's other settings, such as `siteLock` or `devTools`.
+    async fn start_config(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
@@ -63,8 +69,8 @@ impl Lane {
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
             "guardrails": guardrails,
         });
-        if let Some(lock) = site_lock {
-            config["siteLock"] = json!(lock);
+        for (k, v) in more.as_object().into_iter().flatten() {
+            config[k] = v.clone();
         }
         rt.write_config(&config);
         let svc = tokio::task::block_in_place(|| {
@@ -1575,4 +1581,325 @@ async fn with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first() {
         assert!(text(&lane.snap("a", &d).await).contains("true"), "{guardrails}");
         lane.finish().await;
     }
+}
+
+/// THREAT-MODEL SR-90's lane 3 proof, and phase 5 proof 1: `engine/devtools` logs an error and a
+/// warning, throws, fails two requests and is sent an httpOnly cookie that a later request carries back
+/// with an `Authorization` header. The console gives the error, the warning and the exception; the
+/// network lists the failed requests first; a request's detail has neither header; evaluate reads a page
+/// object. Neither the cookie's value nor the header's is in any answer or saved file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn developer_tools_read_the_console_and_network_and_run_scripts() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/devtools").await;
+    let mut said: Vec<String> = Vec::new();
+    // The first call on a page starts its recording, and says so; the next one does not.
+    let first = lane.ok("console", json!({ "pageId": a }), "a").await;
+    assert!(first["recording"].as_str().unwrap().starts_with("Recording started now"), "{first}");
+    let first = lane.ok("network", json!({ "pageId": a }), "a").await;
+    assert!(first["recording"].as_str().unwrap().starts_with("Recording started now"), "{first}");
+    assert_eq!(first["requests"], json!([]), "nothing from before the recording: {first}");
+    let again = lane.ok("console", json!({ "pageId": a }), "a").await;
+    assert!(again.get("recording").is_none(), "{again}");
+
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let console = async || lane.ok("console", json!({ "pageId": a }), "a").await;
+    let has = |c: &Value, level: &str, text: &str| {
+        c["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["level"] == json!(level) && m["text"].as_str().unwrap().contains(text))
+    };
+    assert!(
+        lane.until(Duration::from_secs(10), async || has(
+            &console().await,
+            "exception",
+            "an uncaught exception"
+        ))
+        .await
+    );
+    let c = console().await;
+    said.push(c.to_string());
+    assert!(has(&c, "error", "devtools fixture: an error was logged"), "{c}");
+    assert!(has(&c, "warning", "devtools fixture: a warning was logged"), "{c}");
+    assert!(!c.to_string().contains("a plain log"), "a plain log is not kept: {c}");
+
+    let n = lane.ok("network", json!({ "pageId": a }), "a").await;
+    said.push(n.to_string());
+    let requests = n["requests"].as_array().unwrap();
+    let failed = |q: &Value| q.get("failed").is_some() || q["status"].as_u64().is_some_and(|s| s >= 400);
+    let first_ok = requests.iter().position(|q| !failed(q)).unwrap();
+    assert!(requests[first_ok..].iter().all(|q| !failed(q)), "failed ones first: {n}");
+    let url = |q: &Value| q["url"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        requests[..first_ok]
+            .iter()
+            .any(|q| url(q).ends_with("/status?code=500") && q["status"] == json!(500)),
+        "{n}"
+    );
+    assert!(
+        requests[..first_ok]
+            .iter()
+            .any(|q| url(q).starts_with("http://127.0.0.1:1/") && q["failed"].is_string()),
+        "{n}"
+    );
+    let id_of = |end: &str| {
+        requests.iter().find(|q| url(q).ends_with(end)).unwrap()["id"].as_str().unwrap().to_owned()
+    };
+
+    // The cookie went out and came back, and the header with it: the site saw both.
+    let seen = lane.fixtures.requests();
+    let check = seen.iter().find(|r| r.path == "/cookie/check").unwrap();
+    let header =
+        |n: &str| check.headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert!(header("cookie").contains(phantab_testkit::DEVTOOLS_COOKIE), "the cookie was sent");
+    assert!(header("authorization").contains(phantab_testkit::DEVTOOLS_TOKEN), "the header was sent");
+    for (end, body) in [("/cookie/set", "set"), ("/cookie/check", "cookie sent, authorization sent")] {
+        let d = lane.ok("network", json!({ "pageId": a, "id": id_of(end) }), "a").await;
+        said.push(d.to_string());
+        assert_eq!(d["body"], json!(body), "{d}");
+        for headers in [&d["requestHeaders"], &d["responseHeaders"]] {
+            let names: Vec<String> =
+                headers.as_object().unwrap().keys().map(|k| k.to_ascii_lowercase()).collect();
+            assert!(
+                !names.iter().any(|k| ["cookie", "set-cookie", "authorization", "proxy-authorization"]
+                    .contains(&k.as_str())),
+                "{d}"
+            );
+        }
+    }
+    let doc = lane.ok("network", json!({ "pageId": a, "id": id_of("/engine/devtools") }), "a").await;
+    said.push(doc.to_string());
+    assert!(doc["body"].as_str().unwrap().contains("Developer tools"), "the page's own source: {doc}");
+    let only = lane.ok("network", json!({ "pageId": a, "filter": "/cookie/" }), "a").await;
+    assert_eq!(only["requests"].as_array().unwrap().len(), 2, "{only}");
+    let unknown = lane.err("network", json!({ "pageId": a, "id": "no-such-request" }), "a").await;
+    assert!(unknown.starts_with("No request no-such-request in this page's recording"), "{unknown}");
+
+    // evaluate reads the page's own objects, and no httpOnly cookie.
+    let v = lane.ok("evaluate", json!({ "pageId": a, "function": "() => window.appState" }), "a").await;
+    assert_eq!(v["type"], json!("object"));
+    assert_eq!(
+        v["result"],
+        json!({ "user": "fixture", "items": [1, 2, 3], "nested": { "ok": true } }),
+        "{v}"
+    );
+    let v = lane.ok("evaluate", json!({ "pageId": a, "function": "() => document.cookie" }), "a").await;
+    said.push(v.to_string());
+
+    // Saved files: the whole console, the list and a detail.
+    let dir = lane.rt.path().join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut files = Vec::new();
+    for (method, mut args) in [
+        ("console", json!({})),
+        ("network", json!({})),
+        ("network", json!({ "id": id_of("/cookie/check") })),
+        ("evaluate", json!({ "function": "() => [document.cookie, document.title]" })),
+    ] {
+        let file = dir.join(format!("{method}-{}.json", files.len()));
+        args["pageId"] = json!(a);
+        args["path"] = json!(file);
+        let saved = lane.ok(method, args, "a").await;
+        said.push(saved.to_string());
+        assert_eq!(saved["path"], json!(file), "{saved}");
+        files.push(std::fs::read_to_string(&file).unwrap());
+    }
+    assert!(files[2].contains("cookie sent, authorization sent"), "{}", files[2]);
+    assert!(files[3].contains("Developer tools"), "{}", files[3]);
+    for text in said.iter().chain(&files) {
+        for secret in [phantab_testkit::DEVTOOLS_COOKIE, phantab_testkit::DEVTOOLS_TOKEN] {
+            assert!(!text.contains(secret), "a secret left the service: {text}");
+        }
+    }
+    lane.finish().await;
+}
+
+/// Phase 5 proof 2: evaluate in a frame named by its origin, with arguments and a promise; a result over
+/// the limit is cut and says so, and `path` saves it whole; a throw is its message; a script that never
+/// returns, or never settles, ends at its time limit and leaves the page answering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evaluate_reads_a_frame_cuts_saves_throws_and_times_out() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let run = async |more: Value| {
+        let mut args = json!({ "pageId": a });
+        for (k, v) in more.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        lane.call("evaluate", args, "a").await
+    };
+    let twin = lane.fixtures.twin_origin().to_owned();
+    let read = "() => window.frameValue";
+    let framed = run(json!({ "function": read, "frame": twin })).await.unwrap();
+    assert_eq!(framed["result"], json!(format!("read in the twin frame at {twin}")), "{framed}");
+    let framed =
+        run(json!({ "function": read, "frame": format!("{twin}/engine/devtools-frame") })).await.unwrap();
+    assert_eq!(framed["type"], json!("string"), "a frame's URL names it by its origin: {framed}");
+    let main = run(json!({ "function": read })).await.unwrap();
+    assert_eq!(main["type"], json!("undefined"), "the main document has none: {main}");
+    let no = run(json!({ "function": read, "frame": "http://elsewhere.example" })).await.unwrap_err();
+    assert!(
+        no.contains("http://elsewhere.example") && no.contains(&twin),
+        "it names the frames there are: {no}"
+    );
+
+    let sum = run(json!({ "function": "(a, b) => a + b", "args": [2, 3] })).await.unwrap();
+    assert_eq!((sum["result"].clone(), sum["type"].clone()), (json!(5), json!("number")));
+    let later = "async () => { await new Promise((r) => setTimeout(r, 100)); return 'settled'; }";
+    assert_eq!(run(json!({ "function": later })).await.unwrap()["result"], json!("settled"));
+
+    let long = "() => 'x'.repeat(30000)";
+    let cut = run(json!({ "function": long })).await.unwrap();
+    assert_eq!(cut["result"].as_str().unwrap().chars().count(), 20_000, "{}", cut["cut"]);
+    assert!(
+        cut["cut"].as_str().unwrap().starts_with("The result is 30002 characters of JSON"),
+        "{}",
+        cut["cut"]
+    );
+    let file = lane.rt.path().join("long.json");
+    let saved = run(json!({ "function": long, "path": file })).await.unwrap();
+    assert_eq!(saved["type"], json!("string"));
+    let whole: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(whole["result"].as_str().unwrap().len(), 30_000);
+    let again = run(json!({ "function": long, "path": file })).await.unwrap_err();
+    assert!(again.contains("overwrite"), "an existing file is replaced only with overwrite: {again}");
+
+    let threw =
+        run(json!({ "function": "() => { throw new Error('the fixture threw this'); }" })).await.unwrap_err();
+    assert!(threw.starts_with("The script threw: ") && threw.contains("the fixture threw this"), "{threw}");
+    let t = Instant::now();
+    let spun = run(json!({ "function": "() => { for (;;) {} }", "seconds": 1 })).await.unwrap_err();
+    assert_eq!(spun, "The script did not answer within 1 s. It was still running, so it was stopped.");
+    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    assert_eq!(lane.snap("a", &a).await["title"], json!("Developer tools"), "the page answers again");
+    let waits = run(json!({ "function": "() => new Promise(() => {})", "seconds": 1 })).await.unwrap_err();
+    assert!(waits.contains("did not answer within 1 s. It was waiting"), "{waits}");
+    assert_eq!(run(json!({ "function": "() => 1" })).await.unwrap()["result"], json!(1));
+    lane.finish().await;
+}
+
+/// Phase 5 proof 3: without `"devTools": true`, as JSON `true`, every developer tool is refused naming
+/// the setting, and no developer-tools event crosses the bridge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn developer_tools_are_off_unless_set() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_config(&chrome, "parity", &json!({ "devTools": "true" })).await;
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    for (method, args) in [
+        ("evaluate", json!({ "pageId": a, "function": "() => 1" })),
+        ("console", json!({ "pageId": a })),
+        ("network", json!({ "pageId": a })),
+    ] {
+        let off = lane.err(method, args, "a").await;
+        assert!(off.contains("off unless \"devTools\": true is set"), "{method}: {off}");
+    }
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    let traffic = lane.ext.traffic_total();
+    assert_eq!(traffic.devtools, 0, "{traffic:?}");
+    assert!(
+        !lane.ext.timeline().iter().any(|(_, op)| op.contains("Log.enable") || op.contains("Network.enable"))
+    );
+    lane.finish().await;
+}
+
+/// Phase 5 proof 6: evaluate is a write. A page handed to the owner refuses it, the owner's yes or not,
+/// as it refuses a click; under `light` and `full` every script is asked about first and runs with the
+/// owner's yes. Reading the console and the network is not asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evaluate_is_a_write_and_is_asked_about_under_guardrails() {
+    const ASK: &str = "Confirm first: a script can do whatever the page's own scripts can.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["light", "full"] {
+        let lane = Lane::start_dev_tools(&chrome, guardrails).await;
+        let a = lane.open("a", "/engine/basic").await;
+        let script = |confirmed: bool| json!({ "pageId": a, "function": "() => document.title", "ownerConfirmed": confirmed });
+        let asked = lane.err("evaluate", script(false), "a").await;
+        assert!(asked.starts_with(ASK), "{guardrails}: {asked}");
+        assert_eq!(lane.ok("evaluate", script(true), "a").await["result"], json!("Browser fixture"));
+        lane.ok("console", json!({ "pageId": a }), "a").await;
+        lane.ok("network", json!({ "pageId": a }), "a").await;
+
+        lane.ok("show", json!({ "pageId": a }), "a").await;
+        for confirmed in [false, true] {
+            let handed = lane.err("evaluate", script(confirmed), "a").await;
+            assert!(handed.contains("handed to the owner"), "{guardrails}: {handed}");
+            let click = lane
+                .act("a", &a, json!({ "action": "click", "selector": "#go", "ownerConfirmed": confirmed }))
+                .await;
+            assert!(click.unwrap_err().contains("handed to the owner"), "{guardrails}");
+        }
+        lane.finish().await;
+    }
+}
+
+/// One reload of `engine/devtools` on a fresh page: the CDP events Chrome sent the extension, and those
+/// it forwarded (`CdpExtension::traffic_total`), after `before` ran on the page.
+async fn reload_traffic(lane: &Lane, before: impl AsyncFnOnce(&str)) -> cdp_extension::Traffic {
+    let a = lane.open("a", "/engine/devtools").await;
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    before(&a).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let start = lane.ext.traffic_total();
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "done" }), "a").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let end = lane.ext.traffic_total();
+    lane.ok("close", json!({ "pageId": a }), "a").await;
+    cdp_extension::Traffic {
+        sent: end.sent - start.sent,
+        forwarded: end.forwarded - start.forwarded,
+        devtools: end.devtools - start.devtools,
+    }
+}
+
+/// Phase 5 proof 5: a page nobody asks about forwards no developer-tools event and about as many events
+/// as before the developer tools, with them off or on; a recording page forwards its console and network
+/// events besides. The counts are printed for the PR. The exact rule, event by event, is proven in
+/// `extension/test/events.test.mjs`; Chrome's counts move by a few between loads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recording_traffic_is_counted() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let off = reload_traffic(&lane, async |_| {}).await;
+    lane.finish().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let unasked = reload_traffic(&lane, async |_| {}).await;
+    let recording = reload_traffic(&lane, async |a| {
+        lane.ok("console", json!({ "pageId": a }), "a").await;
+        lane.ok("network", json!({ "pageId": a }), "a").await;
+    })
+    .await;
+    lane.finish().await;
+    eprintln!(
+        "lane3 traffic, one reload of engine/devtools (events forwarded / sent by Chrome): devTools off {}/{}, \
+         on but never asked {}/{}, recording {}/{} of them {} developer-tools events",
+        off.forwarded,
+        off.sent,
+        unasked.forwarded,
+        unasked.sent,
+        recording.forwarded,
+        recording.sent,
+        recording.devtools
+    );
+    // No developer-tools event crosses for a page nobody asked about: what crosses is what crossed before.
+    assert_eq!((off.devtools, unasked.devtools), (0, 0));
+    assert!(recording.devtools > 0, "{recording:?}");
+    // Chrome's own count of a load's events (lifecycle, frames, its iframe's) moves by a few from run to
+    // run with timing, so the other counts are compared within that: 4 events, or a tenth.
+    let near = |a: usize, b: usize| a.abs_diff(b) <= 4.max(a.max(b) / 10);
+    assert!(near(unasked.forwarded, off.forwarded), "a page never asked forwards what it did before");
+    assert!(near(recording.forwarded - recording.devtools, unasked.forwarded), "{recording:?} {unasked:?}");
 }

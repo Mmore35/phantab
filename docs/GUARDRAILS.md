@@ -130,6 +130,41 @@ Follow-ups, each its own change:
   lands.
 - **HTTP(S) only.** `open` and `navigate` take only website URLs (no `file:`, `chrome:` or `javascript:`).
 
+## Developer tools (`devTools`)
+`browser_evaluate`, `browser_console` and `browser_network` are off unless `config.json` sets
+`devTools` to the JSON value `true`, read at service start. A string such as `"true"`, a number or
+anything else is off. Off, the agent is not shown the three tools, a call to one is refused with an
+error that names the setting, and neither the service nor the extension relays their Chrome commands
+or events.
+
+```json
+{ "profileDirectory": "Default", "devTools": true }
+```
+
+On, what each one reaches:
+
+- `browser_evaluate` runs the agent's function in the page's own world, in the main document or a
+  frame named by its origin (or `f2` from its last snapshot). It can do whatever the page's scripts
+  can: read the page and its fields, local storage and every cookie a script can read, change the
+  page, and call the site as you. It counts as a write: refused on a page you hold, and it takes the
+  site like a click under `siteLock: exclusive`. With guardrails `light` or `full` every call waits for
+  your yes (`ownerConfirmed`), because no check can read what a script will do; with `parity` it runs.
+  A script gets 10 s unless `seconds` asks for less. One still running then is stopped; one waiting on
+  a promise is left waiting. Results over 20,000 characters are cut unless saved with `path`.
+- `browser_console` gives the page's errors, warnings and uncaught exceptions; `browser_network` its
+  requests, failed ones first, and one request's headers and body by `id` (or saved with `path`). A
+  page is recorded from the first call that asks about it, which says so; nothing before is kept, and
+  a page nobody asks about sends Chrome's console and network events nowhere. Each page keeps at most
+  200 messages and 500 requests, the oldest dropped and counted, since its last navigation.
+- Never reached, in any setting: the `Cookie`, `Set-Cookie`, `Authorization` and
+  `Proxy-Authorization` headers are removed in phantab before any answer or file; Chrome's raw header
+  events are never turned on; no Chrome command that reads cookies is relayed; and no request body
+  is read, so a password a form posts stays out. A response body is shown as the site sent it, which
+  can hold a token the site puts in a page.
+
+After updating phantab, reload the extension at `chrome://extensions` so it relays the developer
+tools. The threat model's SR-90 has the details.
+
 ## Gaps (the light check)
 - A control in a website frame that a `click` finds by selector is read in its own frame. A `click_xy`
   on a point in a website frame (same-origin or not, such as a payment provider's own card frame), and a

@@ -7,6 +7,7 @@
 #            unix     macOS only today (the test is not built on Windows, or is ignored there)
 #            chrome   needs real Chrome: run with --chrome
 #   target   lib      phantab's unit tests; the name is the full path (engine::tests::...)
+#            cdp      phantab-cdp's unit tests; the name is the full path (devtools::tests::...)
 #            ext:<f>  extension/test/<f>.test.mjs; the name is the test's title
 #            <file>   crates/phantab/tests/<file>.rs
 #
@@ -116,3 +117,18 @@ chrome engine_chrome upload_sets_a_file_input_and_refuses_what_it_cannot_send
 chrome engine_chrome with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first
 chrome engine_chrome moving_onto_a_page_a_form_sent_is_asked_about_first
 chrome engine_chrome a_handed_over_page_refuses_every_new_step
+
+# An agent reads a request's cookie or authorization, or reaches the developer tools left off (SR-90).
+all cdp devtools::tests::the_secret_headers_go_in_any_case
+all cdp devtools::tests::cookie_and_authorization_headers_never_leave_the_service
+all lib cdp_methods::tests::the_developer_tools_part_is_exact_and_holds_no_cookie_command
+all bridge devtools_commands_are_relayed_only_with_the_setting
+all mcp developer_tools_are_listed_only_with_dev_tools_true
+all ext:ops developer-tools commands are refused unless the welcome declared devTools
+all ext:ops with devTools declared the developer-tools commands are relayed, and the bans still hold
+all ext:ops only a port's first welcome declares devTools, and a new connection starts without it
+all ext:events without devTools, developer-tools events are dropped even with no list
+all ext:events an ExtraInfo event is dropped whatever the welcome lists, and with no welcome at all
+chrome engine_chrome developer_tools_are_off_unless_set
+chrome engine_chrome developer_tools_read_the_console_and_network_and_run_scripts
+chrome engine_chrome evaluate_is_a_write_and_is_asked_about_under_guardrails

@@ -19,6 +19,14 @@ use crate::pages::PAGES;
 pub const LANDED: &str = "<title>Landed</title><p>Welcome back</p>";
 /// The longest `/slow?ms=` delay honoured.
 pub const SLOW_CAP_MS: u64 = 120_000;
+
+/// The httpOnly cookie value `/cookie/set` hands out (THREAT-MODEL SR-90): no page shows it, so a
+/// developer tool's answer or saved file holding it leaked a cookie.
+pub const DEVTOOLS_COOKIE: &str = "devtools-cookie-5Wq8nT";
+
+/// The `Authorization` value `engine/devtools` builds in script and sends to `/cookie/check`: in no page
+/// source either, so an answer holding it leaked an authorization header.
+pub const DEVTOOLS_TOKEN: &str = "auth-42-tok";
 /// How long a connection may take to send its request.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -120,6 +128,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// | `/slow?ms=N[&then=/path]` | Waits `N` ms (cap 120000), then serves `then` (or a small page). |
 /// | `/redirect?to=URL[&status=301\|302\|303\|307\|308]` | A redirect, 302 by default. |
 /// | `/status?code=N` | An empty page with that status. |
+/// | `/cookie/set` | `set`, with an httpOnly cookie of [`DEVTOOLS_COOKIE`]. |
+/// | `/cookie/check` | Whether the request carried that cookie and [`DEVTOOLS_TOKEN`]; never their values. |
 /// | `/hook/<name>` | `ok`, after any [`Gate`] for `<name>` is released. |
 /// | `POST /post/<name>` | The page that form's site would show next (see below). |
 /// | `GET /post/<name>` | [`LANDED`]. |
@@ -407,12 +417,14 @@ async fn handle(mut stream: TcpStream, which: Listener, state: Arc<State>) {
     lock(&state.requests).push(recorded);
     state.recorded.send_modify(|n| *n += 1);
 
-    let cookie = request.headers.iter().find(|(name, _)| name == "cookie").map(|(_, value)| value.as_str());
+    let header =
+        |n: &str| request.headers.iter().find(|(name, _)| name == n).map(|(_, value)| value.as_str());
     let ctx = Ctx {
         state: &state,
         self_origin: &self_origin,
         query: &request.query,
-        cookie,
+        cookie: header("cookie"),
+        authorization: header("authorization"),
         twin: which == Listener::Twin,
     };
     let response = route(&ctx, &request.method, &path, &body).await;
@@ -426,6 +438,8 @@ struct Ctx<'a> {
     query: &'a str,
     /// The request's `Cookie` header.
     cookie: Option<&'a str>,
+    /// The request's `Authorization` header.
+    authorization: Option<&'a str>,
     /// The request came to the twin origin.
     twin: bool,
 }
@@ -521,6 +535,9 @@ async fn route(ctx: &Ctx<'_>, method: &str, path: &str, body: &str) -> Response 
         }
         _ => {}
     }
+    if let Some(response) = cookie_route(ctx, path) {
+        return response;
+    }
     if path.starts_with("/captcha-frame/") {
         // `?fixture=<key>` puts a fixture page at the provider-looking URL: a stand-in check with something
         // to press (`verify/box`).
@@ -532,6 +549,29 @@ async fn route(ctx: &Ctx<'_>, method: &str, path: &str, body: &str) -> Response 
     match ctx.page(page_key(path)) {
         Some(page) => Response::html(200, page),
         None => Response::html(404, "none"),
+    }
+}
+
+/// The developer tools fixture's cookie and authorization routes (SR-90).
+fn cookie_route(ctx: &Ctx<'_>, path: &str) -> Option<Response> {
+    match path {
+        "/cookie/set" => {
+            let mut r = Response::text(200, "set");
+            r.headers.push((
+                "Set-Cookie",
+                format!("devtools={DEVTOOLS_COOKIE}; Path=/; HttpOnly; SameSite=Strict"),
+            ));
+            Some(r)
+        }
+        "/cookie/check" => {
+            let said = |v: Option<&str>, want: &str| {
+                if v.is_some_and(|v| v.contains(want)) { "sent" } else { "missing" }
+            };
+            let cookie = said(ctx.cookie, DEVTOOLS_COOKIE);
+            let auth = said(ctx.authorization, DEVTOOLS_TOKEN);
+            Some(Response::text(200, format!("cookie {cookie}, authorization {auth}")))
+        }
+        _ => None,
     }
 }
 

@@ -815,8 +815,10 @@ Each requirement is a release blocker, and each is tested in the lanes named.
     lease as a step does. Under `guardrails` `light` and `full` every call is asked about first
     (`ownerConfirmed`), since no check can read what a script will do; under `parity` it runs. A
     function that does not answer within its time limit (10 s unless `seconds` asks less) is answered
-    with an error; a script still running then is stopped with `Runtime.terminateExecution`, sent only
-    when a trivial second script cannot run beside it (a pending promise is left alone). Its result is
+    with an error. The call races a page timer of that limit, so a promise that never settles answers
+    then and is left alone; a script still running then is stopped with `Runtime.terminateExecution`,
+    sent only when a trivial second script cannot run beside it. No call is left open on the tab, so
+    the answers behind it are not held. Its result is
     cut at 20,000 characters unless saved with `path` (SR-88's rules), and its answer, saved file and
     error pass SR-45's redaction as every answer does.
   - `console` and `network` are reads. Each starts recording a page at its first call, which says so

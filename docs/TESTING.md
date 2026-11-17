@@ -304,6 +304,7 @@ exists.
 | A page, or a planted program, gets between the owner's passwords and the sign-in form; a site shows the value back on the page; a page holds a password, card number or code in a field a snapshot reads | `signin_provider`, `signin_bitwarden`, `signin_fake_page`, `lib`, `signin_echo` and `engine_chrome` (real Chrome) |
 | An agent saves a screenshot or snapshot to a relative path, a missing folder or a file it would replace | `lib`, `engine_chrome` (real Chrome) |
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
+| An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
@@ -402,16 +403,18 @@ A dev-dependency of every crate with browser or service tests.
 | `GET /slow?ms=<n>&then=<path>` | waits `n` ms (at most 120000), then serves `then` (or a "Waited n ms" page) |
 | `GET /redirect?to=<url>&status=<code>` | a redirect, default 302 to `/engine/basic` |
 | `GET /status?code=<n>` | an empty page with that status, default 500 |
+| `GET /cookie/set` | `set`, with an httpOnly cookie no page shows (`DEVTOOLS_COOKIE`) |
+| `GET /cookie/check` | whether that cookie and the `Authorization` value `engine/devtools` builds came along; never their values |
 | any `/hook/<name>` | `ok`, held while a gate of that name is closed |
 | `POST /post/<name>` | recorded as a post; `userstep` answers the password step, `tocode` the code step, `tokey` the security-key step, `wrong` the wrong-password page, `echo` `<title>Oops</title><p>You typed <escaped pass></p>`, `thendetach` the landed page plus a script that fetches `/hook/detach-me` after 500 ms; anything else `<title>Landed</title><p>Welcome back</p>` |
 | `GET /post/<name>` | a GET form's submit: recorded as a post, landed page |
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (161)
+### Fixture pages (163)
 | Group | Keys |
 |---|---|
-| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/shots` (a page taller than the view, with a box in the document, one in an open shadow root and one in `engine/shot-frame`, a website frame), `engine/wait`, `engine/hover` (a menu that opens on CSS `:hover`), `engine/drag` (a list sorted by mouse events), `engine/drag-html5` (the same list sorted by HTML5 drag and drop), `engine/upload` (a single and a multiple file input beside a text field), `engine/upload-frame` (`engine/upload` in another site's frame), `engine/history` (a page with an in-memory counter and a link on), `engine/resend` (a form that posts), `changes`, `navigates` |
+| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/shots` (a page taller than the view, with a box in the document, one in an open shadow root and one in `engine/shot-frame`, a website frame), `engine/wait`, `engine/hover` (a menu that opens on CSS `:hover`), `engine/drag` (a list sorted by mouse events), `engine/drag-html5` (the same list sorted by HTML5 drag and drop), `engine/upload` (a single and a multiple file input beside a text field), `engine/upload-frame` (`engine/upload` in another site's frame), `engine/history` (a page with an in-memory counter and a link on), `engine/resend` (a form that posts), `engine/devtools` (a page that logs an error, throws, fails two requests and is sent an httpOnly cookie, framing `engine/devtools-frame` from the twin site), `changes`, `navigates` |
 | snapshot | `snapshot/busy`, `snapshot/deep`, `snapshot/inner`, `snapshot/long-text`, `snapshot/many`, `shadow/nested`, `frames/cross-site`, `forms/controls` |
 | sign-in, one step | `sign-in/one`, `framed`, `nested`, `crossframe`, `shadow`, `noform`, `outside`, `deep`, `react`, `jsaction`, `actionfield`, `landed` |
 | sign-in, steps | `userstep`, `passstep`, `passthencode`, `code`, `passthenkey`, `securitykey`, `codebeside`, `opensframe`, `inertpass`, `aca`, `aca-c` |

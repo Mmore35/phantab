@@ -78,16 +78,34 @@ test('the built folder holds only our compiled files, importing only each other'
 
 // THREAT-MODEL SR-20, L1: the relayed CDP methods are exact names, none of them banned. The service reads
 // the same file (crates/phantab/src/cdp_methods.rs), one quoted name per line.
+/** The quoted names of one `export const` part of cdp-methods.ts. */
+function part(source, name) {
+  const at = source.indexOf(`export const ${name}:`);
+  assert.ok(at >= 0, name);
+  const end = source.indexOf('export const', at + 1);
+  return [...source.slice(at, end < 0 ? undefined : end).matchAll(/'([^']*)'/g)].map(m => m[1]);
+}
+
 test('the CDP allow-list is exact names and bans the dangerous domains', () => {
   const source = read('../src/cdp-methods.ts');
   const quoted = [...source.matchAll(/'([^']*)'/g)].map(m => m[1]);
   const lines = source.split('\n').filter(l => l.includes("'"));
   assert.deepEqual(lines, quoted.map(m => `  '${m}',`), 'one quoted name per line, nothing else quoted');
-  assert.ok(quoted.length > 0);
-  for (const m of quoted) {
+  const [methods, devtools, events] = ['CDP_METHODS', 'DEVTOOLS_METHODS', 'DEVTOOLS_EVENTS'].map(n => part(source, n));
+  assert.equal(methods.length + devtools.length + events.length, quoted.length, 'a name outside the three parts');
+  assert.ok(methods.length > 0);
+  for (const m of methods) {
     assert.match(m, /^(DOM|Emulation|Input|Page|Runtime|Target)\.[a-z][A-Za-z]+$/, m);
-    assert.doesNotMatch(m, /^(Network|Storage|Fetch|Browser|Security)\./, m);
     assert.ok(!['Target.createBrowserContext', 'Page.setDownloadBehavior', 'Target.createTarget', 'Target.closeTarget'].includes(m), m);
   }
-  assert.deepEqual([...new Set(quoted)].sort(), quoted, 'sorted, no duplicates');
+  // SR-90: the developer-tools part is these four, and its events never an ExtraInfo or cookie one.
+  assert.deepEqual(devtools, ['Log.enable', 'Network.enable', 'Network.getResponseBody', 'Runtime.terminateExecution']);
+  for (const m of [...methods, ...devtools, ...events]) {
+    assert.doesNotMatch(m, /^(Storage|Fetch|Browser|Security)\./, m);
+    assert.doesNotMatch(m, /Cookie|ExtraInfo$/, m);
+    if (m.startsWith('Network.')) assert.ok(devtools.includes(m) || events.includes(m), m);
+  }
+  for (const m of events) assert.match(m, /^(Log|Network|Runtime)\.[a-z][A-Za-z]+$/, m);
+  for (const list of [methods, devtools, events]) assert.deepEqual([...new Set(list)].sort(), list, 'sorted, no duplicates');
+  assert.equal(new Set([...methods, ...devtools, ...events]).size, quoted.length, 'a name in two parts');
 });

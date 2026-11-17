@@ -2,7 +2,7 @@
 // chrome.debugger/tabs/windows in this profile. The native host (the phantab binary
 // in host mode) pipes these messages to the service; nothing here is reachable
 // from web pages.
-import { CDP_METHODS } from './cdp-methods.js';
+import { CDP_METHODS, DEVTOOLS_EVENTS, DEVTOOLS_METHODS } from './cdp-methods.js';
 
 const HOST = 'dev.phantab.bridge';
 const PROTOCOL = 1; // the service's bridge protocol (docs/ARCHITECTURE.md, Names and constants)
@@ -37,6 +37,17 @@ const STABLE_LINK = 10000, FAST_RETRY = 100;
 // port's first welcome sets it: a later one on the same connection changes nothing.
 let forwarded: ReadonlySet<string> | null = null;
 const welcomed = new WeakSet<chrome.runtime.Port>();
+// THREAT-MODEL SR-90: whether this port's first welcome declared `devTools`. Without it the developer-tools
+// commands are refused and their events never forwarded. `recording` holds each tab whose console
+// (`Log.enable`) or network (`Network.enable`) recording the service started on its own target; only
+// those tabs' developer-tools events cross, so a page never asked about sends what it sent before.
+let devTools = false;
+type Recorded = 'console' | 'network';
+const recording = new Map<number, Set<Recorded>>();
+const recordedBy: Record<string, Recorded> = { 'Log.enable': 'console', 'Network.enable': 'network' };
+/** The recording a developer-tools event belongs to: the network's, or the console's. */
+const recordingOf = (method: string): Recorded => method.startsWith('Network.') ? 'network' : 'console';
+function stopRecording(tabId?: number): void { if (tabId === undefined) recording.clear(); else recording.delete(tabId); }
 // The Chrome profile folder this copy was installed for, from the profile.json phantab install writes beside
 // an extra profile's copy (`runtime/extension-profiles/<folder>/extension/`); the usual profile's copy has none. The
 // hello names it, and the service checks that this profile lists exactly that folder (THREAT-MODEL SR-76).
@@ -78,7 +89,7 @@ interface Args {
   accept?: boolean;
   promptText?: string;
 }
-interface ServiceMessage { welcome?: unknown; events?: unknown; refused?: unknown; id?: unknown; op?: string; args?: Args }
+interface ServiceMessage { welcome?: unknown; events?: unknown; devTools?: unknown; refused?: unknown; id?: unknown; op?: string; args?: Args }
 /** The CDP event params this worker reads itself; everything else is passed through untouched. */
 interface CdpParams {
   stack?: { callFrames?: { url?: string }[] };
@@ -224,14 +235,14 @@ function connect(): void {
   clearTimeout(timer ?? undefined); timer = null;
   let p: chrome.runtime.Port;
   try { p = chrome.runtime.connectNative(HOST); } catch { retry(); return; }
-  port = p; forwarded = null; welcomedAt = null;
+  port = p; forwarded = null; welcomedAt = null; devTools = false; stopRecording();
   p.onMessage.addListener((message: ServiceMessage) => receive(p, message));
   p.onDisconnect.addListener(() => {
     // Reading lastError marks it checked, so Chrome logs no "Unchecked runtime.lastError" for a host that is missing or exits.
     void chrome.runtime.lastError;
     if (port !== p) return;
     const stable = welcomedAt !== null && Date.now() - welcomedAt >= STABLE_LINK;
-    port = null; forwarded = null; welcomedAt = null; cleanup().catch(() => {}); retry(stable);
+    port = null; forwarded = null; welcomedAt = null; devTools = false; stopRecording(); cleanup().catch(() => {}); retry(stable);
   });
   p.postMessage({ hello: { version: chrome.runtime.getManifest().version, protocol: PROTOCOL, instance, ...(profile ? { profile } : {}) } });
 }
@@ -377,17 +388,25 @@ function ownTab(tabId: number): void {
 const tabInfo = (t: chrome.tabs.Tab) => ({ tabId: t.id, windowId: t.windowId, title: t.title, url: t.url });
 const ops: Record<string, (args: Args) => unknown> = {
   ping: () => ({}),
-  async attach({ tabId }) { await chrome.debugger.attach({ tabId }, '1.3'); attached.set(tabId, ++attaches); foreign.delete(tabId); showWorking(); return {}; },
-  async detach({ tabId }) { ownTab(tabId); attached.delete(tabId); casting.delete(tabId); showWorking(); await chrome.debugger.detach({ tabId }); return {}; },
+  async attach({ tabId }) { await chrome.debugger.attach({ tabId }, '1.3'); attached.set(tabId, ++attaches); foreign.delete(tabId); stopRecording(tabId); showWorking(); return {}; },
+  async detach({ tabId }) { ownTab(tabId); attached.delete(tabId); casting.delete(tabId); stopRecording(tabId); showWorking(); await chrome.debugger.detach({ tabId }); return {}; },
   // Only the methods phantab-cdp needs (SR-20): never cookies, storage, network or browser-wide commands.
-  send: ({ tabId, sessionId, method, params }) => {
+  // The developer-tools part (SR-90) only on a connection whose welcome declared `devTools`.
+  send: async ({ tabId, sessionId, method, params }) => {
     ownTab(tabId);
-    if (typeof method !== 'string' || !CDP_METHODS.has(method)) throw Error('CDP method not allowed: ' + method);
+    const dev = typeof method === 'string' && DEVTOOLS_METHODS.has(method);
+    if (typeof method !== 'string' || (!CDP_METHODS.has(method) && !dev)) throw Error('CDP method not allowed: ' + method);
+    if (dev && !devTools) throw Error('CDP method not allowed: ' + method + ' (a developer tool; the service did not turn on devTools)');
     // phantab's isolated world never asks for universal access (Chrome's spelling), which would let it read
     // any origin with the owner's cookies.
     const universal = params?.grantUniveralAccess;
     if (universal != null && universal !== false) throw Error('CDP method not allowed: ' + method + ' with grantUniveralAccess');
-    return chrome.debugger.sendCommand(sessionId ? { tabId, sessionId } : { tabId }, method, params);
+    // A recording starts on the tab's own target only, and is marked before the command so no event it
+    // causes is dropped; a failed start unmarks it again.
+    const starts = sessionId ? undefined : recordedBy[method];
+    if (starts) { if (!recording.has(tabId)) recording.set(tabId, new Set()); recording.get(tabId)!.add(starts); }
+    try { return await chrome.debugger.sendCommand(sessionId ? { tabId, sessionId } : { tabId }, method, params); }
+    catch (e) { if (starts) recording.get(tabId)?.delete(starts); throw e; }
   },
   // A window hidden before its first paint stops rendering, and screenshots then hang. A running screencast
   // (tiny, every 60th frame, each acked below) keeps it producing frames while hidden.
@@ -548,7 +567,7 @@ async function receive(p: chrome.runtime.Port, message: ServiceMessage): Promise
   if (message.welcome) {
     delay = 1000;
     if (port === p) welcomedAt = Date.now();
-    if (port === p && !welcomed.has(p)) { welcomed.add(p); forwarded = eventList(message.events); }
+    if (port === p && !welcomed.has(p)) { welcomed.add(p); forwarded = eventList(message.events); devTools = message.devTools === true; }
     return;
   }
   if (message.refused) { console.warn('phantab service refused this bridge:', message.refused); delay = 20000; return; }
@@ -603,13 +622,20 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     chrome.debugger.sendCommand({ tabId }, 'Page.screencastFrameAck', { sessionId: (params as CdpParams).sessionId }).catch(() => {});
     return;
   }
-  if (forwarded && !forwarded.has(method)) return; // read by nobody: console messages, exceptions, ...
+  // SR-90: an ...ExtraInfo event carries a request's raw headers, cookies included: never forwarded.
+  if (method.endsWith('ExtraInfo')) return;
+  // A developer-tools event only for a tab the service is recording, on its own target, with devTools on.
+  if (DEVTOOLS_EVENTS.has(method)) {
+    if (devTools && !source.sessionId && recording.get(tabId)?.has(recordingOf(method))) post({ event: 'cdp', tabId, method, params });
+    return;
+  }
+  if (forwarded && !forwarded.has(method)) return; // read by nobody: animations, workers, ...
   post({ event: 'cdp', tabId, sessionId: source.sessionId, method, params });
 });
 chrome.debugger.onDetach.addListener((source, reason) => {
   const tabId = source.tabId!, at = Date.now();
   const held = temporary.delete(tabId);
-  attached.delete(tabId); casting.delete(tabId); nextAnswers.delete(tabId); showWorking();
+  attached.delete(tabId); casting.delete(tabId); nextAnswers.delete(tabId); stopRecording(tabId); showWorking();
   if (held) { foreign.delete(tabId); return; } // not the service's: nothing to report
   // A closing tab detaches first; its removal usually follows within a few ms.
   setTimeout(async () => {
@@ -623,7 +649,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 // that close (Hold) so the close stays quiet, and ends with it; every other one is detached now.
 chrome.action.onClicked.addListener(() => {
   for (const tabId of [...attached.keys()]) {
-    attached.delete(tabId); casting.delete(tabId); foreign.delete(tabId);
+    attached.delete(tabId); casting.delete(tabId); foreign.delete(tabId); stopRecording(tabId);
     post({ event: 'detach', tabId, reason: 'canceled_by_user' });
     const hold: Hold = {};
     temporary.set(tabId, hold);
@@ -656,7 +682,7 @@ async function quietNewTab(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.active && tab.openerTabId !== undefined && attached.has(tab.openerTabId)) await chrome.tabs.update(tab.openerTabId, { active: true });
   await kept;
 }
-chrome.tabs.onRemoved.addListener(tabId => { foreign.delete(tabId); post({ event: 'removed', tabId }); });
+chrome.tabs.onRemoved.addListener(tabId => { foreign.delete(tabId); stopRecording(tabId); post({ event: 'removed', tabId }); });
 chrome.windows.onRemoved.addListener(windowId => { setAgentWindow(windowId).then(() => setMinimized(windowId, false)).catch(() => {}); });
 chrome.runtime.onStartup.addListener(connect);
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'reconnect') connect(); });

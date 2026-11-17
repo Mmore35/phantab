@@ -315,10 +315,22 @@ pub fn read_frame(stream: &mut impl std::io::Read) -> Option<Value> {
 
 /// Says hello as the bridge extension on `io` and checks the welcome (test/fake-extension.mjs).
 pub fn hello(io: &mut (impl std::io::Read + std::io::Write), instance: &str) {
+    assert!(!hello_dev_tools(io, instance), "a welcome declaring devTools");
+}
+
+/// [`hello`], for a service that may have `devTools` on: whether its welcome declared it (SR-90).
+pub fn hello_dev_tools(io: &mut (impl std::io::Read + std::io::Write), instance: &str) -> bool {
     io.write_all(&frame(&json!({ "hello": { "version": "1.0.0", "protocol": 1, "instance": instance } })))
         .unwrap();
     io.flush().unwrap();
-    assert_eq!(read_frame(io), Some(json!({ "welcome": true, "events": phantab_cdp::EVENTS })));
+    let welcome = read_frame(io).expect("a welcome");
+    let on = welcome.get("devTools") == Some(&json!(true));
+    let mut expected = json!({ "welcome": true, "events": phantab_cdp::EVENTS });
+    if on {
+        expected["devTools"] = json!(true);
+    }
+    assert_eq!(welcome, expected);
+    on
 }
 
 /// A fake bridge extension on an upgraded socket: hello, then a thread that answers `ping` and hands

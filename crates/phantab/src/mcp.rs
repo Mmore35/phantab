@@ -136,13 +136,51 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
     ]
 }
 
-/// The tool list exactly as `tools/list` returns it.
+/// The developer tools (THREAT-MODEL SR-90), listed after [`defs`] only when `config.json` sets
+/// `"devTools": true`.
+fn devtools_defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
+    let s = || json!({ "type": "string" });
+    let flag = || json!({ "type": "boolean" });
+    vec![
+        (
+            "evaluate",
+            "Run a script in the page's own world, as the page's own scripts run (on only with devTools set): function is a JavaScript function's source, such as \"() => document.title\", called with args (a list of JSON values) in the main document, or in the frame that frame names (fN of your last snapshot's FRAMES line, or that frame's origin). A promise it returns is awaited. The result is its value as JSON and type its JavaScript type; a result over 20000 characters is cut, and says so, unless path, an absolute file path, saves it whole (an existing file is replaced only with overwrite true). It reaches whatever the page's scripts reach, its storage and what its fields hold included, but no httpOnly cookie. A script that throws is an error with its message; one that has not answered after seconds (at most and by default 10) is ended. It counts as a change to the page: a page handed to the owner refuses it, and with guardrails light or full every call is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that script. Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "function": s(), "args": { "type": "array" }, "frame": s(), "seconds": { "type": "number" }, "path": s(), "overwrite": flag(), "ownerConfirmed": flag() }),
+            &["function"],
+        ),
+        (
+            "console",
+            "Read the page's console errors, warnings and uncaught exceptions since its last navigation (on only with devTools set): each has level, text (cut at 2000 characters), and url and line when known. A page keeps at most 200; dropped counts the oldest let go. The first call on a page starts recording and says so, since nothing from before it was kept: reload or act, then ask again. The newest that fit 20000 characters are shown and omitted counts the older ones left out; path, an absolute file path, saves them all as JSON (an existing file is replaced only with overwrite true). Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "path": s(), "overwrite": flag() }),
+            &[],
+        ),
+        (
+            "network",
+            "List the page's requests since its last navigation (on only with devTools set), failed ones first (a network error, or a status of 400 or more): each has id, method, the whole URL, type, and status, size in bytes and ms once known; filter keeps those whose URL contains it. A page keeps at most 500; dropped counts the oldest let go. The first call on a page starts recording and says so, since nothing from before it was kept: reload or act, then ask again. id gives one request's detail: its MIME type, request and response headers, redirects and the response body as Chrome still holds it (body, or bodyBase64 when it is not text), cut at 20000 characters. Cookie, Set-Cookie, Authorization and Proxy-Authorization headers are always left out, and no request body is read. path, an absolute file path, saves the whole list or detail as JSON (an existing file is replaced only with overwrite true). Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "id": s(), "filter": s(), "path": s(), "overwrite": flag() }),
+            &[],
+        ),
+    ]
+}
+
+/// The tool list exactly as `tools/list` returns it with `devTools` off, the default.
 ///
 /// # Errors
 /// Never in practice: the definitions are fixed.
 pub fn tools() -> anyhow::Result<Vec<Tool>> {
-    defs()
-        .into_iter()
+    tools_with(false)
+}
+
+/// The tool list, with the developer tools after the rest when `dev_tools` (SR-90).
+///
+/// # Errors
+/// Never in practice: the definitions are fixed.
+pub fn tools_with(dev_tools: bool) -> anyhow::Result<Vec<Tool>> {
+    let mut all = defs();
+    if dev_tools {
+        all.extend(devtools_defs());
+    }
+    all.into_iter()
         .map(|(name, description, properties, required)| {
             let tool = json!({
                 "name": format!("browser_{name}"),
@@ -203,7 +241,7 @@ struct Server {
 /// output tokens, about 9 ms each, and each argument it wrote cost about 20 of them beyond its value:
 /// nearly every call named the one page it had open. `close`, `show`, `resume` and `sign_in` still
 /// name theirs, so none of them reaches a page by default.
-const DEFAULT_PAGE: &[&str] = &["snapshot", "screenshot", "wait", "act"];
+const DEFAULT_PAGE: &[&str] = &["snapshot", "screenshot", "wait", "act", "evaluate", "console", "network"];
 
 /// How many characters of a page id an agent is shown. Every call names its page, and a whole v4 UUID
 /// is about 20 tokens of the agent's own output each time, the dearest tokens it writes (climb
@@ -498,6 +536,22 @@ fn snapshot_text(value: &Value) -> Option<String> {
 }
 
 /// A value as one bare word when it is one, else as a JSON string, so a line still splits on spaces.
+/// Whether `frame` is written as the snapshot marks a control's frame: `f` and a number from 1.
+fn frame_number(frame: &str) -> bool {
+    frame
+        .strip_prefix('f')
+        .is_some_and(|n| !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The origin `fN` stands for on a snapshot's FRAMES `legend` (`\nFRAMES f1=.. f2=..`).
+fn frame_origin(legend: &str, n: &str) -> Option<String> {
+    let mark = format!("{n}=");
+    let given =
+        legend.trim_start().strip_prefix("FRAMES")?.split_whitespace().find_map(|f| f.strip_prefix(&mark))?;
+    // `word` quotes a value with a space or a quote in it, as JSON.
+    Some(serde_json::from_str::<String>(given).unwrap_or_else(|_| given.to_owned()))
+}
+
 fn word(s: &str) -> String {
     if !s.is_empty() && !s.contains(|c: char| c.is_whitespace() || c == '"') {
         s.to_owned()
@@ -924,6 +978,29 @@ impl Server {
         Ok(Some(line))
     }
 
+    /// `evaluate`'s `frame` as fN: the frame of that number on the FRAMES line of the agent's last
+    /// snapshot of the page, sent to the service as its origin. Any other `frame` goes as given.
+    fn evaluate_frame(
+        &self,
+        method: &str,
+        arguments: Option<&mut serde_json::Map<String, Value>>,
+        page: Option<&str>,
+    ) -> Result<(), String> {
+        let (Some(a), Some(p), "evaluate") = (arguments, page, method) else { return Ok(()) };
+        let Some(n) = a.get("frame").and_then(Value::as_str).filter(|f| frame_number(f)).map(str::to_owned)
+        else {
+            return Ok(());
+        };
+        let legend = self.seen().snapshots.get(p).map(|s| s.frames.clone()).unwrap_or_default();
+        let Some(origin) = frame_origin(&legend, &n) else {
+            return Err(format!(
+                "frame {n}: your last snapshot of this page has no {n} on its FRAMES line. Snapshot the page again, or give the frame's origin."
+            ));
+        };
+        a.insert("frame".into(), Value::String(origin));
+        Ok(())
+    }
+
     async fn call(&self, name: &str, arguments: Option<serde_json::Map<String, Value>>) -> CallToolResult {
         let method = match checked(&self.tools, name, arguments.as_ref()) {
             Ok(method) => method,
@@ -982,6 +1059,9 @@ impl Server {
         }
         if page.is_some() {
             self.seen().last.clone_from(&page);
+        }
+        if let Err(refused) = self.evaluate_frame(method, arguments.as_mut(), page.as_deref()) {
+            return failure(&refused);
         }
         if let (Some((then, snapshot)), Some(a)) = (plan, arguments.as_ref()) {
             return self.act(a.clone(), then, snapshot, page).await;
@@ -1069,7 +1149,9 @@ pub async fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let (client, tools) = match (client_id(), tools()) {
+    // A missing or unreadable config.json lists no developer tool; the service refuses them alike.
+    let dev_tools = crate::runtime::read_config().is_ok_and(|c| c.dev_tools());
+    let (client, tools) = match (client_id(), tools_with(dev_tools)) {
         (Ok(c), Ok(t)) => (c, t),
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("{e}");
@@ -1140,6 +1222,57 @@ mod tests {
         let tools = tools().unwrap();
         assert_eq!(tools.len(), 15);
         assert!(tools.iter().all(|t| t.input_schema.get("additionalProperties") == Some(&json!(false))));
+        // SR-90: the developer tools only with devTools, after the others, which stay as they are.
+        let with = tools_with(true).unwrap();
+        let names: Vec<&str> = with[15..].iter().map(|t| t.name.as_ref()).collect();
+        assert_eq!(names, ["browser_evaluate", "browser_console", "browser_network"]);
+        assert_eq!(serde_json::to_value(&with[..15]).unwrap(), serde_json::to_value(&tools).unwrap());
+        assert!(with.iter().all(|t| t.input_schema.get("additionalProperties") == Some(&json!(false))));
+        assert!(
+            !tools.iter().any(
+                |t| ["browser_evaluate", "browser_console", "browser_network"].contains(&t.name.as_ref())
+            )
+        );
+    }
+
+    #[test]
+    fn a_frame_number_is_read_off_the_frames_line() {
+        for (f, is) in [
+            ("f1", true),
+            ("f12", true),
+            ("f0", false),
+            ("f01", false),
+            ("f", false),
+            ("F1", false),
+            ("f1x", false),
+            ("https://a", false),
+        ] {
+            assert_eq!(frame_number(f), is, "{f}");
+        }
+        let legend = "\nFRAMES f1=http://twin:9 f2=https://b.example f3=\"odd one\"";
+        assert_eq!(frame_origin(legend, "f1").as_deref(), Some("http://twin:9"));
+        assert_eq!(frame_origin(legend, "f2").as_deref(), Some("https://b.example"));
+        assert_eq!(frame_origin(legend, "f4"), None);
+        assert_eq!(frame_origin("", "f1"), None);
+    }
+
+    /// A frame number with no snapshot behind it is refused here, before any service call.
+    #[tokio::test]
+    async fn an_evaluate_frame_number_needs_a_snapshot_that_shows_it() {
+        let server = Server {
+            name: "phantab".into(),
+            client: "t".into(),
+            tools: Arc::new(tools_with(true).unwrap()),
+            seen: Arc::default(),
+        };
+        let args = json!({ "pageId": "p", "function": "() => 1", "frame": "f2" }).as_object().cloned();
+        let r = server.call("browser_evaluate", args).await;
+        assert_eq!(r.is_error, Some(true));
+        let text = serde_json::to_value(&r.content).unwrap()[0]["text"].clone();
+        assert!(
+            text.as_str().unwrap().starts_with("frame f2: your last snapshot of this page has no f2"),
+            "{text}"
+        );
     }
 
     /// SR-33: an argument the schema does not define is an error, before any call reaches the service.

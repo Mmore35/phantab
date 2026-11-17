@@ -375,6 +375,8 @@ pub(crate) struct State {
     /// Frames whose isolated world a call is creating; other calls wait for it instead of sending their
     /// own.
     worlds_creating: HashSet<FrameId>,
+    /// The developer tools' console and network recordings (SR-90), off until asked for.
+    recording: crate::devtools::Recording,
 }
 
 impl State {
@@ -463,6 +465,10 @@ impl State {
                 self.create_frame(id.clone(), None, root.cloned());
             }
             self.main = Some(id.clone());
+            if !from_tree {
+                self.recording
+                    .on_main_document(payload.get("loaderId").and_then(Value::as_str).unwrap_or(""));
+            }
         }
         let Some(frame) = self.frames.get_mut(&id) else { return };
         if !from_tree {
@@ -783,6 +789,13 @@ impl Inner {
 
     fn on_event(self: &Arc<Self>, session: Option<&SessionId>, method: &str, params: &Value) {
         let root = self.root.as_ref();
+        if crate::events::reads_devtools_event(method) {
+            // Recorded only from the page's own target (SR-90); a frame in another process is not.
+            if session == root {
+                self.state.lock().recording.on_event(method, params);
+            }
+            return;
+        }
         let action = {
             let mut st = self.state.lock();
             if session == root {
@@ -1315,6 +1328,118 @@ impl Page {
             .cloned()
             .ok_or_else(|| CdpError::Other("DOM.resolveNode returned no object".into()))?;
         Ok(JsHandle::new(self.inner.clone(), ctx, object))
+    }
+
+    /// Runs `function` (a function's source, from the agent) in the frame's main world with `args` by
+    /// value, awaiting a promise it returns, and answers the result by value (THREAT-MODEL SR-90).
+    ///
+    /// The call races a page timer of `limit`, so a promise that never settles still answers then, as
+    /// [`crate::Evaluated::TimedOut`] with nothing stopped. That matters beyond this call: the bridge
+    /// extension's test double answers one tab's commands in the order they were sent, and a call left
+    /// hanging would hold back every later answer for the tab. Only a script still running at `limit`
+    /// (plus [`SCRIPT_GRACE`], the context wait included) keeps its call open: when the page's thread then
+    /// does not answer a trivial call within a second, `Runtime.terminateExecution` ends it, which
+    /// settles the call and frees the answers behind it.
+    pub async fn evaluate_script(
+        &self,
+        frame: &FrameId,
+        function: &str,
+        args: Vec<Value>,
+        limit: Duration,
+    ) -> Result<crate::Evaluated, CdpError> {
+        let args: Vec<Arg<'_>> = args.into_iter().map(Arg::Value).collect();
+        let (wrapped, timed_out) = raced_script(function, limit);
+        // The context's session once known: where a script still running is ended.
+        let mut session = None;
+        let run = async {
+            let ctx = self.inner.context_for(frame).await?;
+            session = Some(ctx.session.clone());
+            call_function(&self.inner, &ctx, &wrapped, &args, true).await
+        };
+        match tokio::time::timeout(limit + SCRIPT_GRACE, run).await {
+            Ok(Ok(remote)) if remote.get("value").and_then(Value::as_str) == Some(timed_out.as_str()) => {
+                Ok(crate::Evaluated::TimedOut { stopped: false })
+            }
+            Ok(Ok(remote)) => {
+                let kind = remote.get("type").and_then(Value::as_str).unwrap_or("undefined").to_owned();
+                Ok(crate::Evaluated::Value { value: value_from_remote(&remote), kind })
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                let Some(session) = session else { return Ok(crate::Evaluated::TimedOut { stopped: false }) };
+                let probe = async {
+                    let world = self.inner.world_for(frame).await?;
+                    call_function(&self.inner, &world, "() => 1", &[], true).await
+                };
+                let answers =
+                    tokio::time::timeout(Duration::from_secs(1), probe).await.is_ok_and(|r| r.is_ok());
+                if answers {
+                    return Ok(crate::Evaluated::TimedOut { stopped: false });
+                }
+                self.inner.send(session.as_ref(), "Runtime.terminateExecution", json!({})).await?;
+                Ok(crate::Evaluated::TimedOut { stopped: true })
+            }
+        }
+    }
+
+    /// Starts recording the page's console errors, warnings and exceptions (SR-90) with `Log.enable`,
+    /// unless it already is. Answers whether this call started it. Messages from before are not kept.
+    pub async fn record_console(&self) -> Result<bool, CdpError> {
+        {
+            let mut st = self.inner.state.lock();
+            if st.recording.console.is_some() {
+                return Ok(false);
+            }
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            st.recording.console = Some(crate::devtools::ConsoleLog::new(now.as_secs_f64() * 1000.0));
+        }
+        if let Err(e) = self.send("Log.enable", json!({})).await {
+            self.inner.state.lock().recording.console = None;
+            return Err(e);
+        }
+        Ok(true)
+    }
+
+    /// The console recording so far, `None` when not recording.
+    pub fn console(&self) -> Option<crate::ConsoleRead> {
+        self.inner.state.lock().recording.console.as_ref().map(crate::devtools::ConsoleLog::read)
+    }
+
+    /// Starts recording the page's requests (SR-90) with `Network.enable` and no request bodies
+    /// (`maxPostDataSize: 0`), unless it already is. Answers whether this call started it.
+    pub async fn record_network(&self) -> Result<bool, CdpError> {
+        {
+            let mut st = self.inner.state.lock();
+            if st.recording.network.is_some() {
+                return Ok(false);
+            }
+            st.recording.network = Some(crate::devtools::NetworkLog::default());
+        }
+        if let Err(e) = self.send("Network.enable", json!({ "maxPostDataSize": 0 })).await {
+            self.inner.state.lock().recording.network = None;
+            return Err(e);
+        }
+        Ok(true)
+    }
+
+    /// The network recording so far, `None` when not recording.
+    pub fn network(&self) -> Option<crate::NetworkRead> {
+        self.inner.state.lock().recording.network.as_ref().map(crate::devtools::NetworkLog::read)
+    }
+
+    /// One recorded request's response body, as Chrome still holds it: its bytes, and whether Chrome
+    /// sent them as base64 (not text).
+    pub async fn response_body(&self, id: &str) -> Result<(Vec<u8>, bool), CdpError> {
+        let res = self.send("Network.getResponseBody", json!({ "requestId": id })).await?;
+        let body = res.get("body").and_then(Value::as_str).unwrap_or("");
+        if res.get("base64Encoded").and_then(Value::as_bool) == Some(true) {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .map_err(|e| CdpError::Other(format!("Network.getResponseBody: {e}")))?;
+            return Ok((bytes, true));
+        }
+        Ok((body.as_bytes().to_vec(), false))
     }
 
     /// Sends a raw command on the root session, with the page's timeout and close handling.
@@ -1955,6 +2080,29 @@ impl Page {
     pub(crate) fn parent_frame(&self, frame: &FrameId) -> Option<FrameId> {
         self.inner.parent_of(frame)
     }
+}
+
+/// How long past its own limit a script's call may take before it counts as still running: the page's
+/// timer fires late on a busy thread, and the answer has to travel.
+const SCRIPT_GRACE: Duration = Duration::from_millis(1500);
+
+/// `function` wrapped to race a page timer of `limit` ([`Page::evaluate_script`]), and the string the
+/// timer answers with: random per call, so no script's own result is ever taken for it.
+fn raced_script(function: &str, limit: Duration) -> (String, String) {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+    );
+    let token = format!("phantab-script-timed-out-{:016x}", h.finish());
+    let ms = limit.as_millis();
+    // A throw inside the executor rejects the promise with the same error, so it reads as before.
+    let wrapped = format!(
+        "function (...a) {{ const f = ({function}\n); return Promise.race([\
+         new Promise((ok) => ok(f.apply(this, a))), \
+         new Promise((ok) => setTimeout(() => ok({token:?}), {ms}))]); }}"
+    );
+    (wrapped, token)
 }
 
 #[cfg(test)]
