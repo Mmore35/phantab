@@ -200,6 +200,16 @@ The 15 tools: `browser_status`, `browser_connect`, `browser_open`, `browser_page
 `browser_screenshot`, `browser_close`, `browser_sign_in` and `browser_sign_up`. Each tool describes
 itself to the agent.
 
+Results can be files. `browser_screenshot` takes a PNG or JPEG of the view, the full page or one
+element, at a view size of your choosing (390 wide for a phone), and with `path` saves it there and
+answers only the path and size, so an image costs the agent no tokens. `browser_snapshot` with `path`
+saves the whole snapshot as JSON. The path must be absolute and its folder must exist; an existing
+file is replaced only with `overwrite: true`. While you hold a page (`browser_show`), its view is
+your window, so the agent gets only the plain picture of it: no full page, element or view size
+until you hand it back. When the agent's work is done and you are to finish it
+yourself, `browser_show` with `release: true` gives you the tab for good: it stays open as your
+ordinary tab and leaves the agent's list.
+
 ## Safety
 phantab gives an AI agent your signed-in browser. Whatever the agent can be talked into, by you or by
 a page it reads, it can do as you, on every site you are signed in to. Read this before you install.
@@ -215,6 +225,10 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
 
   **On a work machine, or anywhere an agent reads untrusted pages, use `full`.** Secrets stay out of
   logs and files in every mode. See `docs/GUARDRAILS.md`, including what the confirmation cannot stop.
+- **Agents share a site.** By default, several agents, and you, can change one site at once
+  (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
+  ServiceNow, for example, the current update set and application scope, so one agent's switch moves
+  the other's work too. Set `siteLock` to `exclusive` for one writer per site (`docs/GUARDRAILS.md`).
 - **The extension's permissions.** The bridge extension asks for `debugger` (to drive tabs) and
   `<all_urls>` (to reach every site), plus `tabs`, `nativeMessaging`, `alarms`, `storage` and
   `scripting`. Those are broad on purpose: they are what lets an agent act in any tab. It has no

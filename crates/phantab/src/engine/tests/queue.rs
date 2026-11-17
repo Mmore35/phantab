@@ -256,11 +256,11 @@ async fn waiting_for_the_browser_holds_no_other_call() {
     assert!(tabs.await.unwrap().unwrap().is_array());
 }
 
-// Two agents' pages on one site now act at the same moment; the lease's check-and-take is one step
+// Under `siteLock: exclusive`, two agents' pages on one site now act at the same moment; the lease's check-and-take is one step
 // under the engine's state lock, so one gets it and the other is refused, as when they ran in turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_agents_acting_on_one_site_at_once_get_one_lease() {
-    let f = fixture(Recording::new());
+    let f = fixture_exclusive(Recording::new());
     let e = &f.engine;
     for _ in 0..10 {
         let a =

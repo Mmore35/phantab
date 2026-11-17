@@ -11,6 +11,7 @@
 //! Error texts are part of the interface agents read: change them only on purpose.
 
 mod echo;
+mod files;
 mod guardrails;
 mod ops;
 mod profiles;

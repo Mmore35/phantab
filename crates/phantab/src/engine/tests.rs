@@ -355,6 +355,16 @@ fn fixture_profiles_with(
     Fixture { engine, windows, _dir: dir }
 }
 
+/// [`fixture`] with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md); the default shares it.
+fn fixture_exclusive(windows: Recording) -> Fixture {
+    fixture_profiles_with(windows, None, None, &[], None, exclusive)
+}
+
+/// The config edit that brings back one writer per site.
+fn exclusive(_: &std::path::Path, config: &mut Config) {
+    config.other.insert("siteLock".to_owned(), json!("exclusive"));
+}
+
 async fn connected(windows: Recording) -> (Fixture, Ext) {
     let f = fixture(windows);
     let ext = Ext::connect(f.engine.bridge()).await;
@@ -453,7 +463,7 @@ async fn a_detach_message_never_names_a_page_chosen_host_and_cuts_names_and_scan
 
 #[tokio::test]
 async fn multiple_pages_keep_the_site_lease_a_takeover_blocks_the_same_agent_and_orphans_cannot_deadlock() {
-    let f = fixture(Recording::new());
+    let f = fixture_exclusive(Recording::new());
     let e = &f.engine;
     let a = rec(e, "a", FIXTURE, Fields::default()).await;
     let b = rec(e, "a", FIXTURE, Fields::default()).await;
@@ -475,6 +485,34 @@ async fn multiple_pages_keep_the_site_lease_a_takeover_blocks_the_same_agent_and
     e.close("c", &json!({ "pageId": b.id })).await.unwrap();
     e.close("c", &json!({ "pageId": c.id })).await.unwrap();
     assert_eq!(e.st().origins.len(), 0);
+}
+
+/// `siteLock` absent (`shared`): no page holds a site against another, another agent's or the same
+/// agent's, handed over or not, orphaned or not; and no lease is kept. A handed-over page still refuses
+/// writes to itself, in both settings.
+#[tokio::test]
+async fn by_default_pages_share_a_site_and_only_a_handed_over_page_refuses_its_own_writes() {
+    let f = fixture(Recording::new());
+    let e = &f.engine;
+    let a = rec(e, "a", FIXTURE, Fields::default()).await;
+    let b = rec(e, "a", FIXTURE, Fields::default()).await;
+    let c = rec(e, "c", FIXTURE, Fields::default()).await;
+    e.lock_site(&a, None).unwrap();
+    e.lock_site(&c, None).unwrap();
+    a.lock().paused = true;
+    e.lock_site(&b, None).unwrap();
+    e.lock_site(&c, None).unwrap();
+    e.release_all("a").await.unwrap();
+    assert!(a.lock().orphaned);
+    e.lock_site(&c, None).unwrap();
+    assert_eq!(e.st().origins.len(), 0);
+    for f in [fixture(Recording::new()), fixture_exclusive(Recording::new())] {
+        let e = &f.engine;
+        let a = rec(e, "a", FIXTURE, Fields::default()).await;
+        a.lock().paused = true;
+        let own = err(e.act("a", &json!({ "pageId": a.id, "action": "click", "selector": "#go" })).await);
+        assert_eq!(own, "Page is handed to the owner. Wait for handback, then resume.");
+    }
 }
 
 #[tokio::test]
@@ -585,6 +623,36 @@ async fn calls_check_the_owner_and_a_handed_page_refuses_writes_but_not_reads() 
     r.lock().orphaned = true;
     let adopt = err(e.resume("b", &id).await);
     assert_eq!(adopt, "Recover only an orphaned handoff after explicit owner confirmation.");
+}
+
+/// SR-88: on a page handed to the owner, a screenshot that would resize, scroll or stretch his window
+/// (`width`, `height`, `selector`, `fullPage`) is refused at once, naming what was given, and saves
+/// nothing; the plain picture of the view is not refused.
+#[tokio::test]
+async fn a_held_page_refuses_a_picture_that_moves_its_view() {
+    let f = fixture_with(Recording::new(), None, None);
+    let e = &f.engine;
+    let r = rec(e, "a", FIXTURE, Fields::default()).await;
+    r.lock().paused = true;
+    let dir = tempfile::tempdir().unwrap();
+    for (mut args, named) in [
+        (json!({ "selector": "#a" }), "selector"),
+        (json!({ "fullPage": true, "path": dir.path().join("full.png") }), "fullPage"),
+        (json!({ "width": 390 }), "width"),
+        (json!({ "width": 390, "height": 844 }), "width and height"),
+    ] {
+        args["pageId"] = json!(r.id);
+        let refused = err(e.screenshot("a", &args).await);
+        assert_eq!(
+            refused,
+            format!(
+                "{named}: the owner holds this page (browser_show), so its view is his window, which a picture does not resize, scroll or stretch. Take the plain picture of the view, or this one after handback."
+            )
+        );
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "nothing was written");
+    let plain = e.screenshot("a", &json!({ "pageId": r.id })).await;
+    assert!(plain.as_ref().err().is_none_or(|m| !m.0.contains("owner holds")), "{plain:?}");
 }
 
 /// Below `guardrails: full` the agent's own word is enough to take a page back from the owner or to
@@ -1996,7 +2064,7 @@ async fn a_refused_second_copy_is_filed_under_the_profile_it_claimed() {
 /// one profile it stays one agent's.
 #[tokio::test]
 async fn a_site_lease_is_held_per_profile() {
-    let f = fixture_profiles(Recording::new(), None, None, &["Profile 2"], None);
+    let f = fixture_profiles_with(Recording::new(), None, None, &["Profile 2"], None, exclusive);
     let e = &f.engine;
     let work = || Fields { profile: Arc::from("Profile 2"), ..Fields::default() };
     let a = rec(e, "a", FIXTURE, Fields::default()).await;
@@ -2201,6 +2269,32 @@ async fn after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_
         // Every page's answer, not only the marked one's: the value is the site's to put anywhere.
         let shot = PageService::call(e.as_ref(), EngineMethod::Screenshot, id.clone(), "a").await;
         assert_eq!(err(shot), echo::SCREENSHOT_REFUSED, "{mode}");
+        // Every new form of a screenshot is refused alike, before any argument is read (SR-88).
+        let dir = tempfile::tempdir().unwrap();
+        let forms = [
+            json!({ "path": dir.path().join("shot.png"), "format": "png" }),
+            json!({ "path": "relative.png", "overwrite": true }),
+            json!({ "fullPage": true }),
+            json!({ "selector": "#name" }),
+            json!({ "width": 390, "height": 844 }),
+            json!({ "format": "png" }),
+        ];
+        for mut form in forms {
+            form["pageId"] = json!(r.id);
+            let shot = PageService::call(e.as_ref(), EngineMethod::Screenshot, form.clone(), "a").await;
+            assert_eq!(err(shot), echo::SCREENSHOT_REFUSED, "{mode}: {form}");
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "{mode}: nothing was written");
+        // A snapshot saved to a file is redacted as its answer is.
+        let saved = dir.path().join("snapshot.json");
+        let args = json!({ "pageId": r.id, "path": saved });
+        let out = PageService::call(e.as_ref(), EngineMethod::Snapshot, args, "a").await.unwrap();
+        assert_eq!(out["path"], json!(saved.display().to_string()), "{mode}: {out}");
+        assert_eq!(out.get("text"), None, "{mode}: {out}");
+        let file = std::fs::read_to_string(&saved).unwrap();
+        assert_eq!(out["bytes"], json!(file.len()), "{mode}");
+        assert_eq!(leaks(&file), None, "{mode}: a form is left in the saved snapshot");
+        assert!(file.contains("[redacted]"), "{mode}: {file}");
         assert!(!e.echo_marked(&other), "{mode}: another tab's screenshots are not refused");
         // A fresh attach to the same tab is the same tab.
         let again = rec(e, "a", FIXTURE, Fields { tab_id: Some(5), ..Fields::default() }).await;

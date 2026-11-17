@@ -818,6 +818,15 @@ impl Page {
         r.map(Some)
     }
 
+    /// The element scrolled into view, then its box in document coordinates, for [`Page::capture`]'s
+    /// clip (puppeteer's element screenshot). `None` when it has no box.
+    pub async fn element_clip(&self, el: &JsHandle) -> Result<Option<BoundingBox>, CdpError> {
+        self.scroll_into_view_if_needed(el).await?;
+        let Some(b) = self.element_box(el).await? else { return Ok(None) };
+        let at = self.visual_viewport().await?;
+        Ok(Some(BoundingBox { x: b.x + at.x, y: b.y + at.y, ..b }))
+    }
+
     /// Puppeteer's `ElementHandle.boundingBox`: the element's box in page coordinates.
     pub async fn element_box(&self, el: &JsHandle) -> Result<Option<BoundingBox>, CdpError> {
         let Some(b) = parse_box(&el.evaluate(JS_BOX, vec![]).await?) else { return Ok(None) };

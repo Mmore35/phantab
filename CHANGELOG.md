@@ -6,6 +6,24 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 ## Unreleased
 
 ### Changed
+- Agents share a site by default. Another agent's page on a site, open or handed to the owner, no
+  longer refuses a write: only a page handed to the owner refuses its own agent's writes. The new
+  `siteLock` setting in `config.json` brings back one writer per site with `exclusive`; `shared` is
+  the default, and any other value counts as `exclusive`.
+- `browser_show` takes `release: true`: the page becomes the owner's ordinary tab for good. Phantab's
+  record of it ends (it leaves `browser_pages`, with nothing to resume or close) and the tab stays
+  open, debugger detached, never closed by later cleanup.
+- `browser_screenshot` saves files and takes more than the view. `path` saves the image there and
+  answers the path and its size in bytes and pixels, not the image. `format` is `png` or `jpeg` (still
+  the default, but a `.png` path with no format saves PNG). `fullPage` takes the whole page, `selector`
+  one element, found as `browser_act` finds one (frames and open shadow roots included), and `width`
+  and `height` set the view's size for that picture alone, put back after it. The path must be
+  absolute and its folder must exist; an existing file is replaced only with `overwrite: true`. A page
+  whose screenshot is refused refuses every form of it. On a page handed to the owner, whose view is
+  his window, `fullPage`, `selector`, `width` and `height` are refused until handback; the plain
+  picture is not.
+- `browser_snapshot` takes `path` the same way and saves the whole snapshot there as JSON, redacted as
+  its answer is.
 - Any form can be read and filled, including one in a frame inside shadow roots, the way some apps
   (such as ServiceNow) hold theirs. A selector in `browser_act`'s `click`, `fill` and `select`
   steps finds its element in the main document first, then in each website frame. With guardrails

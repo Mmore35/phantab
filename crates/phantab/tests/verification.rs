@@ -56,7 +56,12 @@ const IDENTITY: (&str, &str) = ("Tailscale-User-Login", "owner@example.test");
 
 impl Lane {
     async fn start(chrome: &PathBuf) -> Self {
-        Self::start_with(chrome, None, None).await
+        Self::start_with(chrome, None, None, None).await
+    }
+
+    /// With one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md), so a check holds its site.
+    async fn start_exclusive(chrome: &PathBuf) -> Self {
+        Self::start_with(chrome, None, None, Some("exclusive")).await
     }
 
     /// A lane whose service signs in with the fake provider, answering from `provider.json` in its
@@ -64,22 +69,31 @@ impl Lane {
     /// It runs the remote view too, as [`Self::start_remote`].
     async fn start_signing(chrome: &PathBuf) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Self::start_with(chrome, Some(port), Some(json!({"values": {"username": "me@example.test"}}))).await
+        Self::start_with(chrome, Some(port), Some(json!({"values": {"username": "me@example.test"}})), None)
+            .await
     }
 
     /// A lane whose service also runs the remote view, on a free loopback port.
     async fn start_remote(chrome: &PathBuf) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Self::start_with(chrome, Some(port), None).await
+        Self::start_with(chrome, Some(port), None, None).await
     }
 
-    async fn start_with(chrome: &PathBuf, remote_port: Option<u16>, provider: Option<Value>) -> Self {
+    async fn start_with(
+        chrome: &PathBuf,
+        remote_port: Option<u16>,
+        provider: Option<Value>,
+        site_lock: Option<&str>,
+    ) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
         let mut config = json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
         });
+        if let Some(lock) = site_lock {
+            config["siteLock"] = json!(lock);
+        }
         if let Some(p) = remote_port {
             config["remoteViewer"] = json!({
                 "listen": format!("127.0.0.1:{p}"),
@@ -289,7 +303,8 @@ fn ms(d: Duration) -> u128 {
 async fn a_wall_pops_up_after_its_grace_and_goes_down_by_itself_while_the_agent_keeps_working() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
-    let lane = Lane::start(&chrome).await;
+    // One writer per site, so the check holds its site against the agent's other page and another session.
+    let lane = Lane::start_exclusive(&chrome).await;
 
     let (_, a, a_tab) = lane.open("a", "/verify/shop").await;
     let (_, same_site, _) = lane.open("a", "/engine/basic").await;

@@ -504,8 +504,11 @@ impl Engine {
     /// `snapshot(owner, {pageId})`. At parity a text field also says what it holds (THREAT-MODEL R8),
     /// except on a page whose screenshot is refused: one that showed a password or code back, or holds a
     /// sign-up's new password.
+    /// With `path` the snapshot is saved there as JSON, redacted as an answer is (SR-88), and the answer is
+    /// the file, not the snapshot.
     pub(crate) async fn snapshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
+        let target = super::files::Target::of(args)?;
         let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
         let new_password = crate::signin::sweep_sign_up(self, &held).await?;
         let values = self.guardrails() == super::guardrails::Guardrails::Parity
@@ -517,17 +520,25 @@ impl Engine {
             .await?;
         let mut out = Self::describe_reporting(&r);
         out.extend(data);
-        Ok(Value::Object(self.looked(&r, out).await))
+        let out = Value::Object(self.looked(&r, out).await);
+        let Some(target) = target else { return Ok(out) };
+        let text = serde_json::to_string_pretty(&self.redacted(out, false))
+            .map_err(|e| EngineError(format!("snapshot: {e}")))?;
+        let mut saved = target.write(text.into_bytes()).await?;
+        saved.insert("pageId".into(), json!(r.id));
+        Ok(Value::Object(saved))
     }
 
     /// `lock(r, url)`: the site lease a write takes. An isolated page shares no site with anyone. A lease is
     /// a site in one Chrome profile: two profiles are two logins, so each can change the same site at once.
+    /// Under `siteLock: shared` (the default) no other page holds the site against this one, handed over or
+    /// not; a handed-over page refuses its own writes in `get`, not here.
     pub(crate) fn lock_site(&self, r: &Arc<Rec>, url: Option<&str>) -> EngineResult<()> {
         let (isolated, owner, current) = {
             let s = r.lock();
             (s.isolated.is_some(), s.owner.clone(), s.page.url())
         };
-        if isolated {
+        if isolated || self.site_lock() == super::guardrails::SiteLock::Shared {
             return Ok(());
         }
         let origin = (r.profile.clone(), origin(url.unwrap_or(&current))?);
@@ -566,7 +577,9 @@ impl Engine {
         Ok(())
     }
 
-    /// `screenshot(owner, {pageId})`.
+    /// `screenshot(owner, {pageId, path, overwrite, format, fullPage, selector, width, height})`. The
+    /// refusals come before any argument is read, so every form of it is refused alike. With `path` the
+    /// image is saved there (SR-88) and the answer is the file, not the image.
     pub(crate) async fn screenshot(&self, owner: &str, args: &Value) -> EngineResult {
         let r = self.get(&Self::page_id(args), owner, false)?;
         // An image of a page that showed a password or code back cannot be redacted.
@@ -576,21 +589,40 @@ impl Engine {
         // While a sign-up's new password is on the page, no picture of it (SR-82).
         let held: Arc<dyn SignInRecord> = Arc::clone(&r) as Arc<dyn SignInRecord>;
         crate::signin::before_screenshot(self, &held).await?;
+        let shot = super::files::Shot::of(args)?;
+        let target = super::files::Target::of(args)?;
+        // The view of a page the owner holds is his window: no picture resizes it, scrolls it or stretches
+        // it, so those are refused before Chrome is asked anything.
+        if let Some(named) = shot.moves_view().filter(|_| r.lock().paused) {
+            return Err(EngineError(format!(
+                "{named}: the owner holds this page (browser_show), so its view is his window, which a picture does not resize, scroll or stretch. Take the plain picture of the view, or this one after handback."
+            )));
+        }
+        let mime = shot.mime();
         let data = self
-            .cdp(&r, None, |page, _| async move {
-                capture(&page, 80).await.map_err(|e| {
-                    if e.to_string().contains("timed out") {
-                        EngineError(
+            .cdp(&r, None, |page, signal| {
+                let shot = shot.clone();
+                async move {
+                    shot.take(&page, &signal).await.map_err(|e| match e {
+                        Failed::Settled(e) | Failed::Unsure(e) if e.0.contains("timed out") => Failed::Settled(EngineError(
                             "Screenshot: the page did not paint in time, usually while it is loading. Retry in a few seconds."
                                 .to_owned(),
-                        )
-                    } else {
-                        e.into()
-                    }
-                })
+                        )),
+                        e => e,
+                    })
+                }
             })
             .await?;
-        Ok(json!({ "data": data, "mimeType": "image/jpeg" }))
+        let Some(target) = target else { return Ok(json!({ "data": data, "mimeType": mime })) };
+        let bytes = super::files::decode(&data)?;
+        let size = super::files::image_size(&bytes);
+        let mut out = target.write(bytes).await?;
+        if let Some((width, height)) = size {
+            out.insert("width".into(), json!(width));
+            out.insert("height".into(), json!(height));
+        }
+        out.insert("mimeType".into(), json!(mime));
+        Ok(Value::Object(out))
     }
 
     /// `wait(owner, {pageId, selector, text, seconds})`.
@@ -764,6 +796,10 @@ impl Engine {
         if arg(args, "verification").is_some_and(truthy) {
             return self.show_check(&r).await;
         }
+        let release = arg(args, "release").is_some_and(truthy);
+        if release {
+            self.may_release(&r)?;
+        }
         // Paused already, so shown already, unless a hand-back's failed keep left its window hidden: that one
         // is shown again, as the owner asked. The record already holds its site, being paused. A live check
         // Phantab started and has not popped up yet is paused with its window hidden on purpose (its grace):
@@ -774,14 +810,15 @@ impl Engine {
             let s = r.lock();
             (s.paused, s.verification.as_ref().is_some_and(|v| v.current().live() && !v.shown))
         };
-        if again && (grace || !self.reads_hidden(&r).await) {
+        if again && !release && (grace || !self.reads_hidden(&r).await) {
             let mut out = Self::handoff(&r, "already-shown", false);
             if let (Value::Object(m), Some(v)) = (&mut out, self.verification_field(&r)) {
                 m.insert("verification".into(), v);
             }
             return Ok(out);
         }
-        if !again {
+        // A page given away for good takes no hold on its site: it is about to hold none.
+        if !again && !release {
             self.lock_site(&r, None)?;
         }
         let (workspace, handback) = {
@@ -791,6 +828,7 @@ impl Engine {
             (s.workspace, handback)
         };
         match self.show_inner(&r, workspace).await {
+            Ok(_) if release => Ok(self.let_go(&r)),
             Ok(v) => Ok(v),
             Err(e) => {
                 let window_id = {
@@ -812,6 +850,34 @@ impl Engine {
                 Err(e)
             }
         }
+    }
+
+    /// Whether `browser_show` may give this page to the owner for good (`release: true`). A page in
+    /// phantab's own isolated browser has no tab of the owner's to become, and a check phantab is handing
+    /// to the owner ends by itself first (SR-69).
+    fn may_release(&self, r: &Arc<Rec>) -> EngineResult<()> {
+        if r.lock().isolated.is_some() {
+            return Err(EngineError(
+                "release: an isolated page lives in phantab's own browser, not yours, so it cannot become your tab. Use browser_show without release."
+                    .to_owned(),
+            ));
+        }
+        match self.verification_refusal(r) {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+
+    /// The end of `show` with `release: true`, once the page is on the owner's screen: the agent's record
+    /// of it ends (its debugger is detached, its site hold dropped) and the tab stays open as the owner's
+    /// ordinary tab. A workspace window was marked shown before the reveal, so the extension already treats
+    /// it as the owner's: it never closes it, mutes it or answers its dialogs.
+    fn let_go(&self, r: &Arc<Rec>) -> Value {
+        let mut out = Self::describe(r);
+        out.remove("paused");
+        out.insert("handoff".into(), Value::String("released".to_owned()));
+        self.forget(&r.id);
+        Value::Object(out)
     }
 
     pub(crate) async fn show_inner(&self, r: &Arc<Rec>, workspace: bool) -> EngineResult {

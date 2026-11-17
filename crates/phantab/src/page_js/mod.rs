@@ -8,7 +8,8 @@
 /// that a selector with no element on a loaded page answers `['not found', <the page's element count>]`, so
 /// an action's wait can tell a page that has stopped changing (`read::poll`). When an open shadow root has
 /// the selector's element, which selectors never reach, the answer says where to `click_xy` it instead,
-/// with a null mark, so the wait ends there.
+/// with a null mark, so the wait ends there. A true second argument (a picture's wait,
+/// `read::poll_pictured`) lets a disabled or `aria-disabled` element be ready; an act never passes it.
 pub const ACTIONABLE: &str = include_str!("actionable.js");
 /// `present`: the selector exists and the text is on the page (either may be absent).
 pub const PRESENT: &str = include_str!("present.js");
@@ -127,7 +128,7 @@ pub(crate) mod tests {
     /// SHA-256 of each of [`SOURCES`], in its order. A deliberate change to a page function updates its
     /// line here (the failure prints the new list).
     const GOLDEN: &[(&str, &str)] = &[
-        ("actionable.js", "71c60b44c08c94c9387c27c5309d9491f9fad99b4a81a00be13da7b7c1d43aed"),
+        ("actionable.js", "d7dce2882d8e53274b13862ece6d8f55622ac23696c86d8ee3b66f84697511c5"),
         ("present.js", "10aef376a543e1a0e9b3957ec0432541bfdb1b37920755c79b8febe5e714d296"),
         ("read_frame.js", "a40eefd4242dc11bb91485ba02f284a8c47473da508a3e28b09fb0584ec851dc"),
         ("title_is.js", "c39aa650861140b8f6eee917025d12e6b423ac10ebf26639a43a5dc43c3abfc9"),

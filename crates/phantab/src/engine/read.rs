@@ -117,6 +117,19 @@ pub(crate) async fn poll_actionable(
     poll(page, selector, ACTIONABLE, &args, within, signal, quick, true).await
 }
 
+/// The wait before a picture of `selector`'s element: [`poll_actionable`]'s, in the same frames and order
+/// and answering the same frame, except that a disabled or `aria-disabled` element is ready. A picture
+/// changes nothing on the page, so it needs the element there with a size, not enabled.
+pub(crate) async fn poll_pictured(
+    page: &Page,
+    selector: &str,
+    within: Duration,
+    signal: Option<&watch::Receiver<bool>>,
+) -> Result<FrameId, Failed> {
+    let args = [Value::String(selector.to_owned()), Value::Bool(true)];
+    poll(page, selector, ACTIONABLE, &args, within, signal, true, true).await
+}
+
 /// `actionable`'s answer for an element the document does not have: `'not found'` while it loads, or
 /// `['not found', <element count>]` once loaded.
 fn not_found(v: &Value) -> bool {

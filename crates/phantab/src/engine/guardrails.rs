@@ -60,6 +60,31 @@ impl Guardrails {
     }
 }
 
+/// `config.json`'s `siteLock` (`docs/GUARDRAILS.md` § Kept in every mode: not guardrails): whether one
+/// agent's page on a site holds the site against every other page's writes. Not a guardrail; it is read
+/// here, beside the one setting that is, so both are said and read the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SiteLock {
+    /// `"shared"`, the default when the key is absent: pages on one site write side by side, whoever
+    /// holds them and whether or not one is handed to the owner. Only a handed-over page refuses agent
+    /// writes, and only to itself.
+    Shared,
+    /// `"exclusive"`: one writer per site, as before the setting. Another agent's page on the site, or any
+    /// page on it handed to the owner, holds the site for changes.
+    Exclusive,
+}
+
+impl SiteLock {
+    /// Any other value counts as `exclusive`, so a mistyped setting never loosens anything.
+    pub(crate) fn of(config: &Config) -> Self {
+        match config.other.get("siteLock") {
+            None | Some(Value::Null) => Self::Shared,
+            Some(Value::String(s)) if s == "shared" => Self::Shared,
+            Some(_) => Self::Exclusive,
+        }
+    }
+}
+
 /// The password kind's name, which a form `browser_sign_up` filled is never asked about.
 const PASSWORD_CHANGE: &str = "a password or two-factor change";
 
@@ -79,6 +104,10 @@ const PRESSING: &[&str] = &["Enter", "NumpadEnter", " ", "Space", "Spacebar"];
 impl Engine {
     pub(crate) fn guardrails(&self) -> Guardrails {
         Guardrails::of(&self.setup.config)
+    }
+
+    pub(crate) fn site_lock(&self) -> SiteLock {
+        SiteLock::of(&self.setup.config)
     }
 
     /// The sensitive-set confirmation, in `light` and `full`: a click, `click_xy` or press of Enter or
@@ -221,6 +250,31 @@ mod tests {
             // An older service keeps the key it does not know when the installer rewrites the file.
             assert_eq!(serde_json::to_value(&c).unwrap()["guardrails"], json!(mode));
         }
+    }
+
+    /// `siteLock`: agents share a site unless the config says `exclusive`; anything unknown counts as
+    /// `exclusive`, as an unknown `guardrails` counts as `full`.
+    #[test]
+    fn site_lock_is_shared_by_default_and_exclusive_for_anything_unknown() {
+        let lock = |v: Option<Value>| {
+            let mut c = Config::default();
+            if let Some(v) = v {
+                c.other.insert("siteLock".to_owned(), v);
+            }
+            SiteLock::of(&c)
+        };
+        assert_eq!(lock(None), SiteLock::Shared);
+        assert_eq!(lock(Some(Value::Null)), SiteLock::Shared);
+        assert_eq!(lock(Some(json!("shared"))), SiteLock::Shared);
+        assert_eq!(lock(Some(json!("exclusive"))), SiteLock::Exclusive);
+        for odd in [json!("Shared"), json!("off"), json!(""), json!(false), json!(0), json!({})] {
+            assert_eq!(lock(Some(odd.clone())), SiteLock::Exclusive, "{odd}");
+        }
+        let c: Config =
+            serde_json::from_value(json!({ "profileDirectory": "Default", "siteLock": "exclusive" }))
+                .unwrap();
+        assert_eq!(SiteLock::of(&c), SiteLock::Exclusive);
+        assert_eq!(serde_json::to_value(&c).unwrap()["siteLock"], json!("exclusive"));
     }
 
     #[test]

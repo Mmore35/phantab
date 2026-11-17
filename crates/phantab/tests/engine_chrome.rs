@@ -46,14 +46,27 @@ impl Lane {
         Self::start_with(chrome, "full").await
     }
 
+    /// `full`, with one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md).
+    async fn start_exclusive(chrome: &PathBuf) -> Self {
+        Self::start_config(chrome, "full", Some("exclusive")).await
+    }
+
     async fn start_with(chrome: &PathBuf, guardrails: &str) -> Self {
+        Self::start_config(chrome, guardrails, None).await
+    }
+
+    async fn start_config(chrome: &PathBuf, guardrails: &str, site_lock: Option<&str>) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
-        rt.write_config(&json!({
+        let mut config = json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
             "guardrails": guardrails,
-        }));
+        });
+        if let Some(lock) = site_lock {
+            config["siteLock"] = json!(lock);
+        }
+        rt.write_config(&config);
         let svc = tokio::task::block_in_place(|| {
             let child = rt
                 .command(&["serve"])
@@ -180,7 +193,9 @@ fn ms(since: Instant) -> u128 {
 async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and_tab_end() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
-    let lane = Lane::start(&chrome).await;
+    // One writer per site, so the site lock below is the one a write takes (the default shares the site:
+    // `agents_share_a_site_by_default_*`).
+    let lane = Lane::start_exclusive(&chrome).await;
 
     let t = Instant::now();
     let a = lane.open("a", "/engine/basic").await;
@@ -350,6 +365,124 @@ async fn shared_pages_through_the_service_ownership_site_locks_waits_actions_and
     eprintln!(
         "lane3 timings: open {open_ms} ms, snapshot {snapshot_ms} ms, act {act_ms} ms, show {show_ms} ms"
     );
+    lane.finish().await;
+}
+
+/// The fill a second agent makes on a site where the first agent has a page (the plan's run E).
+fn fill_b() -> Value {
+    json!({ "action": "fill", "selector": "#name", "text": "agent b" })
+}
+
+/// `siteLock` absent (`shared`): a second agent's fill on the same site works while the first agent's page
+/// is open and while it is handed to the owner. The handed-over page still refuses its own agent's write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_share_a_site_by_default_and_a_handed_over_page_refuses_only_itself() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "agent a" })).await.unwrap();
+    lane.act("b", &b, fill_b()).await.unwrap();
+    lane.act("b", &b, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+    assert!(text(&lane.snap("b", &b).await).contains("agent b"));
+
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let own = lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap_err();
+    assert!(own.contains("handed to the owner"), "{own}");
+    lane.act("b", &b, json!({ "action": "fill", "selector": "#name", "text": "while a is shown" }))
+        .await
+        .unwrap();
+    lane.act("b", &b, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+    assert!(text(&lane.snap("b", &b).await).contains("while a is shown"));
+    // The first agent's draft is still its own.
+    assert!(!text(&lane.snap("a", &a).await).contains("agent b"));
+    lane.finish().await;
+}
+
+/// `siteLock: exclusive`: the same fill is refused while the first agent's page is open and while it is
+/// handed over, as before the setting; the handed-over page refuses its own agent too. Then the step-1
+/// measurement: a shown page the owner submits stays a paused record that holds the site and that
+/// `browser_pages` lists, until the owner closes its tab, which ends the record and frees the site.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_site_lock_exclusive_one_writer_holds_the_site_until_the_owner_closes_the_tab() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_exclusive(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let a_tab = lane.ext.last_window_tab();
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "agent a" })).await.unwrap();
+    let held = lane.act("b", &b, fill_b()).await.unwrap_err();
+    assert!(held.contains("holds this site"), "{held}");
+
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let own = lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap_err();
+    assert!(own.contains("handed to the owner"), "{own}");
+    let held = lane.act("b", &b, fill_b()).await.unwrap_err();
+    assert!(held.contains("holds this site"), "{held}");
+
+    // The owner submits the shown page: the record stays, paused, and still holds the site.
+    lane.ext.eval(a_tab, "document.querySelector('#go').click()").await;
+    assert_eq!(lane.ext.eval(a_tab, "document.querySelector('#result').textContent").await, json!("agent a"));
+    let pages = lane.ok("pages", json!({}), "a").await;
+    let listed = pages.as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{pages}");
+    assert_eq!((listed[0]["pageId"].as_str(), &listed[0]["paused"]), (Some(a.as_str()), &json!(true)));
+    assert!(lane.act("b", &b, fill_b()).await.unwrap_err().contains("holds this site"));
+    eprintln!("measurement: after the owner's submit, browser_pages lists {pages}");
+
+    // The owner closes the tab: the record ends, and with it the hold.
+    lane.ext.close_tab_by_hand(a_tab).await;
+    assert!(
+        lane.until(Duration::from_secs(5), async || lane.ok("pages", json!({}), "a").await == json!([]))
+            .await
+    );
+    assert!(lane.err("snapshot", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    lane.act("b", &b, fill_b()).await.unwrap();
+    eprintln!("measurement: after the owner closes the tab, browser_pages lists []");
+    lane.finish().await;
+}
+
+/// `browser_show` with `release: true`: the page is the owner's ordinary tab from then on. `browser_pages`
+/// no longer lists it, the tab stays open with what the agent left in it, its debugger is detached, and no
+/// hold on the site remains, not even under `siteLock: exclusive`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_with_release_gives_the_tab_to_the_owner_for_good() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_exclusive(&chrome).await;
+
+    let a = lane.open("a", "/engine/basic").await;
+    let a_tab = lane.ext.last_window_tab();
+    let b = lane.open("b", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "for the owner" }))
+        .await
+        .unwrap();
+    let released = lane.ok("show", json!({ "pageId": a, "release": true }), "a").await;
+    assert_eq!(released["handoff"], json!("released"), "{released}");
+    assert_eq!(released["pageId"], json!(a), "{released}");
+    assert_eq!(lane.ok("pages", json!({}), "a").await, json!([]));
+    assert!(lane.err("snapshot", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    assert!(lane.err("resume", json!({ "pageId": a }), "a").await.contains("Unknown page"));
+    assert!(lane.ext.tab_open(a_tab).await, "the tab stays open");
+    assert_eq!(
+        lane.ext.eval(a_tab, "document.querySelector('#name').value").await,
+        json!("for the owner"),
+        "what the agent left in it stays"
+    );
+    assert!(lane.ext.ops().iter().any(|o| o == "detach"), "{:?}", lane.ext.ops());
+    lane.act("b", &b, fill_b()).await.unwrap();
+    lane.ok("close", json!({ "pageId": b }), "b").await;
+    // A page already handed over can be released as well.
+    let c = lane.open("c", "/engine/basic").await;
+    let c_tab = lane.ext.last_window_tab();
+    lane.ok("show", json!({ "pageId": c }), "c").await;
+    lane.ok("show", json!({ "pageId": c, "release": true }), "c").await;
+    assert_eq!(lane.ok("pages", json!({}), "c").await, json!([]));
+    assert!(lane.ext.tab_open(c_tab).await);
     lane.finish().await;
 }
 
@@ -610,6 +743,15 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
         // A call that leaves pageId out reaches the page the last one named.
         let shot = call("browser_screenshot", json!({}));
         assert_eq!(shot["content"][0]["type"], json!("image"), "{shot}");
+        // One saved to a file answers the file, as text.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        let saved = call("browser_screenshot", json!({ "path": path }));
+        assert_eq!(saved["content"][0]["type"], json!("text"), "{saved}");
+        let said: Value = serde_json::from_str(saved["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(said["path"], json!(path.display().to_string()), "{said}");
+        assert_eq!(said["mimeType"], json!("image/png"), "{said}");
+        assert!(path.is_file());
         let read = call("browser_snapshot", json!({ "full": true }));
         let said = read["content"][0]["text"].as_str().unwrap_or_default();
         assert!(said.starts_with(&format!("{{\"pageId\":\"{page}\"")), "{said}");
@@ -997,5 +1139,148 @@ async fn per_call_latency_of_open_snapshot_act_wait_and_close() {
         );
     }
     eprintln!("lane3 latency {}", Value::Object(out));
+    lane.finish().await;
+}
+
+/// A PNG's size in pixels, from its header.
+fn png_size(bytes: &[u8]) -> (u32, u32) {
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    (be(16), be(20))
+}
+
+/// SR-88, L3: results as files. A screenshot with `path` saves the picture there at the size asked (a
+/// 390-wide view, a full page taller than the view, one element in the document, in an open shadow
+/// root or in a website frame) and answers the file, not the image; the view is back to its usual size
+/// after each, also after one that failed. A relative path, a missing folder and an existing file
+/// without `overwrite` are refused. A snapshot with `path` saves its JSON and answers the path. On a
+/// page handed to the owner and scrolled partway, `selector`, `fullPage` and `width` are refused at
+/// once and the scroll stays; the plain picture is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start(&chrome).await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = lane.open("a", "/engine/shots").await;
+    let tab = lane.ext.last_window_tab();
+    let framed = "document.querySelector('iframe').contentDocument?.getElementById('inframe') != null";
+    assert!(
+        lane.until(Duration::from_secs(15), async || lane.ext.eval(tab, framed).await == json!(true)).await
+    );
+    let view = async || lane.ext.eval(tab, "[innerWidth, innerHeight]").await;
+    let usual = view().await;
+    assert_eq!(usual, json!([1280, 900]));
+    let shot = async |args: Value| {
+        let mut args = args;
+        args["pageId"] = json!(a);
+        lane.call("screenshot", args, "a").await
+    };
+
+    // A phone-wide PNG: the file, not the image.
+    let phone = dir.path().join("phone.png");
+    let out = shot(json!({ "path": phone, "format": "png", "width": 390 })).await.unwrap();
+    let bytes = std::fs::read(&phone).unwrap();
+    assert_eq!(png_size(&bytes).0, 390, "{out}");
+    assert_eq!(out.get("data"), None, "{out}");
+    assert_eq!(
+        out,
+        json!({ "path": phone.display().to_string(), "bytes": bytes.len(), "width": 390,
+                "height": png_size(&bytes).1, "mimeType": "image/png" })
+    );
+    assert_eq!(view().await, usual, "the view is put back");
+
+    // The full page is taller than the view.
+    let full = dir.path().join("full.png");
+    let out = shot(json!({ "path": full, "fullPage": true })).await.unwrap();
+    let (w, h) = png_size(&std::fs::read(&full).unwrap());
+    assert!(w == 1280 && h > 3000, "{w}x{h}: {out}");
+    assert_eq!(view().await, usual);
+
+    // One element, wherever an act would find it; JPEG unless asked or the name says .png.
+    for (selector, size) in [("#box", (200, 120)), ("#inshadow", (150, 80)), ("#inframe", (90, 70))] {
+        let path = dir.path().join(format!("{}.jpg", &selector[1..]));
+        let out = shot(json!({ "path": path, "selector": selector })).await.unwrap();
+        assert!(std::fs::read(&path).unwrap().starts_with(&[0xFF, 0xD8]), "{selector}: a JPEG");
+        assert_eq!(
+            (&out["width"], &out["height"], &out["mimeType"]),
+            (&json!(size.0), &json!(size.1), &json!("image/jpeg")),
+            "{selector}: {out}"
+        );
+    }
+    // A disabled or aria-disabled element is pictured at once: a picture does not need it enabled, so the
+    // wait an act makes for that (10 s, then "disabled") is not this one's.
+    for (selector, size) in [("#off", (110, 40)), ("#ariaoff", (130, 50))] {
+        let path = dir.path().join(format!("{}.png", &selector[1..]));
+        let asked = Instant::now();
+        let out = shot(json!({ "path": path, "selector": selector })).await;
+        let took = asked.elapsed();
+        let out = out.unwrap_or_else(|e| panic!("{selector}: {e} (after {took:?})"));
+        assert_eq!(png_size(&std::fs::read(&path).unwrap()), size, "{selector}: {out}");
+        assert!(took < Duration::from_secs(3), "{selector}: took {took:?}");
+    }
+    // A picture that fails puts the view back too.
+    let missing = shot(json!({ "selector": "#nowhere", "width": 390, "height": 844 })).await.unwrap_err();
+    assert!(missing.contains("#nowhere"), "{missing}");
+    assert_eq!(view().await, usual, "put back after a failure");
+
+    // Refusals: a relative path, a folder that is not there, an existing file without overwrite.
+    let relative = shot(json!({ "path": "shot.png" })).await.unwrap_err();
+    assert!(relative.contains("not an absolute path"), "{relative}");
+    let gone = dir.path().join("gone");
+    let folder = shot(json!({ "path": gone.join("shot.png") })).await.unwrap_err();
+    assert!(folder.contains(&gone.display().to_string()) && folder.contains("does not exist"), "{folder}");
+    let taken = dir.path().join("taken.png");
+    std::fs::write(&taken, b"old").unwrap();
+    let kept = shot(json!({ "path": taken })).await.unwrap_err();
+    assert!(kept.contains("already exists") && kept.contains("overwrite"), "{kept}");
+    assert_eq!(std::fs::read(&taken).unwrap(), b"old");
+    shot(json!({ "path": taken, "overwrite": true })).await.unwrap();
+    png_size(&std::fs::read(&taken).unwrap());
+
+    // Without path, the image comes back as before.
+    let inline = shot(json!({ "width": 390 })).await.unwrap();
+    assert_eq!(inline["mimeType"], json!("image/jpeg"));
+    assert!(inline["data"].as_str().is_some_and(|d| d.len() > 100), "{inline}");
+
+    // A snapshot saved to a file: the path and size, not the snapshot.
+    let saved = dir.path().join("snapshot.json");
+    let out = lane.ok("snapshot", json!({ "pageId": a, "path": saved }), "a").await;
+    let file = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(out, json!({ "pageId": a, "path": saved.display().to_string(), "bytes": file.len() }));
+    let read: Value = serde_json::from_str(&file).unwrap();
+    assert!(read["text"].as_str().is_some_and(|t| t.contains("Shot words")), "{file}");
+    assert!(read["elements"].is_array(), "{file}");
+    let again = lane.err("snapshot", json!({ "pageId": a, "path": saved }), "a").await;
+    assert!(again.contains("already exists"), "{again}");
+
+    // A page handed to the owner keeps his window as he left it, scrolled partway: no width or height
+    // then, no picture of one element (it would scroll his view to it) and none of the full page (it
+    // stretches his view for the capture), each refused at once with Chrome not asked; a plain picture
+    // of the view, yes.
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    lane.ext.eval(tab, "scrollTo(0, 600)").await;
+    let scrolled = async || lane.ext.eval(tab, "scrollY").await;
+    let at = scrolled().await;
+    assert_eq!(at, json!(600));
+    let unsaved = dir.path().join("held-full.png");
+    for (args, named) in [
+        (json!({ "selector": "#far" }), "selector"),
+        (json!({ "fullPage": true, "path": unsaved }), "fullPage"),
+        (json!({ "width": 390 }), "width"),
+    ] {
+        let asked = Instant::now();
+        let out = shot(args).await;
+        let (took, now) = (asked.elapsed(), scrolled().await);
+        let held =
+            out.err().unwrap_or_else(|| panic!("{named}: taken on a held page; scrollY {at} -> {now}"));
+        assert!(held.starts_with(&format!("{named}: the owner holds this page")), "{held}");
+        assert!(held.contains("his window") && held.contains("after handback"), "{held}");
+        assert!(took < Duration::from_secs(3), "{named}: took {took:?}");
+        assert_eq!(now, at, "{named}: his view did not move");
+    }
+    assert!(!unsaved.exists(), "a refused picture saves nothing");
+    shot(json!({ "path": dir.path().join("held.png") })).await.unwrap();
+    assert_eq!(scrolled().await, at);
     lane.finish().await;
 }

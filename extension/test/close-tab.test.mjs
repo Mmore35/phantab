@@ -111,6 +111,29 @@ test('a dropped service link detaches the owner tabs, then closes a hidden windo
 });
 
 
+// browser_show with release: true: the service marks the window shown, detaches its tab and forgets it. The
+// window is then the owner's ordinary window: a dropped service link and a worker start leave it open, send
+// it no close and attach nothing.
+test('a released agent window (shown, its tab detached) is left to the owner by cleanup and a worker start', async () => {
+  const fake = await startWorker({ windows: [{ id: 1, lastFocused: true }], tabs: [{ id: 5, windowId: 1 }] });
+  const { windowId, tabId } = (await fake.op('createWindow', { url: 'about:blank' })).result;
+  await fake.op('attach', { tabId });
+  await fake.op('markShown', { windowId, shown: true });
+  await fake.op('detach', { tabId });
+  assert.deepEqual([...fake.state.attached.keys()], [], 'nothing attached');
+  fake.calls.length = 0;
+  fake.port.disconnect();
+  await settle();
+  await loadWorker();
+  assert.deepEqual(closes(fake), []);
+  assert.deepEqual(fake.callsOf('windows.remove'), []);
+  assert.deepEqual(fake.callsOf('tabs.remove'), []);
+  assert.deepEqual(fake.callsOf('debugger.attach'), []);
+  assert.equal(fake.state.windows.has(windowId), true, 'the window stays open');
+  assert.equal(fake.state.tabs.has(tabId), true, 'and its tab');
+  assert.deepEqual(fake.state.session.windows, { [windowId]: true }, "still read as shown: the owner's");
+});
+
 // MAC.md: CDP stalls around a macOS minimize. A close still running when cleanup's wait ended used to be
 // cut by cleanup's detach, and its fallback then raised a "Leave site?" with no session left to answer it.
 test('a close that outlasts cleanup keeps its tabs attached, and ends without chrome.windows.remove', async t => {
