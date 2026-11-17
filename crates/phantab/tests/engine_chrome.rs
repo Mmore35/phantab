@@ -1220,6 +1220,17 @@ async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
             "{selector}: {out}"
         );
     }
+    // A disabled or aria-disabled element is pictured at once: a picture does not need it enabled, so the
+    // wait an act makes for that (10 s, then "disabled") is not this one's.
+    for (selector, size) in [("#off", (110, 40)), ("#ariaoff", (130, 50))] {
+        let path = dir.path().join(format!("{}.png", &selector[1..]));
+        let asked = Instant::now();
+        let out = shot(json!({ "path": path, "selector": selector })).await;
+        let took = asked.elapsed();
+        let out = out.unwrap_or_else(|e| panic!("{selector}: {e} (after {took:?})"));
+        assert_eq!(png_size(&std::fs::read(&path).unwrap()), size, "{selector}: {out}");
+        assert!(took < Duration::from_secs(3), "{selector}: took {took:?}");
+    }
     // A picture that fails puts the view back too.
     let missing = shot(json!({ "selector": "#nowhere", "width": 390, "height": 844 })).await.unwrap_err();
     assert!(missing.contains("#nowhere"), "{missing}");

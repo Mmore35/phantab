@@ -117,6 +117,19 @@ pub(crate) async fn poll_actionable(
     poll(page, selector, ACTIONABLE, &args, within, signal, quick, true).await
 }
 
+/// The wait before a picture of `selector`'s element: [`poll_actionable`]'s, in the same frames and order
+/// and answering the same frame, except that a disabled or `aria-disabled` element is ready. A picture
+/// changes nothing on the page, so it needs the element there with a size, not enabled.
+pub(crate) async fn poll_pictured(
+    page: &Page,
+    selector: &str,
+    within: Duration,
+    signal: Option<&watch::Receiver<bool>>,
+) -> Result<FrameId, Failed> {
+    let args = [Value::String(selector.to_owned()), Value::Bool(true)];
+    poll(page, selector, ACTIONABLE, &args, within, signal, true, true).await
+}
+
 /// [`poll_actionable`]'s wait for an element that need not be shown: an upload's file input, which pages often
 /// hide behind a styled label. Answers the frame that has it, as that wait does.
 pub(crate) async fn poll_attached(

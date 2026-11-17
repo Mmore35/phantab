@@ -11,7 +11,7 @@ use base64::Engine as _;
 use phantab_cdp::{BoundingBox, Page};
 use serde_json::{Value, json};
 
-use super::read::{Abort, poll_actionable};
+use super::read::{Abort, poll_pictured};
 use super::recover::Failed;
 use crate::engine_api::{EngineError, EngineResult};
 use crate::util::truthy;
@@ -211,9 +211,10 @@ impl Shot {
 
 /// The box of the element `selector` names, as an act finds it: the main document first, then each
 /// website frame. One that only the main document's open shadow roots hold, which an act reaches by
-/// `click_xy` alone, is found as the snapshot finds it: a picture changes nothing on the page.
+/// `click_xy` alone, is found as the snapshot finds it, and a disabled one is pictured as it is: a picture
+/// changes nothing on the page.
 async fn element(page: &Page, selector: &str, signal: &Abort) -> Result<BoundingBox, Failed> {
-    let found = match poll_actionable(page, selector, Duration::from_secs(10), Some(signal), true).await {
+    let found = match poll_pictured(page, selector, Duration::from_secs(10), Some(signal)).await {
         Ok(frame) => page.query_selector_in(&frame, selector).await,
         Err(e) if super::ops::in_shadow_at(&e).is_some() => page.query_selector(selector).await,
         Err(e) => return Err(e),
