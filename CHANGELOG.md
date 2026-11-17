@@ -75,6 +75,8 @@ Releases page; `CONTRIBUTING.md` says how one is made.
 - `phantab install --work` (and the bundles' `install.ps1 -Work` and `install.sh --work`) writes
   `"work": true` and `"devTools": true` to `config.json` and keeps every other setting. A later
   install without it keeps both (`docs/WORK-LAPTOP.md`).
+- `docs/COMING-FROM-DEVTOOLS-MCP.md`: each Chrome DevTools MCP tool, the phantab call that replaces
+  it with an example a test makes, what is different on purpose and what is not included.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);

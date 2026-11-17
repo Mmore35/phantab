@@ -106,7 +106,8 @@ A later install without `-Work`, an update for instance, keeps both. To turn one
 in `config.json`. Both are read when phantab starts, so after a change quit and reopen Claude Code.
 
 **Check it:** ask the agent to run `browser_status`. Its `work` field reads `"on": true` and lists the
-four things that are off, and `remoteViewer` says it is not listening because of `work`. The agent's
+four things that are off; if the config has a `remoteViewer` entry, `remoteViewer` says it is not
+listening because of `work`. The agent's
 tool list has no `browser_sign_in` or `browser_sign_up`, and has the five developer tools. A `note`
 under `work` means the value was neither `true` nor `false`; it then counts as on. After an update,
 reload the extension at `chrome://extensions`, or it does not relay the developer tools.
