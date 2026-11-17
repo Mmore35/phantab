@@ -56,7 +56,10 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   `browser_console` gives a page's errors, warnings and uncaught exceptions; `browser_network` its
   requests, failed ones first, and one request's headers and body by `id` or into a file. A page is
   recorded from the first call that asks, which says so. Cookie and authorization headers never leave
-  the service, and no cookie command is relayed. Reload the extension at `chrome://extensions`.
+  the service, and no cookie command is relayed. A script and a password phantab fills never share a
+  page: `browser_sign_in` and `browser_sign_up` refuse on a tab a script ran on, until it closes, and
+  `browser_evaluate` refuses on a page a password was filled into, until a reload or a fresh page.
+  Reload the extension at `chrome://extensions`.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);

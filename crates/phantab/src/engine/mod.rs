@@ -14,6 +14,7 @@ mod devtools;
 mod echo;
 mod files;
 mod guardrails;
+mod marks;
 mod ops;
 mod profiles;
 mod quiet;
@@ -94,7 +95,11 @@ pub(crate) struct State {
     /// What sign-ins saw sites show back, redacted from everything the agent receives ([`echo`]).
     echoes: Vec<Arc<crate::signin::Echo>>,
     /// The tabs whose screenshots are refused for it.
-    echo_marks: Vec<echo::EchoMark>,
+    echo_marks: Vec<marks::TabMark>,
+    /// The tabs a script ran on, which no sign-in or sign-up fills ([`marks`]).
+    script_marks: Vec<marks::TabMark>,
+    /// The documents a password was filled into, by tab, which no script runs on ([`marks`]).
+    fill_marks: Vec<(marks::TabMark, u64)>,
 }
 
 /// A live view token and the page it shows. A local token opens the viewer on this machine and never
@@ -293,6 +298,7 @@ impl Engine {
     ) {
         if reason == Some("removed") {
             self.echo_tab_closed(profile, tab);
+            self.marks_tab_closed(profile, tab);
         }
         let target_closed = reason == Some("target_closed");
         let kept = target_closed && tab_open == Some(true);

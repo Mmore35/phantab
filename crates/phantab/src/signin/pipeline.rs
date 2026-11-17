@@ -766,6 +766,10 @@ async fn fill_and_click(
     if r.paused() {
         return Some(Outcome::of("owner-has-page"));
     }
+    // A script that ran while the provider answered (THREAT-MODEL SR-90): the call began before it.
+    if host.scripted(r, "sign-in").is_some() {
+        return Some(Outcome::of("refused"));
+    }
     if asked.start.elapsed() > ms(times.fill_by_ms) {
         return Some(Outcome::of("busy"));
     }
@@ -781,6 +785,10 @@ async fn fill_and_click(
     if !frame_tree_agrees(&r.page(), &found.frame, report) {
         return Some(Outcome::of("not-ready"));
     }
+    // SR-90: the document is marked before the password goes in, so no agent script runs on it after.
+    if !host.mark_fill(r).await {
+        return Some(Outcome::of("not-ready"));
+    }
     let mut filled = fill(found, &asking, values).await;
     if matches!(filled, Fill::TimedOut) {
         // Chrome fails the command a moment before it reports the detach.
@@ -788,7 +796,7 @@ async fn fill_and_click(
         while r.detaches() == *read_at && Instant::now() < end {
             sleep(ms(25)).await;
         }
-        if r.detaches() != *read_at && reread(r, found, read_at).await {
+        if r.detaches() != *read_at && reread(r, found, read_at).await && host.mark_fill(r).await {
             filled = fill(found, &asking, values).await;
         }
     }
@@ -1140,17 +1148,22 @@ impl Drop for Running {
     }
 }
 
-/// `signIn(engine,owner,args)`: the `browser_sign_in` call. Answers a label, or one of two errors
-/// (an unknown page, a held site).
+/// `signIn(engine,owner,args)`: the `browser_sign_in` call. Answers a label, or one of three errors
+/// (an unknown page, a page a script ran on, a held site).
 ///
 /// # Errors
-/// `Unknown page or page belongs to another agent session.`, or the engine's lock error.
+/// `Unknown page or page belongs to another agent session.`, [`Host::scripted`]'s refusal, or the
+/// engine's lock error.
 pub async fn sign_in(host: &dyn Host, client: &str, args: &Value) -> EngineResult {
     let page_id = args.get("pageId").unwrap_or(&Value::Null);
     source::vault_arg(args).map_err(EngineError)?;
     let Some(r) = host.record(page_id, client) else {
         return Err(EngineError("Unknown page or page belongs to another agent session.".into()));
     };
+    // No password goes where an agent's script ran (THREAT-MODEL SR-90): before anything is asked.
+    if let Some(refused) = host.scripted(r.as_ref(), "sign-in") {
+        return Err(refused);
+    }
     if r.paused() {
         return Ok(label(&Outcome::of("owner-has-page")));
     }

@@ -839,6 +839,20 @@ Each requirement is a release blocker, and each is tested in the lanes named.
     the answers behind it are not held. Its result is
     cut at 20,000 characters unless saved with `path` (SR-88's rules), and its answer, saved file and
     error pass SR-45's redaction as every answer does.
+  - A script and a password phantab filled never share a page, in either order, so SR-39 and SR-80
+    hold with the setting on. A script first: from the moment `evaluate` starts a script, in any
+    frame, its tab is marked until the tab closes, whatever the tab loads meanwhile (a script that
+    then throws or times out ran; one refused before it starts, by the setting, a handed-over page or
+    a question to the owner, did not). `browser_sign_in` and `browser_sign_up` refuse on a marked tab
+    before any provider is asked, and their fill looks again just before it types, for a script that
+    ran while the provider answered; the provider has then been asked, but nothing is typed. A fill
+    first: every fill of a sign-in or sign-up first marks the main document it fills, by its
+    `performance.timeOrigin` read in phantab's own world, and does not fill when that cannot be read;
+    `evaluate` refuses on that document until a reload or a navigation replaces it, as well as while
+    a sign-up's new password is in its fields (SR-80). `console` and `network` run no agent code: they
+    return what the page and Chrome wrote, and no `browser_act` step puts a script into the page (its
+    addresses are `http` and `https` only, and its typing is the agent's own text). The marks live in
+    the service's memory, so a restarted service starts with none.
   - `console` and `network` are reads. Each starts recording a page at its first call, which says so
     and that nothing before it was kept; a page never asked about sends no extra event (perf-data-3's
     note). Recording covers the tab's own target (its main document and the frames Chrome runs in the
@@ -870,7 +884,11 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   header removal (`cookie_and_authorization_headers_never_leave_the_service`); no `...ExtraInfo` event
   forwarded (`events.test.mjs`) or read; L3: `developer_tools_read_the_console_and_network_and_run_scripts`,
   `evaluate_reads_a_frame_cuts_saves_throws_and_times_out`, `developer_tools_are_off_unless_set`,
-  `evaluate_is_a_write_and_is_asked_about_under_guardrails`, `recording_traffic_is_counted`.*
+  `evaluate_is_a_write_and_is_asked_about_under_guardrails`, `recording_traffic_is_counted`. A script
+  and a filled password: L1 `a_script_marks_its_tab_until_it_closes_and_a_fill_marks_its_document`;
+  L3 `a_tab_a_script_ran_on_is_never_signed_in_or_up` (the review's case: a script that copies a
+  password field, reversed, into the title and the console), `a_document_a_password_was_filled_into_runs_no_script`,
+  `a_refused_script_leaves_its_page_open_to_sign_in`.*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
@@ -921,7 +939,9 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   *L1: `format!("{:?}")` of each type prints no value.*
 - **SR-39** No credential byte, raw or URI-, base64- or base64url-encoded, appears in any MCP result,
   CLI output, service or host stdout or stderr, log, tracing event at any level, error, panic message,
-  or file under the runtime dir (the guard file included), after any sign-in status. *L3 and L4:
+  or file under the runtime dir (the guard file included), after any sign-in status. With `devTools`
+  on, this holds for a script's answers by SR-90's rule that a script and a filled password never
+  share a page. *L3 and L4:
   sentinel password through every status at `RUST_LOG=trace`, all outputs and files scanned; after
   each status no input in any frame holds it.*
 - **SR-40** Sign-in answers carry only the whitelisted statuses and reasons. Any Rust error becomes
@@ -1606,6 +1626,13 @@ These remain after every requirement holds. The README must say them in plain wo
   `browser_network` returns is whatever the site sent, tokens included. With the setting on, an
   injected agent can read or use all of that; only the agent's own guardrails hold it back, and
   phantab's `light` and `full`, which ask before each script. The setting is off by default (SR-90).
+  The passwords phantab itself fills stay out of a script's reach, by SR-90's rule that the two never
+  share a page. What stays out of sight: a script can change what a site keeps for its other pages
+  (its storage, or a worker the site itself serves), which phantab does not see, so a fresh page of
+  the same site is no guarantee against a site that runs what it finds in its own storage. Phantab
+  cannot tell which tab opened which, so a window a marked page opened, attached later with
+  `browser_attach`, is not marked. And the marks are in the service's memory: a restarted service
+  forgets which tabs a script ran on.
 
 ## Out of scope
 

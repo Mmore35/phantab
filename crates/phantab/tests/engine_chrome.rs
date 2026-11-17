@@ -62,6 +62,18 @@ impl Lane {
 
     /// `more`: the config's other settings, such as `siteLock` or `devTools`.
     async fn start_config(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
+        Self::start_all(chrome, guardrails, more, false).await
+    }
+
+    /// With sign-in: the service's one provider is the fixture provider (never a real vault) over
+    /// `vault.json` in the runtime, the fixture login saved for the fixture site, and it may fill on the
+    /// loopback fixture server. A sign-up saves its new login in the same file;
+    /// [`Lane::provider_asked`] counts what was asked.
+    async fn start_signing(chrome: &PathBuf, guardrails: &str, more: &Value) -> Self {
+        Self::start_all(chrome, guardrails, more, true).await
+    }
+
+    async fn start_all(chrome: &PathBuf, guardrails: &str, more: &Value, signing: bool) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
         rt.install_extension_in_profile();
@@ -72,10 +84,26 @@ impl Lane {
         for (k, v) in more.as_object().into_iter().flatten() {
             config[k] = v.clone();
         }
+        if signing {
+            use phantab_testkit::sign_in::{CODE, PASSWORD, USERNAME};
+            use sha2::{Digest as _, Sha256};
+            let provider = env!("CARGO_BIN_EXE_phantab-fixture-provider");
+            let vault = rt.path().join("vault.json");
+            let saved = json!({ "log": rt.path().join("provider-log.jsonl"),
+                                "logins": [{ "id": "fixture-1", "origin": fixtures.origin(), "username": USERNAME,
+                                             "password": PASSWORD, "totp": CODE }] });
+            std::fs::write(&vault, saved.to_string()).unwrap();
+            let pin = phantab::util::hex(&Sha256::digest(std::fs::read(provider).unwrap()));
+            config["signInProviders"] = json!([{ "name": "default", "command": [provider, vault],
+                                                 "caps": ["lookup", "totp", "create"], "pin": { provider: pin } }]);
+        }
         rt.write_config(&config);
         let svc = tokio::task::block_in_place(|| {
-            let child = rt
-                .command(&["serve"])
+            let mut serve = rt.command(&["serve"]);
+            if signing {
+                serve.env("PHANTAB_TEST_ALLOW_LOOPBACK", "1");
+            }
+            let child = serve
                 .env("PHANTAB_TEST_WINDOWS", "none")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -125,6 +153,12 @@ impl Lane {
             Ok(v) => panic!("{method} {args} for {client} succeeded: {v}"),
             Err(e) => e,
         }
+    }
+
+    /// How many requests the fixture provider was sent ([`Lane::start_signing`]).
+    fn provider_asked(&self) -> usize {
+        std::fs::read_to_string(self.rt.path().join("provider-log.jsonl"))
+            .map_or(0, |log| log.lines().filter(|l| !l.trim().is_empty()).count())
     }
 
     async fn status(&self) -> Value {
@@ -2080,4 +2114,181 @@ async fn recording_traffic_is_counted() {
     let near = |a: usize, b: usize| a.abs_diff(b) <= 4.max(a.max(b) / 10);
     assert!(near(unasked.forwarded, off.forwarded), "a page never asked forwards what it did before");
     assert!(near(recording.forwarded - recording.devtools, unasked.forwarded), "{recording:?} {unasked:?}");
+}
+
+/// What a password phantab filled could be written as: the fixture password's leak forms and the
+/// password reversed (the reviewer's script hands it back reversed, past the echo redaction).
+fn password_forms() -> Vec<String> {
+    use phantab_testkit::sign_in::{CODE, PASSWORD, fixture_leak_forms};
+    let mut forms: Vec<String> = fixture_leak_forms().into_iter().filter(|f| f != CODE).collect();
+    forms.push(PASSWORD.chars().rev().collect());
+    forms
+}
+
+/// `text` holds no form of the fixture password; a failure names where, never the text.
+fn no_password(text: &str, what: &str) {
+    let found = password_forms().iter().position(|f| text.contains(f.as_str()));
+    assert_eq!(found, None, "{what}: a form of the password reached the agent");
+}
+
+/// The page's inputs' values, by a script (which marks the page; that only refuses fills).
+async fn inputs(lane: &Lane, page: &str) -> Value {
+    let read = "() => [...document.querySelectorAll('input')].map((i) => i.value)";
+    lane.ok("evaluate", json!({ "pageId": page, "function": read }), "a").await["result"].clone()
+}
+
+const SCRIPTED_SIGN_IN: &str = "sign-in refused: a script ran on this page (browser_evaluate)";
+const SCRIPTED_SIGN_UP: &str = "sign-up refused: a script ran on this page (browser_evaluate)";
+const FILLED: &str = "evaluate refused: phantab filled a password into this page";
+const SIGN_UP_ON_PAGE: &str = "evaluate refused: this page holds the new password a sign-up filled";
+
+/// THREAT-MODEL SR-90, a script first, with the review's own case: a script leaves an `input` listener
+/// and a timer that copy any password field's value, reversed, into the title and the console. The
+/// sign-in that follows is refused before the provider is asked, nothing is filled, and no later script
+/// or console read holds the password in any form. The tab stays refused for sign-in and sign-up after
+/// a navigation or reload; a fresh page signs in and signs up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tab_a_script_ran_on_is_never_signed_in_or_up() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_signing(&chrome, "parity", &json!({ "devTools": true })).await;
+    let mut said: Vec<String> = Vec::new();
+    let a = lane.open("a", "/sign-in/one").await;
+    lane.ok("console", json!({ "pageId": a }), "a").await;
+    let hook = "() => {
+        const reversed = (s) => [...s].reverse().join('');
+        const copy = () => {
+            for (const f of document.querySelectorAll('input[type=password]')) {
+                if (f.value) { document.title = reversed(f.value); console.error('copied ' + reversed(f.value)); }
+            }
+        };
+        document.addEventListener('input', copy, true);
+        setInterval(copy, 50);
+        return 'installed';
+    }";
+    let installed = lane.ok("evaluate", json!({ "pageId": a, "function": hook }), "a").await;
+    assert_eq!(installed["result"], json!("installed"), "{installed}");
+    let refused = lane.err("sign_in", json!({ "pageId": a }), "a").await;
+    let fresh = refused.ends_with("Open a fresh page for the sign-in.");
+    assert!(refused.starts_with(SCRIPTED_SIGN_IN) && fresh, "{refused}");
+    said.push(refused);
+    assert_eq!(lane.provider_asked(), 0, "the provider was never asked");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(inputs(&lane, &a).await, json!(["", ""]), "nothing was filled");
+    let title = lane.ok("evaluate", json!({ "pageId": a, "function": "() => document.title" }), "a").await;
+    assert_eq!(title["result"], json!("Sign in"), "{title}");
+    said.push(title.to_string());
+    said.push(lane.ok("console", json!({ "pageId": a }), "a").await.to_string());
+
+    // The same tab after a navigation: still refused, for both.
+    let to = |path: &str| json!({ "action": "navigate", "url": lane.fixtures.url(path) });
+    lane.act("a", &a, to("/sign-in/one")).await.unwrap();
+    let again = lane.err("sign_in", json!({ "pageId": a }), "a").await;
+    assert!(again.starts_with(SCRIPTED_SIGN_IN), "{again}");
+    lane.act("a", &a, to("/signup/basic")).await.unwrap();
+    let up = json!({ "pageId": a, "username": "new-user@example.test" });
+    let up_refused = lane.err("sign_up", up, "a").await;
+    assert!(
+        up_refused.starts_with(SCRIPTED_SIGN_UP) && up_refused.ends_with("for the sign-up."),
+        "{up_refused}"
+    );
+
+    // A sign-up page a script ran on, then after a reload of it.
+    let b = lane.open("a", "/signup/basic").await;
+    lane.ok("evaluate", json!({ "pageId": b, "function": "() => 1" }), "a").await;
+    let up = json!({ "pageId": b, "username": "new-user@example.test" });
+    assert!(lane.err("sign_up", up.clone(), "a").await.starts_with(SCRIPTED_SIGN_UP));
+    lane.act("a", &b, json!({ "action": "reload" })).await.unwrap();
+    assert!(lane.err("sign_up", up, "a").await.starts_with(SCRIPTED_SIGN_UP));
+    assert_eq!(inputs(&lane, &b).await, json!(["", ""]), "nothing was filled");
+    assert_eq!(lane.provider_asked(), 0, "the provider was never asked");
+
+    // Fresh pages: both work.
+    let c = lane.open("a", "/sign-in/one").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": c }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    let d = lane.open("a", "/signup/basic").await;
+    let up = lane.ok("sign_up", json!({ "pageId": d, "username": "new-user@example.test" }), "a").await;
+    assert_eq!(up["status"], json!("filled"), "{up}");
+    assert!(lane.provider_asked() > 0, "the fresh pages asked the provider");
+    said.push(signed.to_string());
+    said.push(up.to_string());
+    for text in &said {
+        no_password(text, "an answer");
+    }
+    lane.finish().await;
+}
+
+/// THREAT-MODEL SR-90, a fill first: a sign-in fills a page that keeps its document (the fixture's
+/// form sends by `fetch`, and its own code keeps what was typed). No script runs there until the page
+/// reloads; then one runs and cannot read the password. A sign-up's page refuses scripts while its new
+/// password is in the field (SR-80), and after the field is emptied, until its document is replaced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_document_a_password_was_filled_into_runs_no_script() {
+    use phantab_testkit::sign_in::PASSWORD;
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_signing(&chrome, "parity", &json!({ "devTools": true })).await;
+    let a = lane.open("a", "/sign-in/react").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert!(signed["status"].is_string(), "{signed}");
+    let sent = async || lane.fixtures.posts().iter().any(|p| p.form("pass").as_deref() == Some(PASSWORD));
+    assert!(lane.until(Duration::from_secs(5), sent).await, "the password was filled, and the site sent it");
+    let read =
+        json!({ "pageId": a, "function": "() => [document.querySelector('#p').value, window.reactState]" });
+    let refused = lane.err("evaluate", read.clone(), "a").await;
+    let lifts = refused.ends_with("A reload of the page, or a fresh page, lifts this.");
+    assert!(refused.starts_with(FILLED) && lifts, "{refused}");
+    assert!(lane.err("evaluate", read.clone(), "a").await.starts_with(FILLED), "refused again");
+    no_password(&lane.ok("console", json!({ "pageId": a }), "a").await.to_string(), "the console");
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    let after = lane.ok("evaluate", read, "a").await;
+    assert_eq!(after["result"], json!(["", ""]), "{after}");
+    no_password(&after.to_string(), "a script after the reload");
+
+    // Sign-up: refused while the new password is in its field, then by the fill's own mark.
+    let b = lane.open("a", "/signup/basic").await;
+    let up = lane.ok("sign_up", json!({ "pageId": b, "username": "new-user@example.test" }), "a").await;
+    assert_eq!(up["status"], json!("filled"), "{up}");
+    let script = json!({ "pageId": b, "function": "() => document.querySelector('[name=pw]').value" });
+    let on_page = lane.err("evaluate", script.clone(), "a").await;
+    assert!(on_page.starts_with(SIGN_UP_ON_PAGE), "{on_page}");
+    lane.act("a", &b, json!({ "action": "fill", "selector": "[name=pw]", "text": "" })).await.unwrap();
+    let filled = lane.err("evaluate", script.clone(), "a").await;
+    assert!(filled.starts_with(FILLED), "{filled}");
+    lane.act("a", &b, json!({ "action": "reload" })).await.unwrap();
+    let after = lane.ok("evaluate", script, "a").await;
+    assert_eq!(after["result"], json!(""), "{after}");
+    lane.finish().await;
+}
+
+/// THREAT-MODEL SR-90: a script that never started marks nothing. Refused with the setting off,
+/// refused for the owner's yes under `light`, refused on a page handed to the owner: the sign-in after
+/// each goes on and fills.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_script_leaves_its_page_open_to_sign_in() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let script = |page: &str| json!({ "pageId": page, "function": "() => document.title" });
+    let lane = Lane::start_signing(&chrome, "parity", &json!({})).await;
+    let a = lane.open("a", "/sign-in/one").await;
+    let off = lane.err("evaluate", script(&a), "a").await;
+    assert!(off.contains("off unless \"devTools\": true is set"), "{off}");
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    lane.finish().await;
+
+    let lane = Lane::start_signing(&chrome, "light", &json!({ "devTools": true })).await;
+    let a = lane.open("a", "/sign-in/one").await;
+    let ask = lane.err("evaluate", script(&a), "a").await;
+    assert!(ask.starts_with("Confirm first"), "{ask}");
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let mut held = script(&a);
+    held["ownerConfirmed"] = json!(true);
+    let handed = lane.err("evaluate", held, "a").await;
+    assert!(handed.contains("handed to the owner"), "{handed}");
+    lane.ok("resume", json!({ "pageId": a, "ownerConfirmed": true }), "a").await;
+    let signed = lane.ok("sign_in", json!({ "pageId": a }), "a").await;
+    assert_eq!(signed["status"], json!("submitted"), "{signed}");
+    lane.finish().await;
 }

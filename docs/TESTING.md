@@ -305,6 +305,7 @@ exists.
 | An agent saves a screenshot or snapshot to a relative path, a missing folder or a file it would replace | `lib`, `engine_chrome` (real Chrome) |
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
+| An agent's script and a password phantab filled share a page, in either order | `lib`, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
