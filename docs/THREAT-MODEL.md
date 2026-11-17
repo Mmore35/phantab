@@ -950,7 +950,8 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `work` turns nothing on: `devTools` is its own setting (SR-90), which `phantab install --work` also
   writes.
   *L1: `work::tests` (which values are on, and the note), `engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so`;
-  `mcp` `sign_in_tools_are_not_listed_with_work_on` (a golden list); L3:
+  `mcp` `sign_in_tools_are_not_listed_with_work_on` (a golden list),
+  `install` `work_writes_work_and_dev_tools_and_a_later_install_keeps_them` (a temp folder); L3:
   `with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over` (status, the closed viewer
   port, both refusals, no pop-up past the grace, the hand-off on asking).*
 

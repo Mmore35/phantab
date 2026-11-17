@@ -22,7 +22,8 @@ bash install.sh
 ```
 It checks every file's hash, clears the downloaded-file mark so macOS lets the unsigned phantab run,
 lists your Chrome profiles and binds the one you used last (on a re-run, the one it is already bound to;
-`--profile "Profile 1"` picks another). Then:
+`--profile "Profile 1"` picks another). On a company Mac, `bash install.sh --work` also turns on the
+work setting and the developer tools (`docs/WORK-LAPTOP.md` § 4). Then:
 1. In that Chrome profile: `chrome://extensions` → **Developer mode** on → **Load unpacked** → in the
    picker press Cmd+Shift+G and paste `~/Library/Application Support/phantab/extension`.
 2. Quit and reopen Claude Code. Ask it to *open example.com with phantab and read the title*.

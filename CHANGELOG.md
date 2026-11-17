@@ -72,6 +72,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   check is reported; `browser_show {verification: true}` still hands the page over) and the phone
   viewer, whatever else the config says. Any value but `true` or `false` counts as on, and
   `browser_status` lists what is off and says when the value was not understood.
+- `phantab install --work` (and the bundles' `install.ps1 -Work` and `install.sh --work`) writes
+  `"work": true` and `"devTools": true` to `config.json` and keeps every other setting. A later
+  install without it keeps both (`docs/WORK-LAPTOP.md`).
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);
