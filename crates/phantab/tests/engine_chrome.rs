@@ -984,13 +984,13 @@ async fn a_typed_space_is_checked_as_a_press_of_space() {
 /// A selector's readiness wait, its sensitive-set check and its action all land on one element. An
 /// earlier website frame holds a match only inside an open shadow root, which the wait passes over (its
 /// point is the frame's, not the page's); a later frame holds one in its document. Whatever the
-/// guardrails, the click and the fill reach the later frame's element, the one that was waited for and
-/// checked, and never the earlier frame's pay button.
+/// guardrails, the click, the fill, a hover, an upload and a drag reach the later frame's element, the one
+/// that was waited for and checked, and never the earlier frame's pay button or file input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_selector_acts_on_the_element_its_wait_and_check_read() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
-    for guardrails in ["parity", "light"] {
+    for guardrails in ["parity", "light", "full"] {
         let lane = Lane::start_with(&chrome, guardrails).await;
         let a = lane.open("a", "/engine/two-frames").await;
         let said = async |lane: &Lane| text(&lane.snap("a", &a).await).to_owned();
@@ -1003,12 +1003,74 @@ async fn a_selector_acts_on_the_element_its_wait_and_check_read() {
             .await,
             "{guardrails}: {now}"
         );
+        // Phase 4's selector steps hold to it too: a hover, an upload and a drag.
+        lane.act("a", &a, json!({ "action": "hover", "selector": "#go" })).await.unwrap();
+        let now = said(&lane).await;
+        assert!(now.contains("hovered in the plain frame"), "{guardrails}: {now}");
         lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap();
         let now = said(&lane).await;
         assert!(now.contains("pressed in the plain frame"), "{guardrails}: {now}");
         lane.act("a", &a, json!({ "action": "fill", "selector": "#field", "text": "x" })).await.unwrap();
         let now = said(&lane).await;
         assert!(now.contains("filled in the plain frame"), "{guardrails}: {now}");
+        let file = lane.rt.path().join("note.txt");
+        std::fs::write(&file, "a note").unwrap();
+        let upload =
+            json!({ "action": "upload", "selector": "#pick", "files": [file], "ownerConfirmed": true });
+        lane.act("a", &a, upload).await.unwrap();
+        let now = said(&lane).await;
+        assert!(now.contains("uploaded in the plain frame"), "{guardrails}: {now}");
+        lane.act("a", &a, json!({ "action": "drag", "selector": "#go", "to": "#field" })).await.unwrap();
+        let now = said(&lane).await;
+        assert!(now.contains("dropped in the plain frame"), "{guardrails}: {now}");
+        lane.finish().await;
+    }
+}
+
+/// SR-89 under `light` and `full`: a drop is checked at its target and a key combination by its last
+/// key, as a click and a press are. A `drag` whose `to` is a pay button, a `drag_xy` dropped on it and
+/// `Shift+Enter` in a card form are each asked about first, reach nothing on the page, and go through
+/// with the owner's yes. Under `parity` none is asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first() {
+    const ASK: &str = "Confirm first: this looks like a payment or checkout.";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["light", "full", "parity"] {
+        let asks = guardrails != "parity";
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        let snap = lane.snap("a", &lane.open("a", "/engine/clobber-pay").await).await;
+        let (plain, pay) = (element(&snap, "plain").unwrap().clone(), element(&snap, "pay").unwrap().clone());
+        let steps = [
+            json!({ "action": "drag", "selector": "#plain", "to": "#pay" }),
+            json!({ "action": "drag_xy", "x": plain["x"], "y": plain["y"], "toX": pay["x"], "toY": pay["y"] }),
+            json!({ "action": "press", "key": "Shift+Enter" }),
+        ];
+        for mut args in steps {
+            // A fresh page for each, so what one step did is not read as the next one's.
+            let a = lane.open("a", "/engine/clobber-pay").await;
+            let said = async |lane: &Lane| text(&lane.snap("a", &a).await).to_owned();
+            let enter = args["action"] == "press";
+            if enter {
+                // The focus in the card form's field, where Enter submits the form.
+                let fill = json!({ "action": "fill", "selector": "#number", "text": "4111" });
+                lane.act("a", &a, fill).await.unwrap();
+            }
+            if asks {
+                let refused = lane.act("a", &a, args.clone()).await.unwrap_err();
+                assert!(refused.starts_with(ASK), "{guardrails} {args}: {refused}");
+                assert!(
+                    said(&lane).await.contains("nothing pressed"),
+                    "{guardrails} {args}: reached the page"
+                );
+                args["ownerConfirmed"] = json!(true);
+            }
+            lane.act("a", &a, args.clone()).await.unwrap();
+            let now = said(&lane).await;
+            let landed =
+                if enter { now.contains("sent the card form") } else { !now.contains("nothing pressed") };
+            assert!(landed, "{guardrails} {args}: {now}");
+        }
         lane.finish().await;
     }
 }
@@ -1283,4 +1345,412 @@ async fn screenshots_and_snapshots_are_saved_as_files_at_the_size_asked() {
     shot(json!({ "path": dir.path().join("held.png") })).await.unwrap();
     assert_eq!(scrolled().await, at);
     lane.finish().await;
+}
+
+/// Phase 4 proof 1: `hover` and `hover_xy` open a menu that opens only on hover (CSS `:hover`), and its
+/// item then shows in the snapshot. Moving the mouse away closes it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hover_and_hover_xy_open_a_menu_that_opens_on_hover() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/hover").await;
+    let snap = lane.snap("a", &a).await;
+    assert!(element(&snap, "sign-out").is_none(), "closed before the hover: {snap}");
+    let account = element(&snap, "account").unwrap().clone();
+    lane.act("a", &a, json!({ "action": "hover", "selector": "#account" })).await.unwrap();
+    let snap = lane.snap("a", &a).await;
+    assert!(element(&snap, "sign-out").is_some(), "open after hover: {snap}");
+    lane.act("a", &a, json!({ "action": "hover_xy", "x": 700, "y": 500 })).await.unwrap();
+    let snap = lane.snap("a", &a).await;
+    assert!(element(&snap, "sign-out").is_none(), "closed once the mouse left: {snap}");
+    lane.act("a", &a, json!({ "action": "hover_xy", "x": account["x"], "y": account["y"] })).await.unwrap();
+    let snap = lane.snap("a", &a).await;
+    assert!(element(&snap, "sign-out").is_some(), "open after hover_xy: {snap}");
+    lane.finish().await;
+}
+
+/// Phase 4 proof 2: `drag` moves a list's first item below its second, and `drag_xy` does the same by
+/// points. The list sorts on mouse events, as many list widgets do. An HTML5 drag-and-drop list
+/// (`draggable`, `dragstart`/`drop`) sorts the same way: Chrome starts an HTML5 drag from the same
+/// mouse events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drag_and_drag_xy_sort_a_list() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/drag").await;
+    assert!(text(&lane.snap("a", &a).await).contains("order: First, Second, Third"));
+    lane.act("a", &a, json!({ "action": "drag", "selector": "#first", "to": "#second" })).await.unwrap();
+    let snap = lane.snap("a", &a).await;
+    assert!(text(&snap).contains("order: Second, First, Third"), "{snap}");
+    // A list item is no control, so the snapshot gives it no point. The fixture's rows are fixed: 42 px
+    // tall from y 8, 4 px apart, so the third row's middle is at y 121 and the first's at y 29.
+    let by_point = json!({ "action": "drag_xy", "x": 100, "y": 121, "toX": 100, "toY": 29 });
+    lane.act("a", &a, by_point).await.unwrap();
+    let snap = lane.snap("a", &a).await;
+    assert!(text(&snap).contains("order: Second, Third, First"), "{snap}");
+
+    let h = lane.open("a", "/engine/drag-html5").await;
+    lane.act("a", &h, json!({ "action": "drag", "selector": "#first", "to": "#second" })).await.unwrap();
+    let seen = text(&lane.snap("a", &h).await).to_owned();
+    assert!(
+        seen.contains("order: Second, First, Third") && seen.contains("dragstart, dragover, drop"),
+        "{seen}"
+    );
+    lane.finish().await;
+}
+
+/// A `drag` by selector presses and releases at points, and a mouse event goes to whatever is on top
+/// there. Each end is checked as a click's point is, before the first mouse event, so a clear submit
+/// button laid over the whole list, or over the drop item alone, takes no press, no drop and no click:
+/// the drag is refused as covered, naming its end, the form is not sent and the page gets no mouse event
+/// at all. The refusal is the drag's own: nothing was pressed, and `drag_xy` drags between two points.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drag_onto_a_covered_list_is_refused_before_any_mouse_event() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["parity", "light"] {
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        for (page, end) in [
+            ("/engine/drag-covered", "from end (#first)"),
+            ("/engine/drag-covered?over=drop", "to end (#second)"),
+        ] {
+            let a = lane.open("a", page).await;
+            let drag = json!({ "action": "drag", "selector": "#first", "to": "#second" });
+            let refused = lane.act("a", &a, drag).await.unwrap_err();
+            assert!(
+                refused.starts_with("Element is covered at its click point by <button#send>")
+                    && refused.contains(&format!("That is the drag's {end}, so nothing was pressed."))
+                    && refused.contains("use drag_xy to drag between two points on purpose")
+                    && !refused.contains("click_xy")
+                    && !refused.contains("the click was not sent"),
+                "{guardrails} {page}: {refused}"
+            );
+            let seen = text(&lane.snap("a", &a).await).to_owned();
+            assert!(seen.contains("not sent") && seen.contains("mouse: none"), "{guardrails} {page}: {seen}");
+        }
+        lane.finish().await;
+    }
+}
+
+/// The page's own handlers run as the pointer arrives at the drag's start, before anything is pressed,
+/// so a page can slide an overlay in then. A drag checks both its ends again once the pointer is there
+/// and the page has had a frame, as a click checks its point, and presses only after that: a clear
+/// submit button shown on the first `mousemove`, over the whole view or over the drop item alone, is
+/// seen, the drag is refused naming that end, the form is not sent and the page saw the arrival move
+/// but no press, no release and no click. Over the whole view the button covers both ends, and `to` is
+/// checked first once the pointer is there, so that refusal names `to`; the start covered on arrival is
+/// `a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let cases = [
+        ("/engine/drag-covered?later=1", "to end (#second)"),
+        ("/engine/drag-covered?over=drop&later=1", "to end (#second)"),
+    ];
+    for (page, end) in cases {
+        let a = lane.open("a", page).await;
+        let drag = json!({ "action": "drag", "selector": "#first", "to": "#second" });
+        let refused = lane.act("a", &a, drag).await.unwrap_err();
+        assert!(
+            refused.starts_with("Element is covered at its click point by <button#send>")
+                && refused.contains(&format!("That is the drag's {end}, covered once the pointer"))
+                && refused.contains("the pointer moved there, and nothing was pressed")
+                && refused.contains("use drag_xy to drag between two points on purpose"),
+            "{page}: {refused}"
+        );
+        let seen = text(&lane.snap("a", &a).await).to_owned();
+        assert!(seen.contains("not sent") && seen.contains("mouse: mousemove"), "{page}: {seen}");
+        assert!(
+            !seen.contains("mousedown") && !seen.contains("mouseup") && !seen.contains("click"),
+            "{page}: {seen}"
+        );
+    }
+    lane.finish().await;
+}
+
+/// A page can hold one end's check open (a covered end is retried) and change the other end meanwhile,
+/// so the press must follow a check of its own point: once the pointer arrives, a drag checks `to`, then
+/// `from`, and presses. The page covers the drop item with something clear for 600 ms on the arrival
+/// `mousemove` and lays the submit button over the start at 300 ms, where it stays. `from` is checked
+/// only after `to` passes, finds the button, and the drag is refused naming its start; the press never
+/// reaches the button. The timings: the 300 ms between the button and the cover going are ordered by the
+/// page's own timers, so a slow machine cannot swap them, and the 600 ms cover leaves `to`'s check 400 ms
+/// inside the 1 s covered grace, so a slow check is not refused at `to` instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let page = "/engine/drag-covered?slide=1";
+    let a = lane.open("a", page).await;
+    let drag = json!({ "action": "drag", "selector": "#first", "to": "#second" });
+    let refused = lane.act("a", &a, drag).await.unwrap_err();
+    assert!(
+        refused.starts_with("Element is covered at its click point by <button#send>")
+            && refused.contains("That is the drag's from end (#first), covered once the pointer")
+            && refused.contains("the pointer moved there, and nothing was pressed")
+            && refused.contains("use drag_xy to drag between two points on purpose")
+            && !refused.contains("click_xy"),
+        "{page}: {refused}"
+    );
+    let seen = text(&lane.snap("a", &a).await).to_owned();
+    assert!(seen.contains("not sent") && seen.contains("mouse: mousemove"), "{page}: {seen}");
+    assert!(
+        !seen.contains("mousedown") && !seen.contains("mouseup") && !seen.contains("click"),
+        "{page}: {seen}"
+    );
+    lane.finish().await;
+}
+
+/// Phase 4 proof 3: `upload` sets a file input's files, and the page shows each file's name and size, on
+/// the page and in another site's frame. A relative path, a missing file, a folder and an element that is
+/// not a file input are each refused, saying which, and the page is left as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_sets_a_file_input_and_refuses_what_it_cannot_send() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let dir = lane.rt.path().join("to-send");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (report, notes) = (dir.join("report.txt"), dir.join("notes.txt"));
+    std::fs::write(&report, "twelve bytes").unwrap();
+    std::fs::write(&notes, "five!").unwrap();
+    let upload =
+        |selector: &str, files: Value| json!({ "action": "upload", "selector": selector, "files": files });
+
+    let a = lane.open("a", "/engine/upload").await;
+    for (args, wants) in [
+        (upload("#file", json!(["report.txt"])), "upload: \"report.txt\" is not an absolute path."),
+        (upload("#file", json!([dir.join("absent.txt")])), "\" does not exist."),
+        (upload("#file", json!([dir])), "\" is not a file."),
+        (upload("#name", json!([report])), "upload: #name is not a file input (<input type=file>)"),
+        (upload("#file", json!([report, notes])), "upload: #file "),
+        (upload("#file", json!([7])), "upload: each file must be a path, as text."),
+    ] {
+        let refused = lane.act("a", &a, args.clone()).await.unwrap_err();
+        assert!(refused.contains(wants), "{args}: {refused}");
+    }
+    assert!(text(&lane.snap("a", &a).await).contains("no file chosen"), "a refused upload reached the page");
+    lane.act("a", &a, upload("#file", json!([report]))).await.unwrap();
+    assert!(text(&lane.snap("a", &a).await).contains("chose report.txt (12 bytes)"));
+    lane.act("a", &a, upload("#files", json!([report, notes]))).await.unwrap();
+    let shown = text(&lane.snap("a", &a).await).to_owned();
+    assert!(shown.contains("chose report.txt (12 bytes); chose notes.txt (5 bytes)"), "{shown}");
+
+    let f = lane.open("a", "/engine/upload-frame").await;
+    let mut seen = String::new();
+    assert!(
+        lane.until(Duration::from_secs(10), async || {
+            seen = lane.snap("a", &f).await.to_string();
+            seen.contains("no file chosen")
+        })
+        .await,
+        "the frame loads: {seen}"
+    );
+    lane.act("a", &f, upload("#file", json!([report]))).await.unwrap();
+    let snap = lane.snap("a", &f).await;
+    assert!(snap.to_string().contains("chose report.txt (12 bytes)"), "{snap}");
+    lane.finish().await;
+}
+
+/// Phase 4 proof 4, on a hidden workspace page (the extension answers its dialogs) and on an
+/// isolated headless one (phantab answers them): without a `dialog` step a confirm is dismissed, and
+/// the click's result reports it with its message. `["dialog", "accept"]` before the click accepts it,
+/// once: the next confirm is dismissed again. `["dialog", "accept", text]` answers a prompt with text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dialog_step_answers_the_next_dialog_once_and_every_dialog_is_reported() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let isolated = json!({ "url": lane.fixtures.url("/engine/dialogs"), "mode": "isolated-headless" });
+    let isolated = lane.ok("open", isolated, "a").await;
+    let pages = [lane.open("a", "/engine/dialogs").await, isolated["pageId"].as_str().unwrap().to_owned()];
+    for p in &pages {
+        let said = async || text(&lane.snap("a", p).await).to_owned();
+        let click =
+            async |id: &str| lane.act("a", p, json!({ "action": "click", "selector": id })).await.unwrap();
+        let reported = |r: &Value, kind: &str, message: &str, answer: &str| {
+            assert_eq!(
+                r["dialogs"],
+                json!([{ "type": kind, "message": message, "answer": answer }]),
+                "{p}: {r}"
+            );
+        };
+        let r = click("#ask").await;
+        assert!(said().await.contains("false"), "{p}: dismissed by default");
+        reported(&r, "confirm", "Delete it?", "dismissed");
+        lane.act("a", p, json!({ "action": "dialog", "answer": "accept" })).await.unwrap();
+        let r = click("#ask").await;
+        assert!(said().await.contains("true"), "{p}: accepted");
+        reported(&r, "confirm", "Delete it?", "accepted");
+        let r = click("#ask").await;
+        assert!(said().await.contains("false"), "{p}: the answer is used once");
+        reported(&r, "confirm", "Delete it?", "dismissed");
+        lane.act("a", p, json!({ "action": "dialog", "answer": "accept", "text": "Ada" })).await.unwrap();
+        let r = click("#name").await;
+        assert!(said().await.contains("name Ada"), "{p}: the prompt's text");
+        reported(&r, "prompt", "Your name?", "accepted");
+        click("#name").await;
+        assert!(said().await.contains("no name"), "{p}: a prompt is dismissed by default");
+        lane.act("a", p, json!({ "action": "dialog", "answer": "dismiss" })).await.unwrap();
+        let r = click("#tell").await;
+        assert!(said().await.contains("told"), "{p}");
+        reported(&r, "alert", "Saved", "dismissed");
+    }
+    lane.finish().await;
+}
+
+/// Phase 4 proof 5: `back`, `forward` and `reload` move through the tab's history; a reload resets the
+/// page's in-memory counter. `back` on a tab with no earlier website page is an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn back_forward_and_reload_move_through_the_tabs_history() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/history").await;
+    let title = async || lane.snap("a", &a).await["title"].as_str().unwrap_or_default().to_owned();
+    let step = async |action: &str| lane.act("a", &a, json!({ "action": action })).await;
+    let refused = step("back").await.unwrap_err();
+    assert_eq!(refused, "Nothing to go back to: this tab has no earlier website page.");
+    let refused = step("forward").await.unwrap_err();
+    assert_eq!(refused, "Nothing to go forward to: this tab has no later website page.");
+
+    lane.act("a", &a, json!({ "action": "click", "selector": "#more" })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "click", "selector": "#more" })).await.unwrap();
+    assert!(text(&lane.snap("a", &a).await).contains("count 2"));
+    step("reload").await.unwrap();
+    assert!(text(&lane.snap("a", &a).await).contains("count 0"), "a reload resets the counter");
+
+    lane.act("a", &a, json!({ "action": "click", "selector": "#on" })).await.unwrap();
+    assert!(lane.until(Duration::from_secs(10), async || title().await == "Browser fixture").await);
+    step("back").await.unwrap();
+    assert_eq!(title().await, "History fixture");
+    step("forward").await.unwrap();
+    assert_eq!(title().await, "Browser fixture");
+    step("back").await.unwrap();
+    assert_eq!(title().await, "History fixture");
+    lane.finish().await;
+}
+
+/// Phase 4 proof 5 under `light`: `reload`, `back` or `forward` onto a page a form sent may send the
+/// form again, so each is asked about first; a move onto any other page is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn moving_onto_a_page_a_form_sent_is_asked_about_first() {
+    const ASK: &str = "Confirm first: this loads a page a form sent";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let a = lane.open("a", "/engine/resend").await;
+    let step = async |action: &str, confirmed: bool| {
+        lane.act("a", &a, json!({ "action": action, "ownerConfirmed": confirmed })).await
+    };
+    let title = async || lane.snap("a", &a).await["title"].as_str().unwrap_or_default().to_owned();
+    lane.act("a", &a, json!({ "action": "click", "selector": "#send", "ownerConfirmed": true }))
+        .await
+        .unwrap();
+    assert!(lane.until(Duration::from_secs(10), async || title().await != "A form that posts").await);
+    let sent = lane.fixtures.posts().len();
+    assert_eq!(sent, 1, "the form was sent once");
+    let refused = step("reload", false).await.unwrap_err();
+    assert!(refused.starts_with(ASK), "{refused}");
+    step("back", false).await.unwrap();
+    assert_eq!(title().await, "A form that posts");
+    let refused = step("forward", false).await.unwrap_err();
+    assert!(refused.starts_with(ASK), "{refused}");
+    step("reload", false).await.unwrap();
+    assert_eq!(lane.fixtures.posts().len(), sent, "no refused move sent the form");
+    step("forward", true).await.unwrap();
+    eprintln!("lane3 posts after a confirmed forward onto the sent page: {}", lane.fixtures.posts().len());
+    lane.finish().await;
+}
+
+/// Phase 4 proof 6: `["press", "Control+A"]` selects a field's text, so the typing after it replaces it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_combination_selects_all_and_typing_replaces_it() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/basic").await;
+    lane.act("a", &a, json!({ "action": "fill", "selector": "#name", "text": "the old text" }))
+        .await
+        .unwrap();
+    lane.act("a", &a, json!({ "action": "press", "key": "Control+A" })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "type", "text": "new" })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "click", "selector": "#go" })).await.unwrap();
+    let shown = text(&lane.snap("a", &a).await).to_owned();
+    assert!(shown.contains("new") && !shown.contains("old text"), "{shown}");
+    lane.finish().await;
+}
+
+/// Phase 4 proof 7: a page handed to the owner refuses every step phase 4 added, the owner's yes or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handed_over_page_refuses_every_new_step() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start(&chrome).await;
+    let file = lane.rt.path().join("report.txt");
+    std::fs::write(&file, "twelve bytes").unwrap();
+    let a = lane.open("a", "/engine/upload").await;
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    for mut args in [
+        json!({ "action": "hover", "selector": "#file" }),
+        json!({ "action": "hover_xy", "x": 10, "y": 10 }),
+        json!({ "action": "drag", "selector": "#file", "to": "#name" }),
+        json!({ "action": "drag_xy", "x": 10, "y": 10, "toX": 20, "toY": 20 }),
+        json!({ "action": "upload", "selector": "#file", "files": [file] }),
+        json!({ "action": "dialog", "answer": "accept" }),
+        json!({ "action": "dialog", "answer": "dismiss" }),
+        json!({ "action": "back" }),
+        json!({ "action": "forward" }),
+        json!({ "action": "reload" }),
+        json!({ "action": "press", "key": "Control+A" }),
+    ] {
+        for confirmed in [false, true] {
+            args["ownerConfirmed"] = json!(confirmed);
+            let refused = lane.act("a", &a, args.clone()).await.unwrap_err();
+            assert!(refused.contains("handed to the owner"), "{args}: {refused}");
+        }
+    }
+    lane.finish().await;
+}
+
+/// Phase 4 proof 8: under `light` and `full` every upload and every dialog accept is asked about first,
+/// and goes through with the owner's yes; a dismiss is not asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first() {
+    const SENDS: &str = "Confirm first: this sends a file from this computer to the site.";
+    const ACCEPTS: &str = "Confirm first: this accepts the page's next dialog";
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    for guardrails in ["light", "full"] {
+        let lane = Lane::start_with(&chrome, guardrails).await;
+        let file = lane.rt.path().join("report.txt");
+        std::fs::write(&file, "twelve bytes").unwrap();
+        let a = lane.open("a", "/engine/upload").await;
+        let upload = |confirmed: bool| json!({ "action": "upload", "selector": "#file", "files": [file], "ownerConfirmed": confirmed });
+        let refused = lane.act("a", &a, upload(false)).await.unwrap_err();
+        assert!(refused.starts_with(SENDS), "{guardrails}: {refused}");
+        assert!(text(&lane.snap("a", &a).await).contains("no file chosen"), "{guardrails}");
+        lane.act("a", &a, upload(true)).await.unwrap();
+        assert!(text(&lane.snap("a", &a).await).contains("chose report.txt (12 bytes)"), "{guardrails}");
+
+        let d = lane.open("a", "/engine/dialogs").await;
+        let refused = lane.act("a", &d, json!({ "action": "dialog", "answer": "accept" })).await.unwrap_err();
+        assert!(refused.starts_with(ACCEPTS), "{guardrails}: {refused}");
+        lane.act("a", &d, json!({ "action": "click", "selector": "#ask" })).await.unwrap();
+        assert!(
+            text(&lane.snap("a", &d).await).contains("false"),
+            "{guardrails}: the refused accept set nothing"
+        );
+        lane.act("a", &d, json!({ "action": "dialog", "answer": "dismiss" })).await.unwrap();
+        let accept = json!({ "action": "dialog", "answer": "accept", "ownerConfirmed": true });
+        lane.act("a", &d, accept).await.unwrap();
+        lane.act("a", &d, json!({ "action": "click", "selector": "#ask" })).await.unwrap();
+        assert!(text(&lane.snap("a", &d).await).contains("true"), "{guardrails}");
+        lane.finish().await;
+    }
 }

@@ -110,3 +110,15 @@ all install workflows_name_every_action_by_its_commit
 # An agent, or any shell without the owner at it, restarts the owner's Chrome (SR-49).
 all cli_host chrome_restart_quiet_is_the_owners_at_a_terminal
 all lib engine::tests::quiet::restart_quiet_needs_quiet_debugging_on_and_no_agent_pages
+
+# An injected agent uploads the owner's files, accepts a dialog, or sends a form again (SR-89).
+all lib engine::steps::tests::an_upload_sends_only_an_existing_file_named_by_its_full_path
+all ext:events the agent's answer for a hidden tab's next dialog is used once; other tabs refuse one
+chrome engine_chrome upload_sets_a_file_input_and_refuses_what_it_cannot_send
+chrome engine_chrome with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first
+chrome engine_chrome moving_onto_a_page_a_form_sent_is_asked_about_first
+chrome engine_chrome a_handed_over_page_refuses_every_new_step
+chrome engine_chrome a_drag_onto_a_covered_list_is_refused_before_any_mouse_event
+chrome engine_chrome a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing
+chrome engine_chrome a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press
+chrome engine_chrome with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first

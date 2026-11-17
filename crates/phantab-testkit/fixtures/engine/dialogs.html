@@ -2,4 +2,5 @@
 <script>addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue = ''; });</script>
 <button id="ask" onclick="document.querySelector('#result').textContent = String(confirm('Delete it?'))">Ask</button>
 <button id="tell" onclick="alert('Saved'); document.querySelector('#result').textContent = 'told'">Tell</button>
+<button id="name" onclick="const v = prompt('Your name?', 'nobody'); document.querySelector('#result').textContent = v === null ? 'no name' : 'name ' + v">Name</button>
 <p id="result">unasked</p>

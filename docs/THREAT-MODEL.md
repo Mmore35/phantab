@@ -80,6 +80,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T10 | A recovery loop against a frame that keeps coming back. | SR-36 | L4 |
 | T11 | Page-controlled text inside an error carries injection or very long output. | SR-32 | L3 |
 | T92 | An injected agent uses a screenshot or snapshot saved to a file (`path`) to overwrite a file the owner keeps, to write where the service was started rather than where it was told, or to save a picture of a page whose screenshot is refused. | SR-88 | L1, L3 |
+| T93 | An injected agent uploads a file the owner keeps (a key, a tax form, a browser profile file) to a site, accepts a dialog that says yes to a deletion or payment, or reloads or moves back or forward onto a page a form sent so the form is sent again. | SR-89; an agent that sets `ownerConfirmed` unasked, and every one of these under `parity`, is residual R3 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -409,7 +410,10 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `DOM.getBoxModel` is listed for the covered click too (SR-34, a frame's offset): it returns only the
   box quads and size of a node in the tab's own documents (the list is by method, so any node can be
   asked; phantab asks it of frame elements only), geometry `Runtime.callFunctionOn` can already read,
-  and like `DOM.describeNode` it changes nothing. A `send` whose
+  and like `DOM.describeNode` it changes nothing. `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
+  `Page.navigateToHistoryEntry` and `Page.reload` are listed for the `upload`, `back`, `forward` and
+  `reload` steps (SR-89): each acts only on the tab's own page, and `DOM.setFileInputFiles` sends only
+  paths the service checked first. A `send` whose
   params carry a `grantUniveralAccess` (Chrome's spelling) that is not `false` is refused, since such
   a world reads other origins with the owner's cookies. An extension older than the service refuses a newly listed
   method, and the service's error then says to reload it. *L1: every method `phantab-cdp` sends is
@@ -755,6 +759,42 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   (`after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes`), a held
   page's refusals (`a_held_page_refuses_a_picture_that_moves_its_view`); L3:
   `screenshots_and_snapshots_are_saved_as_files_at_the_size_asked`.*
+
+- **SR-89** The steps that act beyond a click or a keystroke: `upload`, `dialog`, `back`, `forward` and
+  `reload` (and `hover`, `drag`, which only move the mouse). An upload sends only files named by an
+  absolute path that exists and is a file, checked by the service before the page is touched, into an
+  element that is an enabled `<input type=file>` taking that many files (`DOM.setFileInputFiles`): phantab
+  never opens or answers a file chooser. The service runs as the owner, so any of his files can be named: with
+  `guardrails` `light` or `full` every upload is asked about first (`ownerConfirmed`), whatever the
+  site, and so is every `["dialog", "accept"]`, since a confirm's yes may be a deletion or a payment;
+  a dismiss is not asked about. A dialog answer is used once, for that page's next dialog, and only on
+  a page the owner cannot see: an isolated page, or a hidden agent window, where the extension refuses
+  the answer for any other tab and drops it when the window is shown or the tab detaches. `back` and
+  `forward` go only to a website (http or https) entry and take the site's lease first, as
+  `navigate` does; with guardrails on, a move or reload onto an entry Chrome marks `form_submit` is
+  asked about first. A drag is checked at its drop target, and a key combination by its last key, as a
+  click and a press are. A `drag` by selector is refused, as a click is, unless each of its elements is
+  on top at its own point (the covered check a click by selector makes), in the click's order: both
+  checked before the first mouse event, and both again once the pointer has moved to the start and the
+  page has had a frame, so an overlay a page slides in as the pointer arrives is seen. That second time
+  the drop target is checked first and the start last, one after the other, so a page that holds the
+  drop target's check open cannot change the start after it was checked; the button then goes down
+  where the pointer is, with no second move. A refusal at either check pressed nothing and says so,
+  naming the end. Work a page's handler leaves for later, a timer that fires between the start's last
+  check and the press, is not seen at the press point, exactly as for a click. The drop target may
+  have been checked earlier than the start by as long as the start's check waited, and nothing the page
+  does once the button is down is seen, such as what it lays over the drop point. Both are residual. A
+  page handed to the owner refuses every one of these steps. Four CDP methods
+  were added to SR-20's list: `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
+  `Page.navigateToHistoryEntry` and `Page.reload`. *L1: `engine::steps` tests (relative, missing, a
+  folder, a non-text path); the extension's answer used once and refused for other tabs
+  (`events.test.mjs`); L3: `upload_sets_a_file_input_and_refuses_what_it_cannot_send`,
+  `with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first`,
+  `moving_onto_a_page_a_form_sent_is_asked_about_first`, `a_handed_over_page_refuses_every_new_step`,
+  `a_drag_onto_a_covered_list_is_refused_before_any_mouse_event`,
+  `a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing`,
+  `a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press`,
+  `with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first`.*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame

@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>A list sorted by HTML5 drag and drop</title>
+<style>
+#list { list-style: none; margin: 0; padding: 0; width: 240px; }
+#list li { height: 40px; line-height: 40px; margin: 4px 0; padding: 0 8px; border: 1px solid #888; }
+</style></head>
+<body>
+<ul id="list"><li id="first" draggable="true">First</li><li id="second" draggable="true">Second</li><li id="third" draggable="true">Third</li></ul>
+<p id="order"></p>
+<p id="events">no drag events</p>
+<script>
+// HTML5 drag and drop: the item moves only through dragstart, dragover and drop.
+const list = document.querySelector('#list');
+const seen = [];
+const note = name => { if (!seen.includes(name)) seen.push(name); document.querySelector('#events').textContent = 'drag events: ' + seen.join(', '); };
+const say = () => { document.querySelector('#order').textContent = 'order: ' + [...list.children].map(e => e.textContent).join(', '); };
+say();
+let held = null;
+list.addEventListener('dragstart', e => { held = e.target.closest('li'); e.dataTransfer.setData('text/plain', held.id); note('dragstart'); });
+list.addEventListener('dragover', e => { e.preventDefault(); note('dragover'); });
+list.addEventListener('drop', e => {
+  e.preventDefault();
+  note('drop');
+  const over = e.target.closest('li');
+  if (held && over && over !== held) list.insertBefore(held, over.nextSibling);
+  say();
+});
+</script>
+</body></html>

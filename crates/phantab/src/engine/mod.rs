@@ -21,6 +21,7 @@ mod record;
 mod recover;
 mod relay;
 mod signin_host;
+mod steps;
 mod verify;
 mod window;
 

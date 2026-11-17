@@ -10,6 +10,8 @@
 //!   200 ms with `tabOpen`, as the extension does; a closed tab posts `{event:'removed'}`.
 //! - `keepRendering` is a no-op (headless always renders); `markShown`, `windowState` and
 //!   `clearForeignFrames` keep the extension's agent-window bookkeeping and refusals.
+//! - A dialog in a hidden agent window is answered here, as the extension's `answerHiddenDialog` does:
+//!   leave and alert accepted, confirm and prompt dismissed, unless `answerNextDialog` set the next answer.
 //!
 //! Only the Chrome this test launched, with a temporary profile. Window strategy `None`
 //! (`PHANTAB_TEST_WINDOWS=none`) goes with it: these windows are headless and never on screen.
@@ -46,6 +48,8 @@ struct State {
     ops: Vec<String>,
     /// Every op and CDP command, timed: `send <tabId> <method>`, `markShown <shown>`, else the op's name.
     timeline: Vec<(Instant, String)>,
+    /// The agent's answer for a tab's next dialog (`answerNextDialog`): accept, and a prompt's text.
+    next_answers: HashMap<i64, (bool, Option<String>)>,
 }
 
 /// The fake extension; dropping it hangs up.
@@ -378,6 +382,11 @@ impl Ext {
                         }
                     }
                     TransportEvent::Event { session: Some(s), method, params } => {
+                        if method == "Page.javascriptDialogOpening" {
+                            let (me, s, kind) =
+                                (me.clone(), s.clone(), params["type"].as_str().unwrap_or("").to_owned());
+                            tokio::spawn(async move { me.answer_hidden_dialog(tab, &s, &kind).await });
+                        }
                         let mut ev =
                             json!({ "event": "cdp", "tabId": tab, "method": method, "params": params });
                         if s != root2 {
@@ -415,11 +424,63 @@ impl Ext {
         })
     }
 
+    /// Whether the tab is in an agent window not shown to the owner.
+    async fn in_hidden_window(&self, tab: i64) -> bool {
+        let Ok(target) = self.target(tab) else { return false };
+        let window = self.window_of(&target).await;
+        lock(&self.state).agent_windows.get(&window) == Some(&false)
+    }
+
+    async fn answer_hidden_dialog(&self, tab: i64, session: &SessionId, kind: &str) {
+        if !self.in_hidden_window(tab).await {
+            return;
+        }
+        let next = lock(&self.state).next_answers.remove(&tab);
+        let (accept, text) = next.unwrap_or((kind == "beforeunload" || kind == "alert", None));
+        let mut params = json!({ "accept": accept });
+        if let Some(t) = text {
+            params["promptText"] = json!(t);
+        }
+        let _ = self.cdp(Some(session), "Page.handleJavaScriptDialog", params).await;
+    }
+
     async fn detached_by_chrome(&self, tab: i64) {
         lock(&self.state).attached.remove(&tab);
+        lock(&self.state).next_answers.remove(&tab);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let open = self.target_info(tab).await.is_ok();
         let _ = self.out.send(json!({ "event": "detach", "tabId": tab, "reason": "target_closed", "tabOpen": open, "foreign": null }));
+    }
+
+    async fn mark_shown(&self, a: &Value) -> Result<Value, String> {
+        let window = a["windowId"].as_i64().unwrap_or(-1);
+        let shown = a["shown"].as_bool().unwrap_or(false);
+        if shown {
+            // Shown, the window's dialogs are the owner's: the agent's answers are dropped.
+            let tabs: Vec<i64> = lock(&self.state).next_answers.keys().copied().collect();
+            for t in tabs {
+                if let Ok(target) = self.target(t)
+                    && self.window_of(&target).await == window
+                {
+                    lock(&self.state).next_answers.remove(&t);
+                }
+            }
+        }
+        if let Some(w) = lock(&self.state).agent_windows.get_mut(&window) {
+            *w = shown;
+        }
+        Ok(json!({}))
+    }
+
+    async fn set_next_answer(&self, tab: i64, a: &Value) -> Result<Value, String> {
+        if !self.in_hidden_window(tab).await {
+            return Err(format!(
+                "Tab {tab} is not in a hidden agent window; its dialogs are the owner's to answer."
+            ));
+        }
+        let text = a["promptText"].as_str().map(str::to_owned);
+        lock(&self.state).next_answers.insert(tab, (a["accept"].as_bool().unwrap_or(false), text));
+        Ok(json!({}))
     }
 
     async fn run(&self, op: &str, a: &Value) -> Result<Value, String> {
@@ -484,14 +545,8 @@ impl Ext {
                 }
                 Ok(json!({ "state": state }))
             }
-            "markShown" => {
-                let window = a["windowId"].as_i64().unwrap_or(-1);
-                let shown = a["shown"].as_bool().unwrap_or(false);
-                if let Some(w) = lock(&self.state).agent_windows.get_mut(&window) {
-                    *w = shown;
-                }
-                Ok(json!({}))
-            }
+            "markShown" => self.mark_shown(a).await,
+            "answerNextDialog" => self.set_next_answer(tab, a).await,
             "clearForeignFrames" => {
                 let info = self.target_info(tab).await?;
                 let window = self.window_of(info["targetId"].as_str().unwrap_or_default()).await;

@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Attach a file</title></head>
+<body>
+<label>Attachment <input id="file" type="file"></label>
+<label>Attachments <input id="files" type="file" multiple></label>
+<label>Name <input id="name" type="text"></label>
+<p id="chosen">no file chosen</p>
+<script>
+for (const id of ['file', 'files']) {
+  document.getElementById(id).addEventListener('change', e => {
+    document.querySelector('#chosen').textContent =
+      [...e.target.files].map(f => 'chose ' + f.name + ' (' + f.size + ' bytes)').join('; ') || 'no file chosen';
+  });
+}
+</script>
+</body></html>

@@ -101,6 +101,55 @@ fn kind(word: &str) -> Option<&'static str> {
 /// The keys that work a focused control: Enter submits a field's form, Space presses a button.
 const PRESSING: &[&str] = &["Enter", "NumpadEnter", " ", "Space", "Spacebar"];
 
+/// The steps asked about whatever the page holds: an upload sends a file from this computer to the site,
+/// and accepting a dialog answers yes to what the page asks (a deletion, a payment, leaving unsaved work).
+/// Dismissing one is free: it is what phantab does with a confirm or prompt anyway.
+fn asks_always(action: &str, args: &Value) -> Option<&'static str> {
+    match action {
+        "upload" => Some("this sends a file from this computer to the site"),
+        "dialog" if args.get("answer").and_then(Value::as_str) == Some("accept") => Some(
+            "this accepts the page's next dialog, which says yes to what it asks (a deletion, a payment, leaving unsaved work)",
+        ),
+        _ => None,
+    }
+}
+
+/// Each ask of the sensitive-set check a step makes, or `None` for a step it does not check.
+fn hows(action: &str, args: &Value) -> Option<Vec<Vec<Value>>> {
+    let num = |k: &str| args.get(k).and_then(Value::as_f64).filter(|n| n.is_finite());
+    let string = |k: &str| js_string(args.get(k).filter(|v| !v.is_null()));
+    let point = |x: &str, y: &str| Some(vec![vec!["point".into(), num(x)?.into(), num(y)?.into()]]);
+    match action {
+        "click" => Some(vec![vec!["selector".into(), string("selector").into()]]),
+        "drag" => Some(vec![vec!["selector".into(), string("to").into()]]),
+        "click_xy" => point("x", "y"),
+        "drag_xy" => point("toX", "toY"),
+        // A combination is checked by the key it presses last: Control+Enter submits as Enter does.
+        "press" => {
+            let key = phantab_cdp::combo_keys(&string("key")).ok()?.pop()?;
+            PRESSING.contains(&key.as_str()).then(|| vec![vec!["focus".into(), key.into()]])
+        }
+        // Typed text presses Enter for each line break in it and Space for each space, as `press`
+        // would, so it is checked as a press of each it holds.
+        "type" => {
+            let text = string("text");
+            let mut keys = Vec::new();
+            if text.contains(['\n', '\r']) {
+                keys.push(vec!["focus".into(), "Enter".into()]);
+            }
+            if text.contains(' ') {
+                keys.push(vec!["focus".into(), " ".into()]);
+            }
+            (!keys.is_empty()).then_some(keys)
+        }
+        _ => None,
+    }
+}
+
+/// The refusal for going back, forward or reloading onto a page a form sent: loading it again can
+/// send the form again (an order, a payment). Phantab reads the tab's history to tell.
+const RESEND: &str = "Confirm first: this loads a page a form sent, and loading it again may send the form again. Ask the owner, and only once they approve it, repeat the same act with ownerConfirmed true.";
+
 impl Engine {
     pub(crate) fn guardrails(&self) -> Guardrails {
         Guardrails::of(&self.setup.config)
@@ -115,6 +164,10 @@ impl Engine {
     /// that reads as a payment or checkout, a password or two-factor change, or deleting an account or
     /// vault items is refused until the agent repeats it with `ownerConfirmed` true, which it sets only
     /// once the owner has approved that step in chat. It is the same `ownerConfirmed` that `resume` takes.
+    /// A drop is checked at its target (`drag`'s `to`, `drag_xy`'s drop point) and a key combination by
+    /// its last key. Every `upload` and every `dialog` accept is asked about whatever the page reads as
+    /// ([`asks_always`]), and so is a `back`, `forward` or `reload` onto a `form_submit` entry
+    /// ([`Self::confirm_resend`]).
     ///
     /// It reads only, and runs before the act. A page that cannot be read lets the act through: this is
     /// the light check by design, a prompt for the owner's word, not a wall (a cross-origin frame's own
@@ -123,51 +176,29 @@ impl Engine {
     /// act's own wait answers that frame again and the act presses the element there.
     ///
     /// # Errors
-    /// The refusal; or, for `click`, the selector's wait failing exactly as the act's own would.
+    /// The refusal; or, for `click` and `drag`, the selector's wait failing exactly as the act's own would.
     pub(crate) async fn confirm_first(&self, r: &Arc<Rec>, args: &Value, action: &str) -> EngineResult<()> {
         if !self.guardrails().confirms() || args.get("ownerConfirmed").is_some_and(truthy) {
             return Ok(());
         }
-        let num = |k: &str| args.get(k).and_then(Value::as_f64).filter(|n| n.is_finite());
+        if let Some(what) = asks_always(action, args) {
+            return Err(EngineError(format!(
+                "Confirm first: {what}. Ask the owner, and only once they approve it, repeat the same act with ownerConfirmed true."
+            )));
+        }
+        if ["back", "forward", "reload"].contains(&action) {
+            return self.confirm_resend(r, action).await;
+        }
         let selector = js_string(args.get("selector").filter(|v| !v.is_null()));
-        // Each is one ask of the sensitive-set check; the first kind any answers is the one refused.
-        let hows: Vec<Vec<Value>> = match action {
-            "click" => vec![vec!["selector".into(), selector.clone().into()]],
-            "click_xy" => match (num("x"), num("y")) {
-                (Some(x), Some(y)) => vec![vec!["point".into(), x.into(), y.into()]],
-                _ => return Ok(()),
-            },
-            "press" => {
-                let key = js_string(args.get("key").filter(|v| !v.is_null()));
-                if !PRESSING.contains(&key.as_str()) {
-                    return Ok(());
-                }
-                vec![vec!["focus".into(), key.into()]]
-            }
-            // Typed text presses Enter for each line break in it and Space for each space, as `press`
-            // would, so it is checked as a press of each it holds.
-            "type" => {
-                let text = js_string(args.get("text").filter(|v| !v.is_null()));
-                let mut keys = Vec::new();
-                if text.contains(['\n', '\r']) {
-                    keys.push(vec!["focus".into(), "Enter".into()]);
-                }
-                if text.contains(' ') {
-                    keys.push(vec!["focus".into(), " ".into()]);
-                }
-                if keys.is_empty() {
-                    return Ok(());
-                }
-                keys
-            }
-            _ => return Ok(()),
-        };
+        let Some(hows) = hows(action, args) else { return Ok(()) };
+        // A drag is checked where it drops: the element under `to` in the frame `selector` was found in.
+        let waits = matches!(action, "click" | "drag");
         let asked = self
             .cdp(r, None, |p, signal| {
                 let (mut hows, selector) = (hows.clone(), selector.clone());
                 async move {
                     let Ok(mut frame) = p.main_frame() else { return Ok(None) };
-                    if action == "click" {
+                    if waits {
                         let waited =
                             poll_actionable(&p, &selector, Duration::from_secs(10), Some(&signal), false)
                                 .await;
@@ -177,7 +208,9 @@ impl Engine {
                             // The act clicks an element only an open shadow root has at its point, so that
                             // point is what is checked.
                             Err(e) => {
-                                let Some((x, y)) = shadow_point(&e.0) else { return Err(e) };
+                                let Some((x, y)) = shadow_point(&e.0).filter(|_| action == "click") else {
+                                    return Err(e);
+                                };
                                 hows = vec![vec!["point".into(), x.into(), y.into()]];
                             }
                         }
@@ -203,6 +236,23 @@ impl Engine {
                 "Confirm first: this looks like {what}. Ask the owner, and only once they approve it, repeat the same act with ownerConfirmed true."
             ))),
             None => Ok(()),
+        }
+    }
+
+    /// `back`, `forward` or `reload` onto an entry Chrome marks `form_submit` is refused ([`RESEND`]). A
+    /// history that cannot be read lets the step through, as the sensitive-set check does; the step
+    /// itself then says what is wrong.
+    async fn confirm_resend(&self, r: &Arc<Rec>, action: &str) -> EngineResult<()> {
+        let history = self.cdp(r, None, |p, _| async move { p.history().await }).await.ok();
+        let Some(h) = history else { return Ok(()) };
+        let target = match action {
+            "back" => h.current.checked_sub(1),
+            "forward" => Some(h.current + 1),
+            _ => Some(h.current),
+        };
+        match target.and_then(|i| h.entries.get(i)) {
+            Some(e) if e.transition == "form_submit" => Err(EngineError(RESEND.to_owned())),
+            _ => Ok(()),
         }
     }
 }

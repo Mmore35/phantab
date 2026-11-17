@@ -29,7 +29,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
     let page = || json!({ "pageId": s() });
     let number = || json!({ "type": "number" });
     // An action's own fields: `act`'s, and each of its `then` steps'.
-    let action = || json!({ "action": { "type": "string", "enum": ["navigate", "click", "fill", "select", "press", "type", "scroll", "click_xy"] }, "selector": s(), "text": s(), "url": s(), "key": s(), "x": number(), "y": number(), "deltaY": number() });
+    let action = || json!({ "action": { "type": "string", "enum": ["navigate", "click", "fill", "select", "press", "type", "scroll", "click_xy", "hover", "hover_xy", "drag", "drag_xy", "upload", "dialog", "back", "forward", "reload"] }, "selector": s(), "text": s(), "url": s(), "key": s(), "x": number(), "y": number(), "deltaY": number(), "to": s(), "toX": number(), "toY": number(), "files": { "type": "array", "items": s() }, "answer": { "type": "string", "enum": ["accept", "dismiss"] } });
     let mut act = json!({ "pageId": s() });
     if let (Value::Object(a), Value::Object(fields)) = (&mut act, action()) {
         a.extend(fields);
@@ -99,7 +99,7 @@ fn defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static str])> {
         ),
         (
             "act",
-            "Interact with your assigned page. steps lists the actions to do, in order, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"type\", text] (typed at the focus, as after a click_xy on a field), [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url]. A selector finds its element in the main document, then in each website frame. The first that fails stops the rest and says which, and the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it (snapshot false leaves it out), so a run of steps and its check is one call. action with its fields is the older form of one step, and then of the ones after it (each with this tool's fields but pageId); with them the snapshot comes only with snapshot true. A page handed to the owner (browser_show) refuses your writes until it is handed back; other pages on its site, yours or another agent's, keep working, unless the owner set siteLock exclusive (then one agent at a time changes a site). With guardrails light or full, a click, a press or a type with a line break or a space that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step; it covers the first step. Leave pageId out for the page your last call named.",
+            "Interact with your assigned page. steps lists the actions to do, in order, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key] (or a combination: [\"press\", \"Control+A\"]), [\"type\", text] (typed at the focus, as after a click_xy on a field), [\"scroll\", deltaY], [\"click_xy\", x, y], [\"hover\", selector] or [\"hover_xy\", x, y] (the pointer over it, as for a menu that opens on hover), [\"drag\", selector, to selector] or [\"drag_xy\", x, y, toX, toY] (pressed there, moved and released on the other), [\"upload\", selector, path, ...] (files from this computer, each a full path, into a file input), [\"dialog\", \"accept\" or \"dismiss\", prompt text] (the answer for the page's next alert, confirm or prompt, used once: put it before the step that opens one; without it a confirm or prompt is dismissed, and the result's dialogs says each one's message and answer), [\"back\"], [\"forward\"], [\"reload\"] or [\"navigate\", url]. A selector finds its element in the main document, then in each website frame; a drag's to selector is found in the same frame. The first that fails stops the rest and says which, and the result ends with the page's snapshot after them, or after the failure, as browser_snapshot shows it (snapshot false leaves it out), so a run of steps and its check is one call. action with its fields is the older form of one step, and then of the ones after it (each with this tool's fields but pageId); with them the snapshot comes only with snapshot true. A page handed to the owner (browser_show) refuses your writes until it is handed back; other pages on its site, yours or another agent's, keep working, unless the owner set siteLock exclusive (then one agent at a time changes a site). With guardrails light or full, a click, a drop, a press or a type with a line break or a space that reads as a payment or checkout, a password or two-factor change, or deleting an account or vault items, and every upload, dialog accept, and back, forward or reload onto a page a form sent, is refused until you repeat it with ownerConfirmed true, set only after the owner explicitly approves that step; it covers the first step. Leave pageId out for the page your last call named.",
             act,
             &[],
         ),
@@ -621,7 +621,7 @@ fn act_plan(
 }
 
 /// What `act`'s `steps` must be, said when they are not.
-const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key], [\"type\", text], [\"scroll\", deltaY], [\"click_xy\", x, y] or [\"navigate\", url].";
+const STEPS_FORM: &str = "steps must be a list of actions, each a list: [\"click\", selector], [\"fill\", selector, text], [\"select\", selector, value or label], [\"press\", key or combination such as Control+A], [\"type\", text], [\"scroll\", deltaY], [\"click_xy\", x, y], [\"hover\", selector], [\"hover_xy\", x, y], [\"drag\", selector, to selector], [\"drag_xy\", x, y, toX, toY], [\"upload\", selector, path, more paths], [\"dialog\", \"accept\" or \"dismiss\", prompt text], [\"back\"], [\"forward\"], [\"reload\"] or [\"navigate\", url].";
 
 /// Item `n` of `act`'s `steps` as the action fields it stands for: `["fill", "#qty", "2"]` is
 /// `{"action": "fill", "selector": "#qty", "text": "2"}`. In climb
@@ -639,22 +639,33 @@ fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, St
     let Some(parts) = item.as_array() else { return Err(bad()) };
     let Some(action) = parts.first().and_then(Value::as_str) else { return Err(bad()) };
     let names: &[&str] = match action {
-        "click" => &["selector"],
+        "click" | "hover" | "upload" => &["selector"],
         "fill" | "select" => &["selector", "text"],
         "press" => &["key"],
         "type" => &["text"],
         "scroll" => &["deltaY"],
-        "click_xy" => &["x", "y"],
+        "click_xy" | "hover_xy" => &["x", "y"],
+        "drag" => &["selector", "to"],
+        "drag_xy" => &["x", "y", "toX", "toY"],
+        "dialog" => &["answer"],
         "navigate" => &["url"],
+        "back" | "forward" | "reload" => &[],
         _ => return Err(bad()),
     };
-    if parts.len() != names.len() + 1 {
+    // An upload takes one path or more after its selector; a dialog's answer may have a prompt's text.
+    let fixed = names.len() + 1;
+    let fits = match action {
+        "upload" => parts.len() > fixed,
+        "dialog" => parts.len() <= fixed + 1,
+        _ => parts.len() == fixed,
+    };
+    if parts.len() < fixed || !fits {
         return Err(bad());
     }
     let mut step = serde_json::Map::new();
     step.insert("action".into(), Value::String(action.to_owned()));
     for (name, v) in names.iter().zip(&parts[1..]) {
-        let number = matches!(*name, "deltaY" | "x" | "y");
+        let number = matches!(*name, "deltaY" | "x" | "y" | "toX" | "toY");
         let v = match v {
             Value::Number(_) if number => v.clone(),
             Value::String(t) if number => t
@@ -669,6 +680,19 @@ fn act_step(item: &Value, n: usize) -> Result<serde_json::Map<String, Value>, St
             _ => return Err(bad()),
         };
         step.insert((*name).to_owned(), v);
+    }
+    let more = &parts[fixed..];
+    if action == "upload" {
+        let files: Option<Vec<Value>> =
+            more.iter().map(|f| f.as_str().map(|p| Value::String(p.to_owned()))).collect();
+        step.insert("files".into(), Value::Array(files.ok_or_else(bad)?));
+    } else if let Some(text) = more.first() {
+        let text = match text {
+            Value::String(_) => text.clone(),
+            Value::Number(d) => Value::String(d.to_string()),
+            _ => return Err(bad()),
+        };
+        step.insert("text".into(), text);
     }
     Ok(step)
 }
@@ -1289,8 +1313,14 @@ mod tests {
         assert_eq!(refused(compact(json!({ "click": "#a" }))).await, json!(STEPS_FORM));
         for bad in [
             json!([["click", "#a"], ["fill", "#b"]]),
-            json!([["click", "#a"], ["hover", "#b"]]),
+            json!([["click", "#a"], ["wiggle", "#b"]]),
             json!([["click", "#a"], ["scroll", "far"]]),
+            json!([["click", "#a"], ["upload", "#file"]]),
+            json!([["click", "#a"], ["upload", "#file", 7]]),
+            json!([["click", "#a"], ["dialog", "accept", "x", "y"]]),
+            json!([["click", "#a"], ["dialog"]]),
+            json!([["click", "#a"], ["back", 1]]),
+            json!([["click", "#a"], ["drag_xy", 1, 2, 3]]),
         ] {
             assert_eq!(refused(compact(bad)).await, json!(format!("steps item 2: each must be {form}")));
         }
@@ -1323,6 +1353,39 @@ mod tests {
         assert!(!plan(json!({ "steps": [["click", "#a"]], "snapshot": false })).2);
         // The older form keeps its snapshot opt-in.
         assert!(!plan(json!({ "action": "click", "selector": "#a" })).2);
+    }
+
+    /// The steps phase 4 added: an upload's paths become files, a dialog's third item its text.
+    #[test]
+    fn the_new_steps_take_their_compact_forms() {
+        let schema = &tools().unwrap()[9].input_schema;
+        let properties = &schema["properties"];
+        let plan = |a: Value| {
+            let mut a = a.as_object().cloned().unwrap();
+            let (then, _) = act_plan(&mut a, properties).unwrap();
+            (Value::Object(a), Value::Array(then.into_iter().map(Value::Object).collect()))
+        };
+        let (first, then) = plan(json!({ "steps": [
+            ["hover", "#menu"], ["hover_xy", 4, "5"], ["drag", "#a", "#b"], ["drag_xy", 1, 2, "3", 4],
+            ["upload", "#f", "/tmp/a.txt", "/tmp/b.txt"], ["dialog", "accept", "Ada"], ["dialog", "dismiss"],
+            ["back"], ["forward"], ["reload"], ["press", "Control+A"]
+        ] }));
+        assert_eq!(first, json!({ "action": "hover", "selector": "#menu" }));
+        assert_eq!(
+            then,
+            json!([
+                { "action": "hover_xy", "x": 4, "y": 5.0 },
+                { "action": "drag", "selector": "#a", "to": "#b" },
+                { "action": "drag_xy", "x": 1, "y": 2, "toX": 3.0, "toY": 4 },
+                { "action": "upload", "selector": "#f", "files": ["/tmp/a.txt", "/tmp/b.txt"] },
+                { "action": "dialog", "answer": "accept", "text": "Ada" },
+                { "action": "dialog", "answer": "dismiss" },
+                { "action": "back" },
+                { "action": "forward" },
+                { "action": "reload" },
+                { "action": "press", "key": "Control+A" }
+            ])
+        );
     }
 
     /// A Claude Code session's id names its pages, so a resumed conversation keeps them; an earlier

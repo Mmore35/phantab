@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"><title>A list sorted by dragging</title>
+<style>
+#list { list-style: none; margin: 0; padding: 0; width: 240px; }
+#list li { height: 40px; line-height: 40px; margin: 4px 0; padding: 0 8px; border: 1px solid #888; user-select: none; }
+</style></head>
+<body>
+<ul id="list"><li id="first">First</li><li id="second">Second</li><li id="third">Third</li></ul>
+<p id="order"></p>
+<script>
+// Sorted by mouse events, as many list widgets are: press on an item, move, release over another, and
+// the held item goes below the one it was dropped on.
+const list = document.querySelector('#list');
+const say = () => { document.querySelector('#order').textContent = 'order: ' + [...list.children].map(e => e.textContent).join(', '); };
+say();
+let held = null, moved = false;
+list.addEventListener('mousedown', e => { const li = e.target.closest('li'); if (li) { held = li; moved = false; e.preventDefault(); } });
+document.addEventListener('mousemove', () => { if (held) moved = true; });
+document.addEventListener('mouseup', e => {
+  if (!held) return;
+  const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('li');
+  if (moved && over && over !== held && over.parentNode === list) list.insertBefore(held, over.nextSibling);
+  held = null;
+  say();
+});
+</script>
+</body></html>

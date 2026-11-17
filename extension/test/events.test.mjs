@@ -230,6 +230,25 @@ test('a dialog in a hidden agent window is answered at once and still reported; 
   assert.equal(answers().length, before, "the owner's window, a shown agent window and a gone tab are left alone");
 });
 
+test("the agent's answer for a hidden tab's next dialog is used once; other tabs refuse one", async () => {
+  const fake = await startWorker({ windows: [{ id: 1 }], tabs: [{ id: 6, windowId: 1 }] });
+  const { result: { tabId: hidden, windowId } } = await fake.op('createWindow', { url: 'about:blank' });
+  await fake.op('attach', { tabId: hidden });
+  const answers = () => fake.callsOf('debugger.sendCommand').filter(c => c[1] === 'Page.handleJavaScriptDialog').map(c => c[2]);
+  const open = async type => { fake.chrome.debugger.onEvent.fire({ tabId: hidden }, 'Page.javascriptDialogOpening', { type, message: 'm' }); await settle(); };
+  assert.deepEqual((await fake.op('answerNextDialog', { tabId: hidden, accept: true, promptText: 'Ada' })).result, {});
+  await open('prompt');
+  await open('prompt');
+  assert.deepEqual(answers(), [{ accept: true, promptText: 'Ada' }, { accept: false }], 'once, then the usual answer');
+  await fake.op('answerNextDialog', { tabId: hidden, accept: true });
+  await fake.op('markShown', { windowId, shown: true });
+  await fake.op('markShown', { windowId, shown: false });
+  await open('confirm');
+  assert.deepEqual(answers().at(-1), { accept: false }, 'showing the window drops the answer');
+  const refused = await fake.op('answerNextDialog', { tabId: 6, accept: true });
+  assert.match(refused.error, /not in a hidden agent window; its dialogs are the owner's to answer/);
+});
+
 test('hiding and showing a window changes whether its dialogs are answered, with one storage read', async () => {
   const fake = await startWorker();
   const { result: { windowId, tabId } } = await fake.op('createWindow', { url: 'about:blank' });

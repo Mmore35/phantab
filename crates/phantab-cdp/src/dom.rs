@@ -492,11 +492,18 @@ fn covered(what: &str) -> CdpError {
     } else {
         format!("<{what}>")
     };
-    CdpError::Covered(format!(
-        "{COVERED_PREFIX}{what}, so the click was not sent. Close what covers it (a dialog or banner) or \
-         scroll it into view, and try again, or use click_xy to click that point on purpose."
-    ))
+    CdpError::Covered(format!("{COVERED_PREFIX}{what}{COVERED_TAIL}"))
 }
+
+/// How [`covered`]'s refusal ends: the click's own words after what covers it, which a drag swaps for
+/// its own (`drag_end`).
+const COVERED_TAIL: &str = ", so the click was not sent. Close what covers it (a dialog or banner) or \
+                            scroll it into view, and try again, or use click_xy to click that point on \
+                            purpose.";
+/// How [`turned`]'s two refusals end, as [`COVERED_TAIL`] is for [`covered`]'s.
+const TURNED_TAIL: &str = ", and the click was not sent. Use click_xy to click a point on purpose.";
+const UNREAD_TAIL: &str =
+    ", and the click was not sent. Try again, or use click_xy to click a point on purpose.";
 
 /// The refusal for an element in a frame that something on the page scales, rotates, skews, mirrors or
 /// zooms (`what` says which, in this crate's words, never the page's): where a page point falls in that
@@ -506,18 +513,15 @@ fn covered(what: &str) -> CdpError {
 fn turned(what: &str) -> CdpError {
     if what == UNREAD {
         tracing::warn!(reason = ?Unsettled::Transformed, "a frame's box model did not read; the click is refused");
-        return CdpError::Covered(
+        return CdpError::Covered(format!(
             "phantab could not read where the element's frame is drawn, so where a press would land in it \
-             is not known, and the click was not sent. Try again, or use click_xy to click a point on \
-             purpose."
-                .to_owned(),
-        );
+             is not known{UNREAD_TAIL}"
+        ));
     }
     tracing::debug!(reason = ?Unsettled::Transformed, what, "a frame on the way is turned; the click is refused");
     CdpError::Covered(format!(
         "The element is in a frame that the page scales, rotates or zooms ({what}), so where a press \
-         would land in it is not known, and the click was not sent. Use click_xy to click a point on \
-         purpose."
+         would land in it is not known{TURNED_TAIL}"
     ))
 }
 
@@ -1805,11 +1809,274 @@ impl Page {
         el.dispose().await;
         r
     }
+
+    /// The point a press on the element `selector` names goes to ([`Page::press_point`]), in `frame`
+    /// alone when given, with the locator's retries; with `scroll`, once it is scrolled into view; with
+    /// `pressed`, only once [`Page::assert_uncovered`] finds the element itself on top there, as a click
+    /// checks its point (a covered element is retried for the click's grace, then refused).
+    async fn element_point_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        scroll: bool,
+        pressed: bool,
+    ) -> Result<(f64, f64), CdpError> {
+        let point = Mutex::new(None);
+        self.with_located(frame, selector, |h| {
+            let point = &point;
+            async move {
+                let r = async {
+                    if scroll {
+                        self.scroll_into_view_if_needed(&h).await?;
+                    }
+                    let (x, y) = self.press_point(&h).await?;
+                    if pressed {
+                        self.assert_uncovered(&h, x, y).await?;
+                    }
+                    Ok((x, y))
+                }
+                .await;
+                (h, r.map(|p| *point.lock() = Some(p)))
+            }
+        })
+        .await?;
+        point
+            .lock()
+            .take()
+            .ok_or_else(|| CdpError::Other(format!("No element found for selector: {selector}")))
+    }
+
+    /// Moves the pointer onto the element `selector` names, in `frame` alone when given, scrolled into
+    /// view first, as a person hovers it: the page's `:hover`, `mouseover` and `mouseenter` follow.
+    /// Nothing is pressed, so nothing checks what is on top there.
+    pub async fn hover_in(&self, frame: Option<&FrameId>, selector: &str) -> Result<(), CdpError> {
+        let (x, y) = self.element_point_in(frame, selector, true, false).await?;
+        self.mouse_move(x, y).await
+    }
+
+    /// Drags with the left button from `from` to `to`, page points: the press, [`DRAG_MOVES`] moves on
+    /// the way and the release, as a list widget that sorts by mouse events expects. A failure on the way
+    /// releases the button, so a later click is not refused as already pressed.
+    pub async fn drag(&self, from: (f64, f64), to: (f64, f64)) -> Result<(), CdpError> {
+        if let Err(e) = self.mouse_move(from.0, from.1).await {
+            self.reset_mouse_later();
+            return Err(e);
+        }
+        self.drag_from_pointer(from, to).await
+    }
+
+    /// [`Page::drag`] once the pointer is at `from`: the press there with no move first, the moves on the
+    /// way and the release at `to`. A failure on the way releases the button, as [`Page::drag`]'s does.
+    async fn drag_from_pointer(&self, from: (f64, f64), to: (f64, f64)) -> Result<(), CdpError> {
+        let dragged = async {
+            self.mouse_hold().await?;
+            for i in 1..=DRAG_MOVES {
+                let t = f64::from(i) / f64::from(DRAG_MOVES);
+                self.mouse_move(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t).await?;
+            }
+            self.mouse_up(to.0, to.1).await
+        }
+        .await;
+        if dragged.is_err() {
+            self.reset_mouse_later();
+        }
+        dragged
+    }
+
+    /// Releases held buttons in the background ([`Page::mouse_reset`]), so a later click is not refused
+    /// as already pressed.
+    fn reset_mouse_later(&self) {
+        let page = self.clone();
+        tokio::spawn(async move {
+            let _ = page.mouse_reset().await;
+        });
+    }
+
+    /// [`Page::drag`] from the element `from` names to the one `to` names, both in `frame` alone when
+    /// given. `to` is scrolled into view, then `from`, and `to`'s point is read again after that scroll,
+    /// so a drop target the start's scroll moved is still hit; both ends must fit in one view.
+    ///
+    /// The press goes to whatever is on top at `from`'s point and the release to whatever is at `to`'s,
+    /// so each point is checked as a click's is ([`Page::assert_uncovered`]): something laid over the
+    /// page would otherwise take the press, the drop and the click that follows. The order is the
+    /// click's ([`Page::press_element`]): both ends are checked before the first mouse event; the
+    /// pointer moves to `from`'s point and the page has a frame to act on that; both ends are checked
+    /// again at the same points, `to` and then `from`, one after the other, so the last thing before the
+    /// press is a passing check of the point it goes to; then the button goes down where the pointer is,
+    /// with no second move (another move would run the page's handlers again between the check and the
+    /// press), and the moves and the release follow. `to` is checked again before the press because no
+    /// button is down yet; it is not checked on the way, as once the button is down a page may rightly
+    /// move the dragged item under the pointer.
+    ///
+    /// What the page can run between each check and the press: before the first check, anything, and
+    /// the check sees what it left. Between the first checks and the arrival move, anything, with no
+    /// input from phantab; the move itself runs the page's `mousemove` and `pointerover` handlers, and
+    /// the frame after it its frame callbacks and timers, all before the second checks, which see what
+    /// they left. While `to`'s second check waits (a covered or missing end is retried), anything, and
+    /// `from`'s check, which starts only once `to`'s has passed, sees what it left. Between `from`'s last
+    /// check and the press, only work the page left for later (a timer that fires then): that is not
+    /// seen at the press point, exactly as for a click. `to` may have been checked earlier than `from`
+    /// by as long as `from`'s check waited, and nothing at `to` is checked once the button is down: the
+    /// press's own handlers, those of each move on the way, and what lies over `to`'s point at the
+    /// release are not seen.
+    ///
+    /// # Errors
+    /// A covered end is [`CdpError::Covered`], [`COVERED_PREFIX`] first, then which end it is and that
+    /// nothing was pressed (and, for a refusal at the second checks, that the pointer had moved), with
+    /// `drag_xy` as the way to drag between two points on purpose. Every failure before the button goes
+    /// down pressed nothing, as a click's ([`ClickError::NotPressed`]); one at the press or after it may
+    /// have landed, as a click's may there ([`ClickError::Pressed`]), and the button is released in the
+    /// background.
+    pub async fn drag_in(&self, frame: Option<&FrameId>, from: &str, to: &str) -> Result<(), CdpError> {
+        self.element_point_in(frame, to, true, false).await?;
+        let start = self
+            .element_point_in(frame, from, true, true)
+            .await
+            .map_err(|e| drag_end(e, "from", from, false))?;
+        let end =
+            self.element_point_in(frame, to, false, true).await.map_err(|e| drag_end(e, "to", to, false))?;
+        self.mouse_move(start.0, start.1).await?;
+        // `to` first and `from` last, one after the other: the page can hold a check open (a covered
+        // end is retried), and the press must follow the check of its own point, not one made before
+        // that wait.
+        self.uncovered_at_in(frame, to, end).await.map_err(|e| drag_end(e, "to", to, true))?;
+        self.uncovered_at_in(frame, from, start).await.map_err(|e| drag_end(e, "from", from, true))?;
+        self.drag_from_pointer(start, end).await
+    }
+
+    /// Fails unless the element `selector` names, in `frame` alone when given, is on top at page point
+    /// `at` once the page has had a frame (`JS_NEXT_FRAME`, with its timer), with the locator's retries
+    /// and a covered element's grace, as [`Page::element_point_in`] checks one. Nothing is scrolled and
+    /// the point is not read again: it is the point the pointer is at, or the one the drop goes to.
+    async fn uncovered_at_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        at: (f64, f64),
+    ) -> Result<(), CdpError> {
+        self.with_located(frame, selector, |h| async move {
+            let r = async {
+                h.evaluate(JS_NEXT_FRAME, vec![]).await?;
+                self.assert_uncovered(&h, at.0, at.1).await
+            }
+            .await;
+            (h, r)
+        })
+        .await
+    }
+
+    /// Sets `files` (paths on this computer) on the `<input type=file>` `selector` names, in `frame` alone
+    /// when given, as choosing them in a file chooser would (`DOM.setFileInputFiles`; the page gets `input`
+    /// and `change`). No file chooser opens. Refused, saying why, unless the element is a file input that
+    /// is enabled and takes that many files. Whether each path is a file the caller may send is the
+    /// caller's to check.
+    pub async fn set_input_files_in(
+        &self,
+        frame: Option<&FrameId>,
+        selector: &str,
+        files: &[String],
+    ) -> Result<(), CdpError> {
+        let el = self
+            .locate(frame, selector)
+            .await?
+            .ok_or_else(|| CdpError::Other(format!("No element found for selector: {selector}")))?;
+        let set = async {
+            let why = el.evaluate(JS_FILE_INPUT, vec![Arg::Value(json!(files.len()))]).await?;
+            if let Some(why) = why.as_str() {
+                return Err(CdpError::Other(format!("upload: {selector} {why}")));
+            }
+            let id =
+                el.object_id().ok_or_else(|| CdpError::Other("upload: the element has no object".into()))?;
+            let session = el.context().session.clone();
+            self.inner
+                .send(session.as_ref(), "DOM.setFileInputFiles", json!({"files": files, "objectId": id}))
+                .await
+                .map(drop)
+        }
+        .await;
+        el.dispose().await;
+        set
+    }
 }
+
+/// The moves a [`Page::drag`] makes between its press and its release.
+const DRAG_MOVES: u32 = 5;
+
+/// A covered end of a [`Page::drag_in`], named in the drag's own words: `which` is `from` or `to`, and
+/// `moved` says the refusal came at the second checks, once the pointer had moved onto `from`. The
+/// check's words up to what covers the end stay as they were, so the refusal still starts with
+/// [`COVERED_PREFIX`] where it did; the click's advice after them gives way to the drag's.
+fn drag_end(e: CdpError, which: &str, selector: &str, moved: bool) -> CdpError {
+    let CdpError::Covered(m) = e else { return e };
+    let fix = "Close what covers it (a dialog or banner) or scroll it into view, and try again, or";
+    let (head, advice) = if let Some(head) = m.strip_suffix(COVERED_TAIL) {
+        (head, fix)
+    } else if let Some(head) = m.strip_suffix(TURNED_TAIL) {
+        (head, "Instead,")
+    } else if let Some(head) = m.strip_suffix(UNREAD_TAIL) {
+        (head, "Try again, or")
+    } else {
+        (m.trim_end_matches('.'), "Instead,")
+    };
+    let when = if moved {
+        ", covered once the pointer had moved onto the drag's start: the pointer moved there, and nothing \
+         was pressed."
+    } else {
+        ", so nothing was pressed."
+    };
+    CdpError::Covered(format!(
+        "{head}. That is the drag's {which} end ({selector}){when} {advice} use drag_xy to drag between two \
+         points on purpose."
+    ))
+}
+
+/// Why the element cannot take `n` files, or `null` when it can: a file input, enabled, and `multiple`
+/// for more than one.
+const JS_FILE_INPUT: &str = r"(el, n) => {
+  const name = el.localName;
+  if (name !== 'input') return 'is not a file input (<input type=file>): it is a <' + name + '>.';
+  if (el.type !== 'file') return 'is not a file input (<input type=file>): it is an <input type=' + el.type + '>.';
+  if (el.disabled) return 'is a disabled file input.';
+  if (n > 1 && !el.multiple) return 'takes one file (it has no multiple attribute), and ' + n + ' were given.';
+  return null;
+}";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drag's refusal keeps the check's words up to what covers the end, so it starts with
+    /// `COVERED_PREFIX` where a click's does, and gives the drag's own advice in place of the click's.
+    #[test]
+    fn a_covered_drag_end_says_nothing_was_pressed_and_points_at_drag_xy() {
+        let text = |e: CdpError| e.to_string();
+        let first = text(drag_end(covered("div#pay"), "from", "#first", false));
+        assert_eq!(
+            first,
+            "Element is covered at its click point by <div#pay>. That is the drag's from end (#first), so \
+             nothing was pressed. Close what covers it (a dialog or banner) or scroll it into view, and try \
+             again, or use drag_xy to drag between two points on purpose."
+        );
+        let moved = text(drag_end(covered("div#pay"), "to", "#second", true));
+        assert!(moved.starts_with(&format!(
+            "{COVERED_PREFIX}<div#pay>. That is the drag's to end (#second), covered once"
+        )));
+        assert!(moved.contains("the pointer moved there, and nothing was pressed."));
+        let turn = text(drag_end(turned("scaled"), "to", "#second", false));
+        assert!(turn.ends_with(
+            "is not known. That is the drag's to end (#second), so nothing was pressed. Instead, use drag_xy \
+             to drag between two points on purpose."
+        ));
+        let unread = text(drag_end(turned(UNREAD), "from", "#first", false));
+        assert!(unread.ends_with(
+            "nothing was pressed. Try again, or use drag_xy to drag between two points on purpose."
+        ));
+        for m in [first, moved, turn, unread] {
+            assert!(!m.contains("click_xy") && !m.contains("the click was not sent"), "{m}");
+        }
+        // Any other error passes as it is.
+        assert_eq!(text(drag_end(CdpError::Other("gone".into()), "from", "#first", false)), "gone");
+    }
 
     #[test]
     fn intersect_clips_like_puppeteer() {

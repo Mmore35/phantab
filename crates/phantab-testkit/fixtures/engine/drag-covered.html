@@ -1,0 +1,64 @@
+<!doctype html><html><head><meta charset="utf-8"><title>A list under a clear button</title>
+<style>
+#list { list-style: none; margin: 0; padding: 0; width: 240px; }
+#list li { height: 40px; line-height: 40px; margin: 4px 0; padding: 0 8px; border: 1px solid #888; user-select: none; }
+/* A submit button over the whole view that cannot be seen: a mouse press anywhere goes to it. */
+#send { position: fixed; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; border: 0; }
+/* With ?over=drop it lies over the drop item (#second) alone; with later=1 it is hidden until the
+   pointer first moves on the page, as a page can slide an overlay in once the pointer arrives. */
+#send.drop { inset: auto; }
+#send.later { display: none; }
+/* With slide=1, something clear that is not the button lies over the drop item for a while. */
+#veil { position: fixed; background: transparent; }
+</style></head>
+<body>
+<ul id="list"><li id="first">First</li><li id="second">Second</li><li id="third">Third</li></ul>
+<form id="note" action="/post/ok" method="post"><button id="send" type="submit">Send</button></form>
+<p id="said">not sent</p>
+<p id="seen">mouse: none</p>
+<div id="veil" hidden></div>
+<script>
+// The list sorts by mouse events as `drag.html`'s does; every mouse event the page gets is listed.
+const list = document.querySelector('#list');
+const send = document.querySelector('#send');
+const query = new URLSearchParams(location.search);
+if (query.get('over') === 'drop') {
+  const r = document.querySelector('#second').getBoundingClientRect();
+  send.classList.add('drop');
+  Object.assign(send.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+}
+if (query.get('later') === '1') {
+  send.classList.add('later');
+  addEventListener('mousemove', () => send.classList.remove('later'), { capture: true, once: true });
+}
+// With slide=1 the first mousemove covers the drop item with the clear #veil for 600 ms and, at 300 ms,
+// lays the button over the start (#first), where it stays: a check of the drop item is held open
+// while the start changes under the pointer after it may already have been checked.
+if (query.get('slide') === '1') {
+  const veil = document.querySelector('#veil');
+  const place = (el, id) => {
+    const r = document.querySelector(id).getBoundingClientRect();
+    Object.assign(el.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+  };
+  send.classList.add('drop', 'later');
+  addEventListener('mousemove', () => {
+    place(veil, '#second');
+    veil.hidden = false;
+    setTimeout(() => { place(send, '#first'); send.classList.remove('later'); }, 300);
+    setTimeout(() => { veil.hidden = true; }, 600);
+  }, { capture: true, once: true });
+}
+const seen = [];
+for (const kind of ['mousedown', 'mousemove', 'mouseup', 'click']) {
+  addEventListener(kind, () => { seen.push(kind); document.querySelector('#seen').textContent = 'mouse: ' + seen.join(', '); }, true);
+}
+addEventListener('submit', (e) => { e.preventDefault(); document.querySelector('#said').textContent = 'sent the note'; });
+let held = null;
+list.addEventListener('mousedown', e => { const li = e.target.closest('li'); if (li) held = li; });
+document.addEventListener('mouseup', e => {
+  const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('li');
+  if (held && over && over !== held) list.insertBefore(held, over.nextSibling);
+  held = null;
+});
+</script>
+</body></html>

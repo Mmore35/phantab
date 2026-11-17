@@ -19,8 +19,9 @@ keeps it when it rewrites the file.
 ```
 
 ## The sensitive set (`light`, `full`)
-A `click`, `click_xy`, a press of Enter or Space, or a `type` whose text has a line break or a space
-(it presses Enter or Space), on a control that reads as one of these:
+A `click`, `click_xy`, a press of Enter or Space (also as the last key of a combination such as
+`Shift+Enter`), a `type` whose text has a line break or a space (it presses Enter or Space), or a drop
+(`drag` checks its `to` element, `drag_xy` its drop point), on a control that reads as one of these:
 
 - **a payment or checkout**: pay, place order, complete purchase, buy now, check out, book now, donate,
   confirm and pay; a submit button in a form with a card field (`autocomplete="cc-…"`); a PayPal, Apple
@@ -31,6 +32,17 @@ A `click`, `click_xy`, a press of Enter or Space, or a `type` whose text has a l
   for that account was your word for its submit);
 - **deleting an account or vault items**: delete, close or deactivate an account; delete items or delete
   permanently; on a password manager's own site, any delete, trash or remove.
+
+Three more steps are asked about whatever the page reads as:
+
+- **every `upload`**: it sends a file from your computer to the site, and the service can read any
+  file you can;
+- **every `["dialog", "accept"]`**: it says yes to the page's next dialog, which may be a deletion, a
+  payment or leaving unsaved work. `["dialog", "dismiss"]` is never asked about;
+- **`back`, `forward` or `reload` onto a page a form sent** (Chrome's `form_submit` entry): loading it
+  again may send the form again. A move onto any other page is not asked about.
+
+A `hover` is never asked about.
 
 Phantab refuses the step once, with `Confirm first: this looks like <kind>. …`. The agent asks you, and
 only after you approve that step does it repeat it with `ownerConfirmed: true`, the same flag `resume`
@@ -43,7 +55,7 @@ Phantab cannot read lets the step through (see § Gaps).
 
 | Guardrail | `parity` | `light` | `full` |
 |---|---|---|---|
-| Sensitive-set confirmation (above) | off | on | on |
+| Sensitive-set confirmation (above), with every upload, dialog accept and move onto a page a form sent | off | on | on |
 | Sign-in send limits: 2 password sends an hour, 6 a day, per account | off | off | on |
 | Sign-in stops: an account stops after a rejected or unknown result, and a damaged guard file stops all, until `phantab sign-in-clear` | off | off | on |
 | `resume` on a shown tab waits for your handback (`ownerConfirmed` or the viewer's Return to agent) | off | off | on |
@@ -101,7 +113,8 @@ These are coordination and correctness. They protect your own work, not you from
   ```json
   { "profileDirectory": "Default", "siteLock": "exclusive" }
   ```
-- A page you are holding (`show`) refuses the agent's writes until it is handed back. Under `parity` and
+- A page you are holding (`show`) refuses the agent's writes until it is handed back. Every step
+  counts as a write there, `hover`, `dialog`, `back`, `forward` and `reload` included. Under `parity` and
   `light`, the agent can take it back with `resume` at any time.
 - A running sign-in holds its page until it answers.
 - The remote viewer's input limit (20 actions a second) guards the viewer, not the agent.
@@ -129,6 +142,12 @@ Follow-ups, each its own change:
 - A self-hosted password manager on your own domain is not a "vault site", so only the account and
   item wording counts there.
 - Wording outside English is not matched.
+- A dialog answer is set only on a page you cannot see (an isolated page or a hidden agent window).
+  On a page you can see, its dialogs are yours to answer and the `dialog` step is refused.
+- A confirmed `back`, `forward` or `reload` onto a page a form sent may or may not send the form again:
+  Chrome decides, and in the tests it served the page from its cache without sending.
+- A `drag_xy` dropped into a website frame is read as a `click_xy` there is: the check sees only the
+  frame.
 
 A page cannot switch the check off with markup: it reads the page through the browser's own
 accessors, so a form field named after one of them (`<input name=querySelector>`) changes nothing

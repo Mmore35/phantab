@@ -129,6 +129,44 @@ impl Keyboard {
     }
 }
 
+/// The keys of a press: `Control+A` is `Control` then `A`, held in that order, and `Control+Shift+K`
+/// three. Every key before the last must be a modifier (`Alt`, `Control`, `Meta` or `Shift`); `+` alone,
+/// or last after a modifier (`Control++`), is the plus key. A name without `+` is one key, as before.
+///
+/// # Errors
+/// A key the layout does not know (`Unknown key: "…"`), or a key before the last that is not a modifier.
+pub fn combo_keys(combo: &str) -> Result<Vec<String>, CdpError> {
+    let unknown = |k: &str| CdpError::Other(format!("Unknown key: \"{k}\""));
+    if combo == "+" || !combo.contains('+') {
+        return key_definition(combo).map(|_| vec![combo.to_owned()]).ok_or_else(|| unknown(combo));
+    }
+    let (held, last) = match combo.strip_suffix("++") {
+        Some(held) => (held, "+"),
+        None => combo.rsplit_once('+').unwrap_or((combo, "")),
+    };
+    let mut keys: Vec<String> = held.split('+').map(str::to_owned).collect();
+    if keys.iter().any(|k| modifier_bit(k) == 0) || last.is_empty() {
+        return Err(CdpError::Other(format!(
+            "Unknown key combination \"{combo}\": each key before the last must be Alt, Control, Meta or Shift, as in Control+A."
+        )));
+    }
+    if key_definition(last).is_none() {
+        return Err(unknown(last));
+    }
+    keys.push(last.to_owned());
+    Ok(keys)
+}
+
+/// Whether `keys` ([`combo_keys`]) select all: Control+A or Meta+A. Chrome runs no editing shortcut
+/// for keys sent over the protocol on macOS, so the press asks for the command itself there and
+/// everywhere, alike.
+pub(crate) fn selects_all(keys: &[String]) -> bool {
+    let Some((last, held)) = keys.split_last() else { return false };
+    matches!(last.as_str(), "a" | "A" | "KeyA")
+        && held.iter().any(|k| k == "Control" || k == "Meta")
+        && held.iter().all(|k| k == "Control" || k == "Meta")
+}
+
 /// Whether `keyboard.type` presses this character as a key (otherwise it is inserted as text).
 pub(crate) fn char_is_key(c: char) -> bool {
     let mut buf = [0u8; 4];
@@ -382,6 +420,29 @@ mod tests {
         assert_eq!(p["type"], "rawKeyDown");
         assert_eq!(p["text"], "");
         assert_eq!(p["modifiers"], 2);
+    }
+
+    #[test]
+    fn combinations_hold_their_modifiers_and_press_the_last_key() {
+        let keys = |c: &str| combo_keys(c).map_err(|e| e.to_string());
+        assert_eq!(keys("Enter"), Ok(vec!["Enter".to_owned()]));
+        assert_eq!(keys("+"), Ok(vec!["+".to_owned()]));
+        assert_eq!(keys("Control+A"), Ok(vec!["Control".to_owned(), "A".to_owned()]));
+        assert_eq!(keys("Shift+Tab"), Ok(vec!["Shift".to_owned(), "Tab".to_owned()]));
+        assert_eq!(
+            keys("Control+Shift+K"),
+            Ok(vec!["Control".to_owned(), "Shift".to_owned(), "K".to_owned()])
+        );
+        assert_eq!(keys("Control++"), Ok(vec!["Control".to_owned(), "+".to_owned()]));
+        let not_held = "Unknown key combination \"A+B\": each key before the last must be Alt, Control, Meta or Shift, as in Control+A.";
+        assert_eq!(keys("A+B"), Err(not_held.to_owned()));
+        assert!(keys("Control+").is_err());
+        assert!(keys("+A").is_err());
+        assert_eq!(keys("Control+Nope"), Err("Unknown key: \"Nope\"".to_owned()));
+        assert_eq!(keys("Nope"), Err("Unknown key: \"Nope\"".to_owned()));
+        let all = |c: &str| selects_all(&combo_keys(c).unwrap());
+        assert!(all("Control+A") && all("Meta+a") && all("Control+KeyA"));
+        assert!(!all("Control+Shift+A") && !all("Shift+A") && !all("a") && !all("Control+B"));
     }
 
     #[test]
