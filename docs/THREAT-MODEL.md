@@ -774,8 +774,13 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `navigate` does; with guardrails on, a move or reload onto an entry Chrome marks `form_submit` is
   asked about first. A drag is checked at its drop target, and a key combination by its last key, as a
   click and a press are. A `drag` by selector is refused, as a click is, unless each of its elements is
-  on top at its own point (the covered check a click by selector makes), both checked before the first
-  mouse event; what the page lays over a point once the button is down is not seen, and is residual. A
+  on top at its own point (the covered check a click by selector makes), in the click's order: both
+  checked before the first mouse event, and both again once the pointer has moved to the start and the
+  page has had a frame, so an overlay a page slides in as the pointer arrives is seen; the button then
+  goes down where the pointer is, with no second move. A refusal at either check pressed nothing and
+  says so, naming the end. Work a page's handler leaves for later, a timer that fires between the last
+  check and the press, is not seen, exactly as for a click; nor is anything the page does once the
+  button is down, such as what it lays over the drop point. Both are residual. A
   page handed to the owner refuses every one of these steps. Four CDP methods
   were added to SR-20's list: `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
   `Page.navigateToHistoryEntry` and `Page.reload`. *L1: `engine::steps` tests (relative, missing, a
@@ -784,6 +789,7 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `with_guardrails_on_uploads_and_dialog_accepts_are_asked_about_first`,
   `moving_onto_a_page_a_form_sent_is_asked_about_first`, `a_handed_over_page_refuses_every_new_step`,
   `a_drag_onto_a_covered_list_is_refused_before_any_mouse_event`,
+  `a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing`,
   `with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first`.*
 
 ### Verification hand-off

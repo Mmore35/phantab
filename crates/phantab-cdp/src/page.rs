@@ -1785,6 +1785,12 @@ impl Page {
     /// start of a drag.
     pub async fn mouse_down(&self, x: f64, y: f64) -> Result<(), CdpError> {
         self.mouse_move(x, y).await?;
+        self.mouse_hold().await
+    }
+
+    /// Presses the left button where the pointer is, held until [`Self::mouse_up`], with no move first:
+    /// a selector drag presses only after its check at the pointer's place (`Page::drag_in`).
+    pub(crate) async fn mouse_hold(&self) -> Result<(), CdpError> {
         let mods = self.inner.keyboard.lock().modifiers();
         let (txn, params) = self.inner.mouse.lock().down(MouseButton::Left, 1, mods)?;
         self.send_mouse(txn, params).await

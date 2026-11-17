@@ -4,6 +4,10 @@
 #list li { height: 40px; line-height: 40px; margin: 4px 0; padding: 0 8px; border: 1px solid #888; user-select: none; }
 /* A submit button over the whole view that cannot be seen: a mouse press anywhere goes to it. */
 #send { position: fixed; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; border: 0; }
+/* With ?over=drop it lies over the drop item (#second) alone; with later=1 it is hidden until the
+   pointer first moves on the page, as a page can slide an overlay in once the pointer arrives. */
+#send.drop { inset: auto; }
+#send.later { display: none; }
 </style></head>
 <body>
 <ul id="list"><li id="first">First</li><li id="second">Second</li><li id="third">Third</li></ul>
@@ -13,6 +17,17 @@
 <script>
 // The list sorts by mouse events as `drag.html`'s does; every mouse event the page gets is listed.
 const list = document.querySelector('#list');
+const send = document.querySelector('#send');
+const query = new URLSearchParams(location.search);
+if (query.get('over') === 'drop') {
+  const r = document.querySelector('#second').getBoundingClientRect();
+  send.classList.add('drop');
+  Object.assign(send.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+}
+if (query.get('later') === '1') {
+  send.classList.add('later');
+  addEventListener('mousemove', () => send.classList.remove('later'), { capture: true, once: true });
+}
 const seen = [];
 for (const kind of ['mousedown', 'mousemove', 'mouseup', 'click']) {
   addEventListener(kind, () => { seen.push(kind); document.querySelector('#seen').textContent = 'mouse: ' + seen.join(', '); }, true);
