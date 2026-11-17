@@ -3,7 +3,9 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
-## Unreleased
+## 0.6.0 (2026-11-16)
+At parity with Chrome DevTools MCP for a work laptop: forms in frames and shadow roots filled and read
+back, agents sharing a site, the developer tools, emulation and traces, and the `work` setting.
 
 ### Changed
 - Agents share a site by default. Another agent's page on a site, open or handed to the owner, no
