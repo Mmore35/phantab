@@ -95,8 +95,10 @@ gets and what runs on your machine. As of November 2026:
 - **Chrome DevTools MCP** (Google) is a Node.js server. By default it starts its own Chrome with a
   separate profile; it can also attach to your running Chrome over remote debugging, which you turn on
   in Chrome and approve when the server connects. It has DevTools features phantab does not, such as
-  performance traces. phantab's own developer tools (a page's console, its requests, running a script
-  in it) are off unless you turn them on, and never show your cookies.
+  performance insight analysis, Lighthouse audits and screencasts. phantab's own developer tools (a
+  page's console, its requests, running a script in it, emulation and performance traces) are off
+  unless you turn them on, and never show your cookies. `docs/COMING-FROM-DEVTOOLS-MCP.md` maps each
+  of its tools to phantab's.
 - **Playwright MCP** (Microsoft) is a Node.js server built on Playwright. It starts its own browser by
   default, and with its bridge extension it can use tabs in your browser. It supports Chromium, Firefox
   and WebKit.
@@ -106,7 +108,7 @@ gets and what runs on your machine. As of November 2026:
 phantab's own choices: one native binary with no runtime to install, agent pages in **hidden**
 windows of your profile so you keep working, no debugging port, compact tool output to keep agent
 turns short, and a human takes over for checks and passkeys. If you need a clean throwaway browser,
-cross-browser testing or performance profiling, one of the tools above is the better fit.
+cross-browser testing or Lighthouse audits, one of the tools above is the better fit.
 
 ## Requirements
 - **Google Chrome 125 or later.** The extension is loaded unpacked (Developer mode).
@@ -223,7 +225,10 @@ Developer tools). Then `browser_evaluate` runs a script in the page, as its own 
 answers its result (a form's own objects, say, such as `g_form` on ServiceNow); `browser_console`
 gives the page's errors, warnings and uncaught exceptions; and `browser_network` lists its requests,
 failed ones first, with one request's headers and body on asking. Each page is recorded from the
-first call that asks about it. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
+first call that asks about it. `browser_emulate` slows a page's CPU or network, or sets its location,
+user agent or colour scheme, until cleared; `browser_trace` saves a performance trace that Chrome's
+Performance panel opens, and answers the page's load, largest paint, layout shift, long tasks and
+slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
 leave phantab, and nothing reads a cookie. With guardrails `light` or `full`, every script waits for
 your yes.
 

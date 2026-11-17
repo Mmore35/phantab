@@ -131,11 +131,11 @@ Follow-ups, each its own change:
 - **HTTP(S) only.** `open` and `navigate` take only website URLs (no `file:`, `chrome:` or `javascript:`).
 
 ## Developer tools (`devTools`)
-`browser_evaluate`, `browser_console` and `browser_network` are off unless `config.json` sets
-`devTools` to the JSON value `true`, read at service start. A string such as `"true"`, a number or
-anything else is off. Off, the agent is not shown the three tools, a call to one is refused with an
-error that names the setting, and neither the service nor the extension relays their Chrome commands
-or events.
+`browser_evaluate`, `browser_console`, `browser_network`, `browser_emulate` and `browser_trace` are
+off unless `config.json` sets `devTools` to the JSON value `true`, read at service start. A string
+such as `"true"`, a number or anything else is off. Off, the agent is not shown the five tools, a call
+to one is refused with an error that names the setting, and neither the service nor the extension
+relays their Chrome commands or events.
 
 ```json
 { "profileDirectory": "Default", "devTools": true }
@@ -156,6 +156,23 @@ On, what each one reaches:
   page is recorded from the first call that asks about it, which says so; nothing before is kept, and
   a page nobody asks about sends Chrome's console and network events nowhere. Each page keeps at most
   200 messages and 500 requests, the oldest dropped and counted, since its last navigation.
+- `browser_emulate` changes what one page is told about its machine: a CPU slowdown (1 to 20 times),
+  network conditions (offline, latency, download and upload speed), a location, a user agent and a
+  colour scheme. It counts as a write, so a page you hold refuses it. It lasts until a call with
+  `clear`, the page's close, or its release to you with `browser_show`; `browser_pages` lists what is
+  on. Network conditions also start the page's network recording, as `browser_network` would. The
+  location is only the position the page is told: phantab never grants the permission to read it, so
+  a site you have not allowed to read your location still cannot.
+- `browser_trace` records a performance trace of one page, one trace at a time, saved to a file in
+  Chrome's trace format (the Performance panel opens it). A trace ends at `stop`, after its time
+  limit (30 s unless `seconds` asks, at most 120) or once Chrome's 20 MB buffer is full, and says
+  which; it never outlives its page or the service. `reload` reloads the page inside the trace and
+  counts as a write. The file holds the URLs and timings of everything that loaded while it ran,
+  script names, console timers and Chrome's description of the machine; it holds no screenshots, no
+  request headers and no cookies. The stop answers the page's own numbers (load, largest paint and
+  what it was, layout shift, long tasks, the ten slowest requests), a missing one with its reason.
+  They come from phantab's hidden window, so compare runs with each other rather than publish them.
+  There is no insight analysis and no Lighthouse.
 - Never reached, in any setting: the `Cookie`, `Set-Cookie`, `Authorization` and
   `Proxy-Authorization` headers are removed in phantab before any answer or file; Chrome's raw header
   events are never turned on; no Chrome command that reads cookies is relayed; and no request body
@@ -163,7 +180,7 @@ On, what each one reaches:
   can hold a token the site puts in a page.
 
 After updating phantab, reload the extension at `chrome://extensions` so it relays the developer
-tools. The threat model's SR-90 has the details.
+tools. The threat model's SR-90 and SR-91 have the details.
 
 ## Gaps (the light check)
 - A control in a website frame that a `click` finds by selector is read in its own frame. A `click_xy`

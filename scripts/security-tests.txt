@@ -138,3 +138,13 @@ all ext:events an ExtraInfo event is dropped whatever the welcome lists, and wit
 chrome engine_chrome developer_tools_are_off_unless_set
 chrome engine_chrome developer_tools_read_the_console_and_network_and_run_scripts
 chrome engine_chrome evaluate_is_a_write_and_is_asked_about_under_guardrails
+
+# A trace saves the owner's cookies or reads another stream; emulation outlives its page (SR-91).
+all lib engine::measure::tests::a_saved_trace_holds_no_secret_header_and_no_command_line
+all lib engine::measure::tests::the_trace_records_no_screenshot_and_no_network_log
+all lib engine::measure::tests::emulation_is_checked_before_anything_is_sent
+all cdp page::tests::a_trace_over_its_size_is_refused_and_its_stream_still_closed
+all ext:ops a stream is read only for the tab's own finished trace, until it is closed
+all ext:events a trace's events cross only while it runs, and its completion ends the recording
+chrome engine_chrome trace_saves_a_performance_trace_and_the_page_s_own_numbers
+chrome engine_chrome emulation_reaches_the_page_and_clears_on_clear_and_close

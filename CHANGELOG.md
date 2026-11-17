@@ -57,6 +57,15 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   requests, failed ones first, and one request's headers and body by `id` or into a file. A page is
   recorded from the first call that asks, which says so. Cookie and authorization headers never leave
   the service, and no cookie command is relayed. Reload the extension at `chrome://extensions`.
+- `browser_emulate` and `browser_trace`, developer tools too (on only with `devTools`).
+  `browser_emulate` sets one page's CPU slowdown, network conditions (offline, latency, download and
+  upload speed), location, user agent or colour scheme until `clear`, its close or its release; the
+  location is the position the page is told, with no permission granted, and `browser_pages` lists
+  what is on. `browser_trace` starts a performance trace (optionally reloading the page inside it) and
+  stops it into a file the Performance panel opens, with a time limit (30 s unless `seconds`, at most
+  120) and a 20 MB size limit, one trace at a time. The stop answers the page's own load time, largest
+  paint and its element, layout shift, long tasks and ten slowest requests, a missing number with its
+  reason. No screenshots, request headers or cookies are recorded. Reload the extension.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);
