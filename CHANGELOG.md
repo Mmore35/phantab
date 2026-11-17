@@ -66,6 +66,12 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   120) and a 20 MB size limit, one trace at a time. The stop answers the page's own load time, largest
   paint and its element, layout shift, long tasks and ten slowest requests, a missing number with its
   reason. No screenshots, request headers or cookies are recorded. Reload the extension.
+- The `work` setting, for a work laptop or a managed machine (`docs/GUARDRAILS.md` § A work laptop).
+  `"work": true` in `config.json` turns off `browser_sign_in` and `browser_sign_up` (not listed, and
+  refused naming the setting), every sign-in provider, the automatic hand-off of a human check (the
+  check is reported; `browser_show {verification: true}` still hands the page over) and the phone
+  viewer, whatever else the config says. Any value but `true` or `false` counts as on, and
+  `browser_status` lists what is off and says when the value was not understood.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);

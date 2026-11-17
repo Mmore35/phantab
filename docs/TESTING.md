@@ -306,6 +306,7 @@ exists.
 | A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
+| On a machine that sets `work`, an agent signs in, a provider starts, a check pops up by itself or the phone viewer listens | `lib`, `mcp`, `verification` (real Chrome) |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
   list and checks each name is still in the source, without building. `--chrome` also runs the lines
@@ -480,7 +481,8 @@ Lane 6 holds phantab's own fixed outputs to golden files checked into the reposi
 formats that agents, providers and installed configs depend on. A change that alters one fails the
 lane until the golden file is updated in the same PR, so every such change shows in review. Update a
 golden file only on purpose, and say in the PR why the output changed. The tool list is
-`crates/phantab/tests/fixtures/tools-list.json`; rewrite it from the built binary with
+`crates/phantab/tests/fixtures/tools-list.json`, with `tools-list-devtools.json` beside it for
+`devTools: true` and `tools-list-work.json` for `work: true`; rewrite them from the built binary with
 `PHANTAB_UPDATE_GOLDEN=1 cargo test -p phantab --test mcp`. The page functions' hashes and the seal's
 vectors are constants in their unit tests. The lane needs nothing beyond `cargo test` and runs on every
 platform.

@@ -56,12 +56,12 @@ const IDENTITY: (&str, &str) = ("Tailscale-User-Login", "owner@example.test");
 
 impl Lane {
     async fn start(chrome: &PathBuf) -> Self {
-        Self::start_with(chrome, None, None, None).await
+        Self::start_with(chrome, None, None, None, false).await
     }
 
     /// With one writer per site (`siteLock: exclusive`, docs/GUARDRAILS.md), so a check holds its site.
     async fn start_exclusive(chrome: &PathBuf) -> Self {
-        Self::start_with(chrome, None, None, Some("exclusive")).await
+        Self::start_with(chrome, None, None, Some("exclusive"), false).await
     }
 
     /// A lane whose service signs in with the fake provider, answering from `provider.json` in its
@@ -69,14 +69,22 @@ impl Lane {
     /// It runs the remote view too, as [`Self::start_remote`].
     async fn start_signing(chrome: &PathBuf) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Self::start_with(chrome, Some(port), Some(json!({"values": {"username": "me@example.test"}})), None)
-            .await
+        let provider = json!({"values": {"username": "me@example.test"}});
+        Self::start_with(chrome, Some(port), Some(provider), None, false).await
     }
 
     /// A lane whose service also runs the remote view, on a free loopback port.
     async fn start_remote(chrome: &PathBuf) -> Self {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Self::start_with(chrome, Some(port), None, None).await
+        Self::start_with(chrome, Some(port), None, None, false).await
+    }
+
+    /// With `work: true` (THREAT-MODEL SR-92), a provider and a phone viewer set up as
+    /// [`Self::start_signing`]'s: `work` keeps both off.
+    async fn start_work(chrome: &PathBuf) -> Self {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let provider = json!({"values": {"username": "me@example.test"}});
+        Self::start_with(chrome, Some(port), Some(provider), None, true).await
     }
 
     async fn start_with(
@@ -84,6 +92,7 @@ impl Lane {
         remote_port: Option<u16>,
         provider: Option<Value>,
         site_lock: Option<&str>,
+        work: bool,
     ) -> Self {
         let fixtures = FixtureServer::start().unwrap();
         let rt = Runtime::new();
@@ -93,6 +102,9 @@ impl Lane {
         });
         if let Some(lock) = site_lock {
             config["siteLock"] = json!(lock);
+        }
+        if work {
+            config["work"] = json!(true);
         }
         if let Some(p) = remote_port {
             config["remoteViewer"] = json!({
@@ -868,5 +880,58 @@ async fn show_hands_over_a_page_whose_passkey_request_waits() {
     assert_eq!(waited["verification"]["state"], json!("cleared"), "{waited}");
     let hidden = lane.wait_logged("markShown false", answered, Duration::from_secs(5)).await;
     assert_eq!(lane.input_sent(tab, popped, hidden), Vec::<String>::new(), "the owner's alone");
+    lane.finish().await;
+}
+
+/// `work: true` (THREAT-MODEL SR-92), with a provider and a phone viewer set up: the viewer never listens
+/// and status says why, the sign-in tools are refused naming the setting, and a wall is reported to the
+/// agent as it is, with no hand-off past its grace. `browser_show {verification: true}` still hands it to
+/// the owner, and the page comes back once they clear it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_work(&chrome).await;
+
+    let status = lane.ok("status", json!({}), "a").await;
+    assert_eq!(status["work"]["on"], json!(true), "{status}");
+    assert_eq!(status["work"]["off"].as_array().map(Vec::len), Some(4), "{status}");
+    assert_eq!(status["remoteViewer"]["listening"], json!(false), "{status}");
+    assert!(status["remoteViewer"]["off"].as_str().is_some_and(|s| s.contains("work")), "{status}");
+    let port = lane.remote_port.unwrap();
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "the viewer's port is closed");
+
+    let (_, a, a_tab) = lane.open("a", "/verify/shop").await;
+    for tool in ["sign_in", "sign_up"] {
+        let refused = lane.call(tool, json!({ "pageId": a }), "a").await.unwrap_err();
+        assert!(refused.contains("is off on this machine") && refused.contains("\"work\""), "{refused}");
+    }
+
+    let walled = lane.act("a", &a, json!({ "action": "click", "selector": "#more" })).await.unwrap();
+    let began = Instant::now();
+    let check = &walled["verification"];
+    assert_eq!((&check["state"], &check["kind"]), (&json!("wall"), &json!("wall")), "{walled}");
+    assert!(check["next"].as_str().is_some_and(|n| n.contains("browser_show")), "{walled}");
+    tokio::time::sleep(GRACE + Duration::from_secs(2)).await;
+    assert!(
+        lane.logged("markShown true", began).is_none(),
+        "no hand-off by itself: {:?}",
+        lane.ext.timeline()
+    );
+    let again = lane.ok("snapshot", json!({ "pageId": a }), "a").await;
+    assert_eq!(again["verification"]["state"], json!("wall"), "still reported as it is: {again}");
+
+    let asked = Instant::now();
+    let shown = lane.ok("show", json!({ "pageId": a, "verification": true }), "a").await;
+    assert_eq!(shown["verification"]["state"], json!("with-owner"), "{shown}");
+    assert!(shown["verification"].get("link").is_none(), "no phone link under work: {shown}");
+    let popped = lane.wait_logged("markShown true", asked, Duration::from_secs(3)).await;
+    let waiting = lane.spawn_call("wait", json!({ "pageId": a, "verification": true }), "a");
+    lane.ext.eval(a_tab, PRESS_THE_CHECK).await;
+    let waited = waiting.await.unwrap().unwrap();
+    assert_eq!(waited["verification"]["state"], json!("cleared"), "{waited}");
+    let hidden = lane.wait_logged("markShown false", popped, Duration::from_secs(5)).await;
+    assert!(lane.input_sent(a_tab, began, hidden).is_empty(), "phantab never touched the check");
+    lane.act("a", &a, json!({ "action": "click", "selector": "#keep" })).await.unwrap();
     lane.finish().await;
 }

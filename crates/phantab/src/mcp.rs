@@ -180,7 +180,7 @@ fn devtools_defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static
 /// # Errors
 /// Never in practice: the definitions are fixed.
 pub fn tools() -> anyhow::Result<Vec<Tool>> {
-    tools_with(false)
+    tools_for(false, false)
 }
 
 /// The tool list, with the developer tools after the rest when `dev_tools` (SR-90).
@@ -188,9 +188,20 @@ pub fn tools() -> anyhow::Result<Vec<Tool>> {
 /// # Errors
 /// Never in practice: the definitions are fixed.
 pub fn tools_with(dev_tools: bool) -> anyhow::Result<Vec<Tool>> {
+    tools_for(dev_tools, false)
+}
+
+/// [`tools_with`], without the sign-in tools when `work` is on (SR-92).
+///
+/// # Errors
+/// Never in practice: the definitions are fixed.
+pub fn tools_for(dev_tools: bool, work: bool) -> anyhow::Result<Vec<Tool>> {
     let mut all = defs();
     if dev_tools {
         all.extend(devtools_defs());
+    }
+    if work {
+        all.retain(|(name, ..)| !crate::work::REFUSED.contains(name));
     }
     all.into_iter()
         .map(|(name, description, properties, required)| {
@@ -1162,9 +1173,12 @@ pub async fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    // A missing or unreadable config.json lists no developer tool; the service refuses them alike.
-    let dev_tools = crate::runtime::read_config().is_ok_and(|c| c.dev_tools());
-    let (client, tools) = match (client_id(), tools_with(dev_tools)) {
+    // A missing or unreadable config.json lists no developer tool and every sign-in tool; the service
+    // reads its own copy and refuses alike.
+    let config = crate::runtime::read_config().ok();
+    let dev_tools = config.as_ref().is_some_and(crate::runtime::Config::dev_tools);
+    let work = config.as_ref().is_some_and(crate::runtime::Config::work);
+    let (client, tools) = match (client_id(), tools_for(dev_tools, work)) {
         (Ok(c), Ok(t)) => (c, t),
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("{e}");

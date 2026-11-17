@@ -251,6 +251,10 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
   site's own scripts can: read what the page shows and holds (cookies a script can read included) and
   act as you there. Your httpOnly cookies and every request's cookie and authorization headers stay
   out of its reach. Turn it on only where you would let the agent open DevTools on your tabs.
+- **On a work laptop, set `work`.** `"work": true` turns off the sign-in tools, every sign-in
+  provider, the automatic hand-off of a human check (`browser_show` still hands a page over) and the
+  phone viewer; `phantab install --work` writes it with `devTools` (`docs/GUARDRAILS.md` § A work
+  laptop, `docs/WORK-LAPTOP.md`).
 - **Agents share a site.** By default, several agents, and you, can change one site at once
   (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
   ServiceNow, for example, the current update set and application scope, so one agent's switch moves

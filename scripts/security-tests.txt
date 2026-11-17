@@ -148,3 +148,9 @@ all ext:ops a stream is read only for the tab's own finished trace, until it is 
 all ext:events a trace's events cross only while it runs, and its completion ends the recording
 chrome engine_chrome trace_saves_a_performance_trace_and_the_page_s_own_numbers
 chrome engine_chrome emulation_reaches_the_page_and_clears_on_clear_and_close
+
+# On a machine that sets work, a sign-in, a provider, a pop-up or the phone viewer happens anyway (SR-92).
+all lib work::tests::work_is_off_only_when_absent_or_false_and_any_other_value_is_on_and_said
+all lib engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so
+all mcp sign_in_tools_are_not_listed_with_work_on
+chrome verification with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over

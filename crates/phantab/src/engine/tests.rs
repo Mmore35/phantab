@@ -2320,3 +2320,35 @@ async fn after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_
         assert_eq!(leaks(&text.to_string()), None, "{mode}");
     }
 }
+
+/// `work` on (SR-92): the sign-in tools are refused naming it before anything is touched, no provider is
+/// given to the sign-in pipeline even with one set up, and status lists what is off. Off, the same config
+/// gives the provider back.
+#[tokio::test]
+async fn work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so() {
+    use crate::signin::Host as _;
+    for work in [json!(true), json!("yes")] {
+        let f = fixture_profiles_with(Recording::new(), None, None, &[], None, |_, c| {
+            c.sign_in_provider = Some(json!({ "command": ["a-provider"] }));
+            c.other.insert("work".to_owned(), work.clone());
+        });
+        let e = &f.engine;
+        for method in [EngineMethod::SignIn, EngineMethod::SignUp] {
+            let args = json!({ "pageId": "p1", "url": "https://fixture.invalid/" });
+            let err = PageService::call(e.as_ref(), method, args, "a").await.unwrap_err().0;
+            assert!(err.contains("is off on this machine") && err.contains("\"work\""), "{work}: {err}");
+            assert!(err.starts_with(&format!("browser_{}", method.name())), "{err}");
+        }
+        assert_eq!(e.provider(), None, "{work}");
+        let status = Value::Object(PageService::status(e.as_ref()));
+        assert_eq!(status["work"]["on"], json!(true), "{status}");
+        assert_eq!(status["work"]["off"].as_array().map(Vec::len), Some(4), "{status}");
+        assert_eq!(status["work"].get("note").is_some(), !work.is_boolean(), "{status}");
+    }
+    let off = fixture_profiles_with(Recording::new(), None, None, &[], None, |_, c| {
+        c.sign_in_provider = Some(json!({ "command": ["a-provider"] }));
+        c.other.insert("work".to_owned(), json!(false));
+    });
+    assert!(off.engine.provider().is_some());
+    assert!(PageService::status(off.engine.as_ref()).get("work").is_none());
+}
