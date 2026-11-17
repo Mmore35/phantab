@@ -1901,20 +1901,24 @@ impl Page {
     /// page would otherwise take the press, the drop and the click that follows. The order is the
     /// click's ([`Page::press_element`]): both ends are checked before the first mouse event; the
     /// pointer moves to `from`'s point and the page has a frame to act on that; both ends are checked
-    /// again at the same points, side by side; then the button goes down where the pointer is, with no
-    /// second move (another move would run the page's handlers again between the check and the press),
-    /// and the moves and the release follow. `to` is checked again before the press because no button is
-    /// down yet; it is not checked on the way, as once the button is down a page may rightly move the
-    /// dragged item under the pointer.
+    /// again at the same points, `to` and then `from`, one after the other, so the last thing before the
+    /// press is a passing check of the point it goes to; then the button goes down where the pointer is,
+    /// with no second move (another move would run the page's handlers again between the check and the
+    /// press), and the moves and the release follow. `to` is checked again before the press because no
+    /// button is down yet; it is not checked on the way, as once the button is down a page may rightly
+    /// move the dragged item under the pointer.
     ///
     /// What the page can run between each check and the press: before the first check, anything, and
     /// the check sees what it left. Between the first checks and the arrival move, anything, with no
     /// input from phantab; the move itself runs the page's `mousemove` and `pointerover` handlers, and
     /// the frame after it its frame callbacks and timers, all before the second checks, which see what
-    /// they left. Between the later of the second checks and the press, only work the page left for
-    /// later (a timer that fires then): that is not seen, exactly as for a click. Nor is anything the
-    /// page does once the button is down: the press's own handlers, those of each move on the way, and
-    /// what lies over `to`'s point at the release.
+    /// they left. While `to`'s second check waits (a covered or missing end is retried), anything, and
+    /// `from`'s check, which starts only once `to`'s has passed, sees what it left. Between `from`'s last
+    /// check and the press, only work the page left for later (a timer that fires then): that is not
+    /// seen at the press point, exactly as for a click. `to` may have been checked earlier than `from`
+    /// by as long as `from`'s check waited, and nothing at `to` is checked once the button is down: the
+    /// press's own handlers, those of each move on the way, and what lies over `to`'s point at the
+    /// release are not seen.
     ///
     /// # Errors
     /// A covered end is [`CdpError::Covered`], [`COVERED_PREFIX`] first, then which end it is and that
@@ -1932,14 +1936,11 @@ impl Page {
         let end =
             self.element_point_in(frame, to, false, true).await.map_err(|e| drag_end(e, "to", to, false))?;
         self.mouse_move(start.0, start.1).await?;
-        // Boxed: the two checks side by side would double the size of every future that awaits a drag.
-        let (from_now, to_now) = Box::pin(futures_util::future::join(
-            self.uncovered_at_in(frame, from, start),
-            self.uncovered_at_in(frame, to, end),
-        ))
-        .await;
-        from_now.map_err(|e| drag_end(e, "from", from, true))?;
-        to_now.map_err(|e| drag_end(e, "to", to, true))?;
+        // `to` first and `from` last, one after the other: the page can hold a check open (a covered
+        // end is retried), and the press must follow the check of its own point, not one made before
+        // that wait.
+        self.uncovered_at_in(frame, to, end).await.map_err(|e| drag_end(e, "to", to, true))?;
+        self.uncovered_at_in(frame, from, start).await.map_err(|e| drag_end(e, "from", from, true))?;
         self.drag_from_pointer(start, end).await
     }
 

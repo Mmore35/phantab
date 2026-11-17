@@ -1439,14 +1439,16 @@ async fn a_drag_onto_a_covered_list_is_refused_before_any_mouse_event() {
 /// and the page has had a frame, as a click checks its point, and presses only after that: a clear
 /// submit button shown on the first `mousemove`, over the whole view or over the drop item alone, is
 /// seen, the drag is refused naming that end, the form is not sent and the page saw the arrival move
-/// but no press, no release and no click.
+/// but no press, no release and no click. Over the whole view the button covers both ends, and `to` is
+/// checked first once the pointer is there, so that refusal names `to`; the start covered on arrival is
+/// `a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press`'s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing() {
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
     let lane = Lane::start_with(&chrome, "light").await;
     let cases = [
-        ("/engine/drag-covered?later=1", "from end (#first)"),
+        ("/engine/drag-covered?later=1", "to end (#second)"),
         ("/engine/drag-covered?over=drop&later=1", "to end (#second)"),
     ];
     for (page, end) in cases {
@@ -1467,6 +1469,40 @@ async fn a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing(
             "{page}: {seen}"
         );
     }
+    lane.finish().await;
+}
+
+/// A page can hold one end's check open (a covered end is retried) and change the other end meanwhile,
+/// so the press must follow a check of its own point: once the pointer arrives, a drag checks `to`, then
+/// `from`, and presses. The page covers the drop item with something clear for 600 ms on the arrival
+/// `mousemove` and lays the submit button over the start at 300 ms, where it stays. `from` is checked
+/// only after `to` passes, finds the button, and the drag is refused naming its start; the press never
+/// reaches the button. The timings: the 300 ms between the button and the cover going are ordered by the
+/// page's own timers, so a slow machine cannot swap them, and the 600 ms cover leaves `to`'s check 400 ms
+/// inside the 1 s covered grace, so a slow check is not refused at `to` instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_with(&chrome, "light").await;
+    let page = "/engine/drag-covered?slide=1";
+    let a = lane.open("a", page).await;
+    let drag = json!({ "action": "drag", "selector": "#first", "to": "#second" });
+    let refused = lane.act("a", &a, drag).await.unwrap_err();
+    assert!(
+        refused.starts_with("Element is covered at its click point by <button#send>")
+            && refused.contains("That is the drag's from end (#first), covered once the pointer")
+            && refused.contains("the pointer moved there, and nothing was pressed")
+            && refused.contains("use drag_xy to drag between two points on purpose")
+            && !refused.contains("click_xy"),
+        "{page}: {refused}"
+    );
+    let seen = text(&lane.snap("a", &a).await).to_owned();
+    assert!(seen.contains("not sent") && seen.contains("mouse: mousemove"), "{page}: {seen}");
+    assert!(
+        !seen.contains("mousedown") && !seen.contains("mouseup") && !seen.contains("click"),
+        "{page}: {seen}"
+    );
     lane.finish().await;
 }
 

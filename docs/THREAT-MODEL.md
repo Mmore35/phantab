@@ -776,11 +776,14 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   click and a press are. A `drag` by selector is refused, as a click is, unless each of its elements is
   on top at its own point (the covered check a click by selector makes), in the click's order: both
   checked before the first mouse event, and both again once the pointer has moved to the start and the
-  page has had a frame, so an overlay a page slides in as the pointer arrives is seen; the button then
-  goes down where the pointer is, with no second move. A refusal at either check pressed nothing and
-  says so, naming the end. Work a page's handler leaves for later, a timer that fires between the last
-  check and the press, is not seen, exactly as for a click; nor is anything the page does once the
-  button is down, such as what it lays over the drop point. Both are residual. A
+  page has had a frame, so an overlay a page slides in as the pointer arrives is seen. That second time
+  the drop target is checked first and the start last, one after the other, so a page that holds the
+  drop target's check open cannot change the start after it was checked; the button then goes down
+  where the pointer is, with no second move. A refusal at either check pressed nothing and says so,
+  naming the end. Work a page's handler leaves for later, a timer that fires between the start's last
+  check and the press, is not seen at the press point, exactly as for a click. The drop target may
+  have been checked earlier than the start by as long as the start's check waited, and nothing the page
+  does once the button is down is seen, such as what it lays over the drop point. Both are residual. A
   page handed to the owner refuses every one of these steps. Four CDP methods
   were added to SR-20's list: `DOM.setFileInputFiles`, `Page.getNavigationHistory`,
   `Page.navigateToHistoryEntry` and `Page.reload`. *L1: `engine::steps` tests (relative, missing, a
@@ -790,6 +793,7 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `moving_onto_a_page_a_form_sent_is_asked_about_first`, `a_handed_over_page_refuses_every_new_step`,
   `a_drag_onto_a_covered_list_is_refused_before_any_mouse_event`,
   `a_drag_whose_page_covers_an_end_as_the_pointer_arrives_presses_nothing`,
+  `a_drag_checks_its_start_last_so_a_page_holding_the_drop_check_open_gets_no_press`,
   `with_guardrails_on_a_drop_on_a_pay_button_and_shift_enter_in_a_card_form_are_asked_about_first`.*
 
 ### Verification hand-off
