@@ -625,6 +625,36 @@ async fn calls_check_the_owner_and_a_handed_page_refuses_writes_but_not_reads() 
     assert_eq!(adopt, "Recover only an orphaned handoff after explicit owner confirmation.");
 }
 
+/// SR-88: on a page handed to the owner, a screenshot that would resize, scroll or stretch his window
+/// (`width`, `height`, `selector`, `fullPage`) is refused at once, naming what was given, and saves
+/// nothing; the plain picture of the view is not refused.
+#[tokio::test]
+async fn a_held_page_refuses_a_picture_that_moves_its_view() {
+    let f = fixture_with(Recording::new(), None, None);
+    let e = &f.engine;
+    let r = rec(e, "a", FIXTURE, Fields::default()).await;
+    r.lock().paused = true;
+    let dir = tempfile::tempdir().unwrap();
+    for (mut args, named) in [
+        (json!({ "selector": "#a" }), "selector"),
+        (json!({ "fullPage": true, "path": dir.path().join("full.png") }), "fullPage"),
+        (json!({ "width": 390 }), "width"),
+        (json!({ "width": 390, "height": 844 }), "width and height"),
+    ] {
+        args["pageId"] = json!(r.id);
+        let refused = err(e.screenshot("a", &args).await);
+        assert_eq!(
+            refused,
+            format!(
+                "{named}: the owner holds this page (browser_show), so its view is his window, which a picture does not resize, scroll or stretch. Take the plain picture of the view, or this one after handback."
+            )
+        );
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none(), "nothing was written");
+    let plain = e.screenshot("a", &json!({ "pageId": r.id })).await;
+    assert!(plain.as_ref().err().is_none_or(|m| !m.0.contains("owner holds")), "{plain:?}");
+}
+
 /// Below `guardrails: full` the agent's own word is enough to take a page back from the owner or to
 /// recover an orphaned handoff; writes still wait while the owner holds the page.
 #[tokio::test]

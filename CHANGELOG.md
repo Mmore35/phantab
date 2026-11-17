@@ -19,7 +19,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   one element, found as `browser_act` finds one (frames and open shadow roots included), and `width`
   and `height` set the view's size for that picture alone, put back after it. The path must be
   absolute and its folder must exist; an existing file is replaced only with `overwrite: true`. A page
-  whose screenshot is refused refuses every form of it.
+  whose screenshot is refused refuses every form of it. On a page handed to the owner, whose view is
+  his window, `fullPage`, `selector`, `width` and `height` are refused until handback; the plain
+  picture is not.
 - `browser_snapshot` takes `path` the same way and saves the whole snapshot there as JSON, redacted as
   its answer is.
 - Any form can be read and filled, including one in a frame inside shadow roots, the way some apps
@@ -63,6 +65,7 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   A dialog answered during a step is reported in its result, as before. With guardrails `light` or
   `full`, every upload and every dialog accept is asked about first, and so is a `back`, `forward` or
   `reload` onto a page a form sent; a drop and a combination are checked as a click and a press are.
+  A `drag` by selector is refused, as a click is, when something else is on top at either end.
   Reload the extension at `chrome://extensions` for `dialog` on a hidden page.
 - phantab no longer starts a closed profile where the bridge was never loaded, nor waits for you to
   open one under `guardrails: full`: the call says how to load it. A call naming a profile that is left
