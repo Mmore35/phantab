@@ -1977,6 +1977,8 @@ async fn developer_tools_are_off_unless_set() {
         ("evaluate", json!({ "pageId": a, "function": "() => 1" })),
         ("console", json!({ "pageId": a })),
         ("network", json!({ "pageId": a })),
+        ("emulate", json!({ "pageId": a, "cpu": 4 })),
+        ("trace", json!({ "pageId": a, "action": "stop" })),
     ] {
         let off = lane.err(method, args, "a").await;
         assert!(off.contains("off unless \"devTools\": true is set"), "{method}: {off}");
@@ -2080,4 +2082,215 @@ async fn recording_traffic_is_counted() {
     let near = |a: usize, b: usize| a.abs_diff(b) <= 4.max(a.max(b) / 10);
     assert!(near(unasked.forwarded, off.forwarded), "a page never asked forwards what it did before");
     assert!(near(recording.forwarded - recording.devtools, unasked.forwarded), "{recording:?} {unasked:?}");
+}
+
+/// Starts a trace of page `a` with a reload, saving it at `file`, waits for the fixture's layout shift,
+/// and stops it: the stop's answer.
+async fn traced_load(lane: &Lane, a: &str, file: &std::path::Path) -> Value {
+    let started = lane
+        .ok("trace", json!({ "pageId": a, "action": "start", "reload": true, "path": file }), "a")
+        .await;
+    assert_eq!(started["tracing"], json!(true), "{started}");
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "shifted" }), "a").await;
+    lane.ok("trace", json!({ "pageId": a, "action": "stop" }), "a").await
+}
+
+/// THREAT-MODEL SR-91's lane 3 proof, and phase 6 proofs 1 and 2: a trace of `engine/measure`'s load is
+/// saved as Chrome's trace JSON (`{"traceEvents": [...]}`, the Trace Event Format the Performance panel
+/// loads) holding the events the panel draws its tracks from, and neither the cookie the page is sent
+/// nor the header it builds. The page's own numbers name the late picture as the largest paint and see
+/// its layout shift and long task. One trace runs at a time, and its events cross only while it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trace_saves_a_performance_trace_and_the_page_s_own_numbers() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/measure").await;
+    let b = lane.open("a", "/engine/basic").await;
+    let dir = lane.rt.path().join("traces");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("load.json");
+
+    // A path is asked for before anything starts, and one trace runs at a time.
+    let no_path = lane.err("trace", json!({ "pageId": a, "action": "start" }), "a").await;
+    assert!(no_path.starts_with("path:"), "{no_path}");
+    let not_running = lane.err("trace", json!({ "pageId": a, "action": "stop" }), "a").await;
+    assert!(not_running.contains("No trace is running"), "{not_running}");
+    let other = dir.join("other.json");
+    lane.ok("trace", json!({ "pageId": b, "action": "start", "path": other }), "a").await;
+    let second = lane.err("trace", json!({ "pageId": a, "action": "start", "path": file }), "a").await;
+    assert!(second.contains("One trace at a time"), "{second}");
+    // A trace never outlives its page: closing it frees the slot.
+    lane.ok("close", json!({ "pageId": b }), "a").await;
+
+    let stopped = traced_load(&lane, &a, &file).await;
+    let said = stopped.to_string();
+    assert_eq!(stopped["path"], json!(file), "{stopped}");
+    assert_eq!(stopped["ended"], json!("stopped"), "{stopped}");
+    let numbers = &stopped["numbers"];
+    assert!(numbers["load"]["ms"].as_f64().unwrap() > 0.0, "{numbers}");
+    let paint = &numbers["largestPaint"];
+    assert_eq!(paint["element"], json!("img#late"), "{numbers}");
+    assert!(paint["url"].as_str().unwrap().contains("/picture?ms="), "{numbers}");
+    assert!(paint["ms"].as_f64().unwrap() >= 700.0, "the picture waits 800 ms: {numbers}");
+    assert!(numbers["layoutShift"]["score"].as_f64().unwrap() > 0.0, "{numbers}");
+    assert!(numbers["longTasks"]["count"].as_u64().unwrap() >= 1, "{numbers}");
+    assert!(numbers["longTasks"]["totalMs"].as_f64().unwrap() >= 50.0, "{numbers}");
+    let slowest = numbers["slowestRequests"].as_array().unwrap();
+    assert!(!slowest.is_empty() && slowest.len() <= 10, "{numbers}");
+    assert!(slowest[0]["url"].as_str().unwrap().contains("/picture?ms="), "the slowest first: {numbers}");
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(stopped["bytes"].as_u64().unwrap(), text.len() as u64);
+    let trace: Value = serde_json::from_str(&text).unwrap();
+    let events = trace["traceEvents"].as_array().unwrap();
+    let named = |n: &str| events.iter().any(|e| e["name"] == json!(n));
+    for name in [
+        "TracingStartedInBrowser",
+        "thread_name",
+        "RunTask",
+        "ResourceSendRequest",
+        "ResourceReceiveResponse",
+        "largestContentfulPaint::Candidate",
+        "LayoutShift",
+        "firstContentfulPaint",
+    ] {
+        assert!(named(name), "the trace has {name} events");
+    }
+    assert!(!named("Screenshot"), "no screenshots in a trace");
+    for secret in [phantab_testkit::DEVTOOLS_COOKIE, phantab_testkit::DEVTOOLS_TOKEN] {
+        assert!(!text.contains(secret) && !said.contains(secret), "a secret is in the trace");
+    }
+    // The page did send both, so the trace had the chance to hold them.
+    let seen = lane.fixtures.requests();
+    let check = seen.iter().rev().find(|r| r.path == "/cookie/check").unwrap();
+    let header =
+        |n: &str| check.headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert!(header("cookie").contains(phantab_testkit::DEVTOOLS_COOKIE), "the cookie was sent");
+    assert!(header("authorization").contains(phantab_testkit::DEVTOOLS_TOKEN), "the header was sent");
+
+    // Once stopped, a load sends no developer-tools event across.
+    let start = lane.ext.traffic_total();
+    lane.act("a", &a, json!({ "action": "reload" })).await.unwrap();
+    lane.ok("wait", json!({ "pageId": a, "selector": "#state", "text": "shifted" }), "a").await;
+    assert_eq!(lane.ext.traffic_total().devtools, start.devtools);
+
+    // A file there already is replaced only with overwrite.
+    let again = lane.err("trace", json!({ "pageId": a, "action": "start", "path": file }), "a").await;
+    assert!(again.contains("overwrite"), "{again}");
+    lane.finish().await;
+}
+
+/// Phase 6 proof 3, and the trace's time limit: with the CPU slowed 4 times the load takes longer than
+/// without, and a trace that reaches its `seconds` ends by itself and says so at its stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/measure?late=0").await;
+    let dir = lane.rt.path().join("traces");
+    std::fs::create_dir_all(&dir).unwrap();
+    let load = |v: &Value| v["numbers"]["load"]["ms"].as_f64().unwrap();
+    let plain = load(&traced_load(&lane, &a, &dir.join("plain.json")).await);
+    let slowed = lane.ok("emulate", json!({ "pageId": a, "cpu": 4 }), "a").await;
+    assert_eq!(slowed["emulation"]["cpu"], json!(4), "{slowed}");
+    let slow = load(&traced_load(&lane, &a, &dir.join("slow.json")).await);
+    eprintln!("lane3 load of engine/measure: {plain} ms, with the CPU slowed 4x {slow} ms");
+    assert!(slow > plain, "{slow} > {plain}");
+    lane.ok("emulate", json!({ "pageId": a, "clear": true }), "a").await;
+
+    let file = dir.join("limit.json");
+    let started =
+        lane.ok("trace", json!({ "pageId": a, "action": "start", "path": file, "seconds": 1 }), "a").await;
+    assert_eq!(started["seconds"], json!(1), "{started}");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let stopped = lane.ok("trace", json!({ "pageId": a, "action": "stop" }), "a").await;
+    assert!(stopped["ended"].as_str().unwrap().starts_with("time limit"), "{stopped}");
+    let trace: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(trace["traceEvents"].is_array());
+    lane.finish().await;
+}
+
+/// Phase 6 proof 4: each emulation reaches the page and is listed, location is set without the
+/// permission to read it, a held page refuses emulation, and emulation ends with a clear call and with
+/// close, on an owner's tab that stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn emulation_reaches_the_page_and_clears_on_clear_and_close() {
+    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
+    let _turn = SERIAL.lock().await;
+    let lane = Lane::start_dev_tools(&chrome, "parity").await;
+    let a = lane.open("a", "/engine/basic").await;
+    let read = async |page: &str, function: &str| {
+        lane.ok("evaluate", json!({ "pageId": page, "function": function }), "a").await["result"].clone()
+    };
+    let agent = "() => navigator.userAgent";
+    let dark = "() => matchMedia('(prefers-color-scheme: dark)').matches";
+    let own_agent = read(&a, agent).await;
+    let own_dark = read(&a, dark).await;
+    let scheme = if own_dark == json!(true) { "light" } else { "dark" };
+    let set = lane
+        .ok(
+            "emulate",
+            json!({
+                "pageId": a, "userAgent": "phantab-test-agent", "colorScheme": scheme,
+                "location": { "latitude": 51.5, "longitude": -0.12 },
+                "network": { "latencyMs": 400 },
+            }),
+            "a",
+        )
+        .await;
+    assert_eq!(set["emulation"]["userAgent"], json!("phantab-test-agent"), "{set}");
+    assert_eq!(read(&a, agent).await, json!("phantab-test-agent"));
+    assert_ne!(read(&a, dark).await, own_dark);
+    // A request waits the latency asked for.
+    let fetched = "async () => { const t = performance.now(); await (await fetch('/status?code=200')).text(); return performance.now() - t; }";
+    assert!(read(&a, fetched).await.as_f64().unwrap() >= 350.0);
+    // The position is set, and the page is still not allowed to read it.
+    let position = "() => new Promise((r) => navigator.geolocation.getCurrentPosition((p) => r(p.coords.latitude), (e) => r('refused ' + e.code), { timeout: 3000 }))";
+    assert_eq!(read(&a, position).await, json!("refused 1"));
+    let pages = lane.ok("pages", json!({}), "a").await;
+    let listed = pages.as_array().unwrap().iter().find(|p| p["pageId"] == json!(a)).unwrap().clone();
+    assert_eq!(listed["emulation"]["colorScheme"], json!(scheme), "{pages}");
+    assert!(listed["emulation"]["location"].is_object(), "{pages}");
+
+    lane.ok("emulate", json!({ "pageId": a, "network": { "offline": true } }), "a").await;
+    assert_eq!(read(&a, "() => navigator.onLine").await, json!(false));
+    let offline = "async () => { try { await fetch('/status?code=200'); return 'fetched'; } catch (e) { return 'failed'; } }";
+    assert_eq!(read(&a, offline).await, json!("failed"));
+
+    let cleared = lane.ok("emulate", json!({ "pageId": a, "clear": true }), "a").await;
+    assert_eq!(cleared["emulation"], json!({}), "{cleared}");
+    assert_eq!(read(&a, agent).await, own_agent);
+    assert_eq!(read(&a, dark).await, own_dark);
+    assert_eq!(read(&a, "() => navigator.onLine").await, json!(true));
+    assert_eq!(read(&a, offline).await, json!("fetched"));
+    let pages = lane.ok("pages", json!({}), "a").await;
+    assert!(pages.as_array().unwrap().iter().all(|p| p.get("emulation").is_none()), "{pages}");
+
+    let bad = lane.err("emulate", json!({ "pageId": a, "cpu": 0.5 }), "a").await;
+    assert!(bad.starts_with("cpu:"), "{bad}");
+    let both = lane.err("emulate", json!({ "pageId": a, "clear": true, "cpu": 2 }), "a").await;
+    assert!(both.contains("clear"), "{both}");
+
+    // A page handed to the owner refuses emulation.
+    lane.ok("show", json!({ "pageId": a }), "a").await;
+    let held = lane.err("emulate", json!({ "pageId": a, "cpu": 2 }), "a").await;
+    assert!(held.contains("handed to the owner"), "{held}");
+
+    // Close ends it on an owner's tab, which stays open.
+    let url = lane.fixtures.url("/engine/basic");
+    let tab = lane.ext.open_owner_tab(&url).await;
+    let attach = async || {
+        let r = lane.ok("attach", json!({ "tabId": tab.to_string() }), "a").await;
+        r["pageId"].as_str().unwrap().to_owned()
+    };
+    let o = attach().await;
+    lane.ok("emulate", json!({ "pageId": o, "userAgent": "phantab-test-agent" }), "a").await;
+    assert_eq!(read(&o, agent).await, json!("phantab-test-agent"));
+    lane.ok("close", json!({ "pageId": o }), "a").await;
+    assert!(lane.ext.tab_open(tab).await);
+    let o = attach().await;
+    assert_eq!(read(&o, agent).await, own_agent, "close ended the emulation");
+    lane.finish().await;
 }

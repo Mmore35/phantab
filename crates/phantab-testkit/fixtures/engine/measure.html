@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Measure</title>
+<style>body{margin:0;font:14px sans-serif}#late{display:block;width:600px;height:400px}</style></head>
+<body>
+<p id="top">A page to measure.</p>
+<img id="late" alt="A late picture" src="/picture?ms={{query:late}}">
+<p id="state">loading</p>
+<script>
+// The measuring fixture (`browser_trace`, `browser_emulate`; THREAT-MODEL SR-91). The picture arrives
+// late (`/picture` waits `?late=` ms, 800 by default) and is the largest thing painted; 300 ms after
+// load a banner pushes the page down, a layout shift. `work` is a fixed amount of computing, not a wait
+// on the clock, so a CPU slowdown makes it take longer: run inline it delays the load, and run from a
+// timer it is a long task of its own (a task inside the first parse is not reported to the page).
+// `/cookie/set` answers with an httpOnly cookie and `/cookie/check` sends it back with an
+// `Authorization` header this script builds, so neither value is in the page's source.
+// `#state` says `shifted` once the banner is in.
+function work(n) { let x = 0; for (let i = 0; i < n; i++) x += i % 7; return x; }
+window.worked = work(4e7);
+setTimeout(() => { window.worked += work(1e8); }, 0);
+(async () => {
+  const token = ['Bearer au', 'th-', 6 * 7, '-tok'].join('');
+  await (await fetch('/cookie/set')).text();
+  await (await fetch('/cookie/check', { headers: { Authorization: token } })).text();
+})();
+addEventListener('load', () => setTimeout(() => {
+  const banner = document.createElement('div');
+  banner.id = 'banner';
+  banner.style.height = '120px';
+  banner.textContent = 'A banner, added after load';
+  document.body.prepend(banner);
+  document.getElementById('state').textContent = 'shifted';
+}, 300));
+</script>
+</body></html>
