@@ -415,6 +415,35 @@ test('developer-tools events cross only for a recording tab, on its own target, 
   assert.deepEqual(cdpPosted(fake).slice(CONSOLE.length), NETWORK.map(m => `5 ${m}`));
 });
 
+// SR-91: a trace's events cross only while it runs, on the tab that started it on its own target; its
+// tracingComplete ends the recording, and a detach ends it too.
+const TRACE = ['Tracing.bufferUsage', 'Tracing.tracingComplete'];
+test("a trace's events cross only while it runs, and its completion ends the recording", async () => {
+  const fake = await startWorker();
+  fake.port.receive({ welcome: true, events: ['Page.frameNavigated'], devTools: true });
+  await settle();
+  await fake.op('attach', { tabId: 5 });
+  await fake.op('attach', { tabId: 6 });
+  fireAll(fake, { tabId: 5 }, TRACE);
+  assert.deepEqual(cdpPosted(fake), [], 'no trace running');
+  await fake.op('send', { tabId: 6, sessionId: 'S2', method: 'Tracing.start', params: {} });
+  fireAll(fake, { tabId: 6 }, TRACE);
+  assert.deepEqual(cdpPosted(fake), [], 'a trace started on a child session marks nothing');
+  await fake.op('send', { tabId: 5, method: 'Tracing.start', params: {} });
+  // The trace's own events only, and not the console's or network's.
+  fireAll(fake, { tabId: 5 }, [...CONSOLE, ...NETWORK, 'Tracing.bufferUsage']);
+  fireAll(fake, { tabId: 5, sessionId: 'S1' }, TRACE);
+  fireAll(fake, { tabId: 6 }, TRACE);
+  fake.chrome.debugger.onEvent.fire({ tabId: 5 }, 'Tracing.tracingComplete', { stream: '3' });
+  fireAll(fake, { tabId: 5 }, TRACE);
+  assert.deepEqual(cdpPosted(fake), ['5 Tracing.bufferUsage', '5 Tracing.tracingComplete']);
+  // A detach ends a running trace's recording.
+  await fake.op('send', { tabId: 5, method: 'Tracing.start', params: {} });
+  fake.chrome.debugger.onDetach.fire({ tabId: 5 }, 'target_closed');
+  fireAll(fake, { tabId: 5 }, TRACE);
+  assert.equal(cdpPosted(fake).length, 2);
+});
+
 test('an ExtraInfo event is dropped whatever the welcome lists, and with no welcome at all', async () => {
   for (const welcome of [null, { welcome: true }, { welcome: true, events: [...EXTRA, 'Page.frameNavigated'], devTools: true }]) {
     const fake = await startWorker();

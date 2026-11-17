@@ -84,12 +84,20 @@ impl Config {
         out
     }
 
-    /// `devTools` (THREAT-MODEL SR-90): the developer tools `browser_evaluate`, `browser_console` and
-    /// `browser_network`, on only when the value is the JSON boolean `true`. A string, a number or
-    /// anything else is off, so a mistyped setting never turns them on.
+    /// `devTools` (THREAT-MODEL SR-90, SR-91): the developer tools `browser_evaluate`,
+    /// `browser_console`, `browser_network`, `browser_emulate` and `browser_trace`, on only when the
+    /// value is the JSON boolean `true`. A string, a number or anything else is off, so a mistyped
+    /// setting never turns them on.
     #[must_use]
     pub fn dev_tools(&self) -> bool {
         self.other.get("devTools") == Some(&Value::Bool(true))
+    }
+
+    /// `work` (THREAT-MODEL SR-92, [`crate::work`]): on unless absent or `false`, so a mistyped value
+    /// takes the strict choice.
+    #[must_use]
+    pub fn work(&self) -> bool {
+        crate::work::on(self)
     }
 }
 

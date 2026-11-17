@@ -160,6 +160,18 @@ fn devtools_defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static
             json!({ "pageId": s(), "id": s(), "filter": s(), "path": s(), "overwrite": flag() }),
             &[],
         ),
+        (
+            "emulate",
+            "Change what one page is told about its machine, until clear true, its close or its release to the owner (on only with devTools set): cpu slows its CPU that many times (1 to 20); network is an object of offline (true or false), latencyMs, downloadKbps and uploadKbps; location sets the position it is told (latitude, longitude, accuracy in metres) and grants no permission, so a site not allowed to read the location still cannot; userAgent replaces the browser's user agent; colorScheme is light or dark. A setting given as null ends just that one, and clear true, given alone, ends them all. The answer, and browser_pages, list what is on. It counts as a change to the page: a page handed to the owner refuses it. Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "cpu": { "type": ["number", "null"] }, "network": { "type": ["object", "null"] }, "location": { "type": ["object", "null"] }, "userAgent": { "type": ["string", "null"] }, "colorScheme": { "type": ["string", "null"], "enum": ["light", "dark", null] }, "clear": flag() }),
+            &[],
+        ),
+        (
+            "trace",
+            "Record a performance trace of one page (on only with devTools set), one trace at a time. action start begins it, saving to path (an absolute file path; an existing file is replaced only with overwrite true), and reload true reloads the page inside it, which counts as a change to the page. It ends at action stop, at seconds (default 30, at most 120) or once Chrome's 20 MB buffer is full, and ended says which. stop saves the trace in Chrome's trace format, which the Performance panel opens, and answers the page's own numbers: load ms, largestPaint (ms, element, url), layoutShift (score, the largest burst), longTasks (count, totalMs) and the ten slowestRequests. A number the page did not report is missing with the reason. The numbers come from phantab's hidden window: compare runs with each other, do not publish them. No screenshots, request headers or cookies are recorded, and there is no insight analysis or Lighthouse. Leave pageId out for the page your last call named.",
+            json!({ "pageId": s(), "action": { "type": "string", "enum": ["start", "stop"] }, "reload": flag(), "path": s(), "overwrite": flag(), "seconds": { "type": "number" } }),
+            &["action"],
+        ),
     ]
 }
 
@@ -168,7 +180,7 @@ fn devtools_defs() -> Vec<(&'static str, &'static str, Value, &'static [&'static
 /// # Errors
 /// Never in practice: the definitions are fixed.
 pub fn tools() -> anyhow::Result<Vec<Tool>> {
-    tools_with(false)
+    tools_for(false, false)
 }
 
 /// The tool list, with the developer tools after the rest when `dev_tools` (SR-90).
@@ -176,9 +188,20 @@ pub fn tools() -> anyhow::Result<Vec<Tool>> {
 /// # Errors
 /// Never in practice: the definitions are fixed.
 pub fn tools_with(dev_tools: bool) -> anyhow::Result<Vec<Tool>> {
+    tools_for(dev_tools, false)
+}
+
+/// [`tools_with`], without the sign-in tools when `work` is on (SR-92).
+///
+/// # Errors
+/// Never in practice: the definitions are fixed.
+pub fn tools_for(dev_tools: bool, work: bool) -> anyhow::Result<Vec<Tool>> {
     let mut all = defs();
     if dev_tools {
         all.extend(devtools_defs());
+    }
+    if work {
+        all.retain(|(name, ..)| !crate::work::REFUSED.contains(name));
     }
     all.into_iter()
         .map(|(name, description, properties, required)| {
@@ -241,7 +264,8 @@ struct Server {
 /// output tokens, about 9 ms each, and each argument it wrote cost about 20 of them beyond its value:
 /// nearly every call named the one page it had open. `close`, `show`, `resume` and `sign_in` still
 /// name theirs, so none of them reaches a page by default.
-const DEFAULT_PAGE: &[&str] = &["snapshot", "screenshot", "wait", "act", "evaluate", "console", "network"];
+const DEFAULT_PAGE: &[&str] =
+    &["snapshot", "screenshot", "wait", "act", "evaluate", "console", "network", "emulate", "trace"];
 
 /// How many characters of a page id an agent is shown. Every call names its page, and a whole v4 UUID
 /// is about 20 tokens of the agent's own output each time, the dearest tokens it writes (climb
@@ -1149,9 +1173,12 @@ pub async fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    // A missing or unreadable config.json lists no developer tool; the service refuses them alike.
-    let dev_tools = crate::runtime::read_config().is_ok_and(|c| c.dev_tools());
-    let (client, tools) = match (client_id(), tools_with(dev_tools)) {
+    // A missing or unreadable config.json lists no developer tool and every sign-in tool; the service
+    // reads its own copy and refuses alike.
+    let config = crate::runtime::read_config().ok();
+    let dev_tools = config.as_ref().is_some_and(crate::runtime::Config::dev_tools);
+    let work = config.as_ref().is_some_and(crate::runtime::Config::work);
+    let (client, tools) = match (client_id(), tools_for(dev_tools, work)) {
         (Ok(c), Ok(t)) => (c, t),
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("{e}");
@@ -1222,17 +1249,15 @@ mod tests {
         let tools = tools().unwrap();
         assert_eq!(tools.len(), 15);
         assert!(tools.iter().all(|t| t.input_schema.get("additionalProperties") == Some(&json!(false))));
-        // SR-90: the developer tools only with devTools, after the others, which stay as they are.
+        // SR-90, SR-91: the developer tools only with devTools, after the others, which stay as they are.
         let with = tools_with(true).unwrap();
         let names: Vec<&str> = with[15..].iter().map(|t| t.name.as_ref()).collect();
-        assert_eq!(names, ["browser_evaluate", "browser_console", "browser_network"]);
+        let devtools =
+            ["browser_evaluate", "browser_console", "browser_network", "browser_emulate", "browser_trace"];
+        assert_eq!(names, devtools);
         assert_eq!(serde_json::to_value(&with[..15]).unwrap(), serde_json::to_value(&tools).unwrap());
         assert!(with.iter().all(|t| t.input_schema.get("additionalProperties") == Some(&json!(false))));
-        assert!(
-            !tools.iter().any(
-                |t| ["browser_evaluate", "browser_console", "browser_network"].contains(&t.name.as_ref())
-            )
-        );
+        assert!(!tools.iter().any(|t| devtools.contains(&t.name.as_ref())));
     }
 
     #[test]

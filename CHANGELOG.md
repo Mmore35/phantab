@@ -3,7 +3,9 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
-## Unreleased
+## 0.6.0 (2026-11-16)
+At parity with Chrome DevTools MCP for a work laptop: forms in frames and shadow roots filled and read
+back, agents sharing a site, the developer tools, emulation and traces, and the `work` setting.
 
 ### Changed
 - Agents share a site by default. Another agent's page on a site, open or handed to the owner, no
@@ -60,6 +62,26 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   page: `browser_sign_in` and `browser_sign_up` refuse on a tab a script ran on, until it closes, and
   `browser_evaluate` refuses on a page a password was filled into, until a reload or a fresh page.
   Reload the extension at `chrome://extensions`.
+- `browser_emulate` and `browser_trace`, developer tools too (on only with `devTools`).
+  `browser_emulate` sets one page's CPU slowdown, network conditions (offline, latency, download and
+  upload speed), location, user agent or colour scheme until `clear`, its close or its release; the
+  location is the position the page is told, with no permission granted, and `browser_pages` lists
+  what is on. `browser_trace` starts a performance trace (optionally reloading the page inside it) and
+  stops it into a file the Performance panel opens, with a time limit (30 s unless `seconds`, at most
+  120) and a 20 MB size limit, one trace at a time. The stop answers the page's own load time, largest
+  paint and its element, layout shift, long tasks and ten slowest requests, a missing number with its
+  reason. No screenshots, request headers or cookies are recorded. Reload the extension.
+- The `work` setting, for a work laptop or a managed machine (`docs/GUARDRAILS.md` § A work laptop).
+  `"work": true` in `config.json` turns off `browser_sign_in` and `browser_sign_up` (not listed, and
+  refused naming the setting), every sign-in provider, the automatic hand-off of a human check (the
+  check is reported; `browser_show {verification: true}` still hands the page over) and the phone
+  viewer, whatever else the config says. Any value but `true` or `false` counts as on, and
+  `browser_status` lists what is off and says when the value was not understood.
+- `phantab install --work` (and the bundles' `install.ps1 -Work` and `install.sh --work`) writes
+  `"work": true` and `"devTools": true` to `config.json` and keeps every other setting. A later
+  install without it keeps both (`docs/WORK-LAPTOP.md`).
+- `docs/COMING-FROM-DEVTOOLS-MCP.md`: each Chrome DevTools MCP tool, the phantab call that replaces
+  it with an example a test makes, what is different on purpose and what is not included.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.
 - `browser_act` takes new steps: `hover` and `hover_xy`; `drag` (an element onto another) and `drag_xy`
   (a point onto a point); `upload` (a file input, one or more absolute paths, no file chooser);

@@ -41,13 +41,19 @@ const welcomed = new WeakSet<chrome.runtime.Port>();
 // commands are refused and their events never forwarded. `recording` holds each tab whose console
 // (`Log.enable`) or network (`Network.enable`) recording the service started on its own target; only
 // those tabs' developer-tools events cross, so a page never asked about sends what it sent before.
+// SR-91: a trace (`Tracing.start`) is a recording too, ended by its `Tracing.tracingComplete`, whose
+// stream handle `streams` keeps: `IO.read` and `IO.close` reach only that stream, on that tab.
 let devTools = false;
-type Recorded = 'console' | 'network';
+type Recorded = 'console' | 'network' | 'trace';
 const recording = new Map<number, Set<Recorded>>();
-const recordedBy: Record<string, Recorded> = { 'Log.enable': 'console', 'Network.enable': 'network' };
-/** The recording a developer-tools event belongs to: the network's, or the console's. */
-const recordingOf = (method: string): Recorded => method.startsWith('Network.') ? 'network' : 'console';
-function stopRecording(tabId?: number): void { if (tabId === undefined) recording.clear(); else recording.delete(tabId); }
+const streams = new Map<number, string>();
+const recordedBy: Record<string, Recorded> = { 'Log.enable': 'console', 'Network.enable': 'network', 'Tracing.start': 'trace' };
+/** The recording a developer-tools event belongs to: the trace's, the network's, or the console's. */
+const recordingOf = (method: string): Recorded =>
+  method.startsWith('Tracing.') ? 'trace' : method.startsWith('Network.') ? 'network' : 'console';
+function stopRecording(tabId?: number): void {
+  if (tabId === undefined) { recording.clear(); streams.clear(); } else { recording.delete(tabId); streams.delete(tabId); }
+}
 // The Chrome profile folder this copy was installed for, from the profile.json phantab install writes beside
 // an extra profile's copy (`runtime/extension-profiles/<folder>/extension/`); the usual profile's copy has none. The
 // hello names it, and the service checks that this profile lists exactly that folder (THREAT-MODEL SR-76).
@@ -96,6 +102,7 @@ interface CdpParams {
   url?: string;
   sessionId?: number;
   type?: string;
+  stream?: string;
 }
 type AgentWindows = Record<string, boolean>;
 
@@ -401,6 +408,11 @@ const ops: Record<string, (args: Args) => unknown> = {
     // any origin with the owner's cookies.
     const universal = params?.grantUniveralAccess;
     if (universal != null && universal !== false) throw Error('CDP method not allowed: ' + method + ' with grantUniveralAccess');
+    // SR-91: a stream read or close only for the tab's own finished trace.
+    if (method === 'IO.read' || method === 'IO.close') {
+      if (sessionId || !streams.has(tabId) || params?.handle !== streams.get(tabId)) throw Error('CDP method not allowed: ' + method + " (not this tab's trace)");
+      if (method === 'IO.close') streams.delete(tabId);
+    }
     // A recording starts on the tab's own target only, and is marked before the command so no event it
     // causes is dropped; a failed start unmarks it again.
     const starts = sessionId ? undefined : recordedBy[method];
@@ -626,7 +638,15 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method.endsWith('ExtraInfo')) return;
   // A developer-tools event only for a tab the service is recording, on its own target, with devTools on.
   if (DEVTOOLS_EVENTS.has(method)) {
-    if (devTools && !source.sessionId && recording.get(tabId)?.has(recordingOf(method))) post({ event: 'cdp', tabId, method, params });
+    if (devTools && !source.sessionId && recording.get(tabId)?.has(recordingOf(method))) {
+      // A finished trace stops its recording, and leaves its stream for IO.read (SR-91).
+      if (method === 'Tracing.tracingComplete') {
+        recording.get(tabId)!.delete('trace');
+        const stream = (params as CdpParams | undefined)?.stream;
+        if (typeof stream === 'string') streams.set(tabId, stream);
+      }
+      post({ event: 'cdp', tabId, method, params });
+    }
     return;
   }
   if (forwarded && !forwarded.has(method)) return; // read by nobody: animations, workers, ...

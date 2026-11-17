@@ -18,10 +18,14 @@ use serde_json::{Value, json};
 const TOOLS_GOLDEN: &str = include_str!("fixtures/tools-list.json");
 const TOOLS_GOLDEN_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools-list.json");
 /// `tools/list`'s `result` with `"devTools": true` in config.json (THREAT-MODEL SR-90): the list above
-/// and the three developer tools after it. Rewritten the same way.
+/// and the five developer tools after it. Rewritten the same way.
 const DEVTOOLS_GOLDEN: &str = include_str!("fixtures/tools-list-devtools.json");
 const DEVTOOLS_GOLDEN_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools-list-devtools.json");
+/// `tools/list`'s `result` with `"work": true` in config.json (THREAT-MODEL SR-92): the first list without
+/// `browser_sign_in` and `browser_sign_up`. Rewritten the same way.
+const WORK_GOLDEN: &str = include_str!("fixtures/tools-list-work.json");
+const WORK_GOLDEN_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools-list-work.json");
 
 struct Mcp {
     child: Child,
@@ -151,11 +155,53 @@ fn developer_tools_are_listed_only_with_dev_tools_true() {
             "tools/list with devTools changed; see DEVTOOLS_GOLDEN"
         );
     }
+    // Every emulation setting takes null, which ends just that one.
+    let tools: Value = serde_json::from_str(&listed).unwrap();
+    let emulate = tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == "browser_emulate").unwrap();
+    for (name, schema) in emulate["inputSchema"]["properties"].as_object().unwrap() {
+        if name != "pageId" && name != "clear" {
+            assert!(
+                schema["type"].as_array().is_some_and(|t| t.contains(&json!("null"))),
+                "{name}: {schema}"
+            );
+        }
+    }
     for off in [json!(false), json!("true"), json!(1), json!(null)] {
         let mut config = base.clone();
         config["devTools"] = off.clone();
         assert_eq!(listed_with(&config), TOOLS_GOLDEN.trim_end(), "devTools {off}");
     }
+}
+
+/// The tool names in a `tools/list` result.
+fn names(listed: &str) -> Vec<String> {
+    let v: Value = serde_json::from_str(listed).unwrap();
+    v["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect()
+}
+
+/// SR-92: `work` on lists no sign-in tool; absent and `false` list the golden above. Any other value
+/// counts as on. With `devTools` too (what `phantab install --work` writes), the developer tools stay.
+#[test]
+fn sign_in_tools_are_not_listed_with_work_on() {
+    let listed = listed_with(&json!({ "profileDirectory": "test", "work": true }));
+    if std::env::var_os("PHANTAB_UPDATE_GOLDEN").is_some() {
+        std::fs::write(WORK_GOLDEN_PATH, format!("{listed}\n")).unwrap();
+    } else {
+        assert_eq!(listed, WORK_GOLDEN.trim_end(), "tools/list with work changed; see WORK_GOLDEN");
+    }
+    let sign_in = ["browser_sign_in", "browser_sign_up"];
+    let mut expected = names(TOOLS_GOLDEN);
+    expected.retain(|n| !sign_in.contains(&n.as_str()));
+    assert_eq!(names(&listed), expected);
+    for on in [json!("yes"), json!(null), json!(0)] {
+        let config = json!({ "profileDirectory": "test", "work": on });
+        assert_eq!(listed_with(&config), WORK_GOLDEN.trim_end(), "work {on}");
+    }
+    assert_eq!(listed_with(&json!({ "profileDirectory": "test", "work": false })), TOOLS_GOLDEN.trim_end());
+    let both = names(&listed_with(&json!({ "profileDirectory": "test", "work": true, "devTools": true })));
+    let mut expected = names(DEVTOOLS_GOLDEN);
+    expected.retain(|n| !sign_in.contains(&n.as_str()));
+    assert_eq!(both, expected);
 }
 
 #[test]

@@ -127,6 +127,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// | `/<key>` or `/<key>.html` | The fixture page `fixtures/<key>.html`, templated. |
 /// | `/slow?ms=N[&then=/path]` | Waits `N` ms (cap 120000), then serves `then` (or a small page). |
 /// | `/redirect?to=URL[&status=301\|302\|303\|307\|308]` | A redirect, 302 by default. |
+/// | `/picture?ms=N` | Waits `N` ms (800 when absent or empty, cap 120000), then a 600×400 SVG detailed enough for Chrome to count it as a largest paint. |
 /// | `/status?code=N` | An empty page with that status. |
 /// | `/cookie/set` | `set`, with an httpOnly cookie of [`DEVTOOLS_COOKIE`]. |
 /// | `/cookie/check` | Whether the request carried that cookie and [`DEVTOOLS_TOKEN`]; never their values. |
@@ -516,6 +517,11 @@ async fn route(ctx: &Ctx<'_>, method: &str, path: &str, body: &str) -> Response 
                 then.unwrap_or_else(|| format!("<title>Slow</title><p>Waited {ms} ms</p>")),
             );
         }
+        "/picture" => {
+            let ms = ctx.param("ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(800).min(SLOW_CAP_MS);
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            return picture();
+        }
         "/redirect" => {
             let to = ctx.param("to").unwrap_or_else(|| "/engine/basic".to_owned());
             let status = match ctx.param("status").as_deref() {
@@ -572,6 +578,31 @@ fn cookie_route(ctx: &Ctx<'_>, path: &str) -> Option<Response> {
             Some(Response::text(200, format!("cookie {cookie}, authorization {auth}")))
         }
         _ => None,
+    }
+}
+
+/// `/picture`'s image. Chrome leaves a picture with too little detail for its size (a plain colour, under
+/// about 0.05 bits per pixel) out of the largest paint, so this one is 300 coloured boxes, about 20 KB.
+fn picture() -> Response {
+    let mut svg = String::from(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="teal"/>"#,
+    );
+    for i in 0u32..300 {
+        let colour = (i.wrapping_mul(2_654_435_761) >> 8) & 0x00ff_ffff;
+        let _ = write!(
+            svg,
+            r##"<rect x="{}" y="{}" width="{}" height="{}" fill="#{colour:06x}"/>"##,
+            (i * 37) % 600,
+            (i * 53) % 400,
+            20 + i % 40,
+            15 + i % 30
+        );
+    }
+    svg.push_str("</svg>");
+    Response {
+        status: 200,
+        headers: vec![("Content-Type", "image/svg+xml".to_owned())],
+        body: svg.into_bytes(),
     }
 }
 

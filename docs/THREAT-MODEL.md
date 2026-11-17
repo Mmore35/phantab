@@ -83,7 +83,11 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T93 | An injected agent uploads a file the owner keeps (a key, a tax form, a browser profile file) to a site, accepts a dialog that says yes to a deletion or payment, or reloads or moves back or forward onto a page a form sent so the form is sent again. | SR-89; an agent that sets `ownerConfirmed` unasked, and every one of these under `parity`, is residual R3 | L1, L3 |
 | T94 | With `devTools` on, an injected agent runs a script in the owner's signed-in page through `browser_evaluate`: it reads what the page's own scripts can (`document.cookie` without the httpOnly cookies, local storage, a field's value) or does what they can (send a form, call the site's API as the owner). | SR-90; that reach is what the setting turns on, residual R22 | L1, L3 |
 | T95 | With `devTools` on, an injected agent reads the owner's cookies or authorization through `browser_network` (a request's `Cookie` or `Authorization` header, a response's `Set-Cookie`, the raw header text an `...ExtraInfo` event carries), or saves them to a file with `path`. | SR-90 | L1, L3 |
-| T96 | With `devTools` off (the default), an agent or a page reaches a developer tool anyway: a call to `evaluate`, `console` or `network`, or one of SR-20's developer-tools commands sent through the bridge. | SR-90, SR-20 | L1, L3 |
+| T96 | With `devTools` off (the default), an agent or a page reaches a developer tool anyway: a call to `evaluate`, `console`, `network`, `emulate` or `trace`, or one of SR-20's developer-tools commands sent through the bridge. | SR-90, SR-91, SR-20 | L1, L3 |
+| T97 | With `devTools` on, an injected agent saves the owner's cookies or authorization in a trace file (a request's headers, a response's `Set-Cookie`, Chrome's command line naming the profile folder), saves pictures of the page in it, or reads another Chrome stream than its own trace's. | SR-91; the URLs and page timings a trace holds are residual R23 | L1, L3 |
+| T98 | With `devTools` on, an injected agent leaves an emulation on the owner's page (a slowed CPU, an offline network, a false location or user agent), or a trace running after its page closes, so the owner's own browsing is changed or recorded. | SR-91 | L1, L3 |
+| T99 | With `devTools` on, an injected agent uses `browser_emulate`'s location to make a site read a position without the owner's permission. | SR-91 | L3 |
+| T100 | On a work laptop or a managed machine that sets `work`, an agent signs in or makes an account with a saved login, a provider is started, a human check pops up by itself, or the phone viewer opens a port, none of which that machine allows. | SR-92 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -417,12 +421,19 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `Page.navigateToHistoryEntry` and `Page.reload` are listed for the `upload`, `back`, `forward` and
   `reload` steps (SR-89): each acts only on the tab's own page, and `DOM.setFileInputFiles` sends only
   paths the service checked first. The list has a second part, the developer-tools commands
-  (`DEVTOOLS_METHODS`: `Log.enable`, `Network.enable`, `Network.getResponseBody` and
-  `Runtime.terminateExecution`), relayed only while `devTools` is on (SR-90): the service refuses them
+  (`DEVTOOLS_METHODS`: `Log.enable`, `Network.enable`, `Network.getResponseBody`,
+  `Runtime.terminateExecution`, and for SR-91 `Emulation.setCPUThrottlingRate`,
+  `Network.emulateNetworkConditions`, `Emulation.setGeolocationOverride`,
+  `Emulation.clearGeolocationOverride`, `Emulation.setUserAgentOverride`, `Emulation.setEmulatedMedia`,
+  `Tracing.start`, `Tracing.end`, `IO.read`, `IO.close` and `Page.removeScriptToEvaluateOnNewDocument`),
+  relayed only while `devTools` is on (SR-90): the service refuses them
   otherwise, and the extension refuses them unless the service's welcome on that connection declared
   `devTools`. `Network.enable` starts a tab's network recording and `Log.enable` its console recording;
   `Network.getResponseBody` reads one recorded response's body; `Runtime.terminateExecution` stops a
-  page script that ran past its time limit. Neither part ever holds a cookie command
+  page script that ran past its time limit. The SR-91 commands set or end one tab's emulation, start
+  and end its trace, read and close the stream that trace left (the extension relays `IO.read` and
+  `IO.close` only for that handle, until it is closed), and remove the measuring script the trace
+  added. Neither part ever holds a cookie command
   (`Network.getAllCookies`, `Network.getCookies`, `Network.setCookie`, `Network.deleteCookies`) or any
   other `Network.*` method, and no setting unlocks `Storage.*`, `Fetch.*`, `Browser.*`, `Security.*`,
   `Target.createBrowserContext` or `Page.setDownloadBehavior`. A `send` whose
@@ -455,9 +466,10 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   Developer tools (SR-90) add events of their own, outside that list: the console's
   (`Runtime.consoleAPICalled`, `Runtime.exceptionThrown`, `Log.entryAdded`) and the network's
   (`Network.requestWillBeSent`, `Network.responseReceived`, `Network.loadingFinished`,
-  `Network.loadingFailed`). The extension forwards them only for a tab the service started recording
-  (`Log.enable` starts the console, `Network.enable` the network) on a connection whose welcome declared
-  `devTools`, so a page that never asks sends what it sent before; and it never forwards an
+  `Network.loadingFailed`) and a trace's (`Tracing.bufferUsage`, `Tracing.tracingComplete`, SR-91). The
+  extension forwards them only for a tab the service started recording (`Log.enable` starts the
+  console, `Network.enable` the network, `Tracing.start` a trace, which its `Tracing.tracingComplete`
+  ends) on a connection whose welcome declared `devTools`, so a page that never asks sends what it sent before; and it never forwards an
   `...ExtraInfo` event, whatever the list says. That last rule is part of SR-90, not of this note: an
   `...ExtraInfo` event carries a request's raw headers, cookies included, and the service never enables,
   forwards or reads one either.
@@ -889,6 +901,80 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   L3 `a_tab_a_script_ran_on_is_never_signed_in_or_up` (the review's case: a script that copies a
   password field, reversed, into the title and the console), `a_document_a_password_was_filled_into_runs_no_script`,
   `a_refused_script_leaves_its_page_open_to_sign_in`.*
+
+- **SR-91** Emulation and performance traces: `browser_emulate` and `browser_trace` are developer
+  tools under SR-90's setting. Off, they are not listed, the service refuses `emulate` and `trace`
+  naming the setting, and their Chrome commands (SR-20's second part, each by its full name) are
+  refused by the bridge and the extension. On:
+  - What an agent gains: it can make one page slower (`Emulation.setCPUThrottlingRate`, 1 to 20 times;
+    `Network.emulateNetworkConditions`, offline, latency and speed), tell it another position
+    (`Emulation.setGeolocationOverride`, ended by `Emulation.clearGeolocationOverride`), another user
+    agent (`Emulation.setUserAgentOverride`) or another colour scheme (`Emulation.setEmulatedMedia`),
+    and record what the page did while a trace ran (`Tracing.start`, `Tracing.end`, then `IO.read` and
+    `IO.close` on the trace's own stream). Each is something the owner could do in DevTools on that
+    tab; none reads a cookie or reaches another tab.
+  - The location is only what the page is told. Phantab never grants the permission to read it
+    (`Browser.*` stays banned), so a site the owner has not allowed to read the location still cannot,
+    and one the owner has allowed reads the position the agent set.
+  - Emulation is per page and never outlives the agent's hold on it: it is kept on the page's record,
+    listed in `browser_pages` and in every answer that describes the page, and ended by a `clear` call,
+    by the page's close (a tab that stays open, an owner's or the agent's own kept as a spare for its
+    next open, is put back first) and by its release to the
+    owner with `browser_show`. A new debugging session on the page (a recovered page) starts with none,
+    as Chrome ends a session's emulation with it. Emulation is a write: a page handed to the owner
+    refuses it. Network conditions also start the page's network recording (SR-90), since Chrome
+    applies them only with its Network domain on.
+  - A trace is one at a time across the service. It records the page's own target with only the
+    categories phantab names (`devtools.timeline` and its frame and stack parts, `toplevel`,
+    `v8.execute`, `blink.console`, `blink.user_timing`, `latencyInfo`, `loading` and the CPU profile),
+    with every other category excluded: no `disabled-by-default-devtools.screenshot`, no `netlog`. It
+    ends at `stop`, at its time limit (30 s unless asked, at most 120) or once Chrome's 20 MB buffer is
+    full, and the answer says which; a stream over 128 MB is refused and its stream still closed. Its page's close,
+    a kept spare and the service's end each end it, unsaved, and a start that fails part way (a
+    reload past the navigation time limit) ends what it began before it answers the error; a page whose
+    trace Chrome left unanswered at that end has it ended again by its next start or its close. With `reload`, it is a write (refused on a
+    held page, asked about first as a reload is under `light` and `full`).
+  - What the saved file holds: the trace events of everything the page did while it ran, the URLs of
+    every request and script (query strings included), their timings, script and function names,
+    console timers and user-timing marks, and Chrome's metadata about the machine and browser (system,
+    processor, graphics, version). Before it is written, the service drops every `Cookie`, `Set-Cookie`,
+    `Authorization` and `Proxy-Authorization` key or header entry in any letter case and Chrome's
+    `command_line` (it names the profile folder), then applies SR-45's redaction; the file goes through
+    SR-88 (absolute path, no overwrite unless asked). It holds no screenshot.
+  - The numbers a stop answers come from the page's own performance entries, read in a world of its
+    own, not from the trace; a number the page did not report is missing with the reason, never 0.
+  *L1: `engine::measure` tests (settings checked before anything is sent, no secret header and no
+  command line in a saved trace, no screenshot or network-log category); `page::tests` (a trace over
+  its size refused with its stream closed, a trace that never completes freed at its wait); the lists
+  (`cdp_methods` tests; `ops.test.mjs`: a stream read only for the tab's own finished trace;
+  `events.test.mjs`: a trace's events cross only while it runs); L3:
+  `trace_saves_a_performance_trace_and_the_page_s_own_numbers` (it also greps the file for the
+  fixture's cookie and token, which the page did send), `emulation_reaches_the_page_and_clears_on_clear_and_close`,
+  `a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit`,
+  `developer_tools_are_off_unless_set`.*
+
+- **SR-92** The `work` setting, for a work laptop or a managed machine: `config.json`'s `work`, read at
+  service start (and by `phantab mcp` for its tool list). Absent or `false` is off and `true` is on;
+  any other value counts as on, the strict choice, and `browser_status` says it was not understood.
+  On, four things are off whatever else the config sets:
+  - The sign-in tools: `browser_sign_in` and `browser_sign_up` are not listed, and the service refuses
+    `sign_in` and `sign_up` naming the setting before it touches a page or a provider.
+  - Sign-in providers: the engine gives the sign-in pipeline no provider, so none is started, even
+    with `signInProvider` or `signInProviders` set.
+  - The automatic hand-off of a human check: a wall is reported to the agent as it is (`state`
+    `wall`, with a `next` line), and nothing pops up by itself after the grace. `browser_show
+    {verification: true}` still hands the page to the owner (SR-68 onward apply to that hand-off), and
+    the page comes back once the check clears.
+  - The phone viewer: the `remoteViewer` listener is never bound, so no port opens, and the hand-off
+    has no link.
+  `browser_status` lists the four under `work`, and `remoteViewer` as not listening because of it.
+  `work` turns nothing on: `devTools` is its own setting (SR-90), which `phantab install --work` also
+  writes.
+  *L1: `work::tests` (which values are on, and the note), `engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so`;
+  `mcp` `sign_in_tools_are_not_listed_with_work_on` (a golden list),
+  `install` `work_writes_work_and_dev_tools_and_a_later_install_keeps_them` (a temp folder); L3:
+  `with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over` (status, the closed viewer
+  port, both refusals, no pop-up past the grace, the hand-off on asking).*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
@@ -1633,6 +1719,11 @@ These remain after every requirement holds. The README must say them in plain wo
   cannot tell which tab opened which, so a window a marked page opened, attached later with
   `browser_attach`, is not marked. And the marks are in the service's memory: a restarted service
   forgets which tabs a script ran on.
+- **R23 What a trace shows (`devTools` on).** A saved trace holds the URLs, query strings included,
+  timings and script names of everything the page loaded and ran while it was recording, and Chrome's
+  description of the machine. A URL can carry a token a site puts in it; SR-45's redaction catches the
+  patterns it knows, not every one. The file is written where the agent asks (SR-88), so it is as
+  private as that folder. No header, cookie or screenshot is in it (SR-91).
 
 ## Out of scope
 

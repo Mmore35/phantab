@@ -139,6 +139,26 @@ chrome engine_chrome developer_tools_are_off_unless_set
 chrome engine_chrome developer_tools_read_the_console_and_network_and_run_scripts
 chrome engine_chrome evaluate_is_a_write_and_is_asked_about_under_guardrails
 
+# A trace saves the owner's cookies or reads another stream; emulation outlives its page (SR-91).
+all lib engine::measure::tests::a_saved_trace_holds_no_secret_header_and_no_command_line
+all lib engine::measure::tests::the_trace_records_no_screenshot_and_no_network_log
+all lib engine::measure::tests::emulation_is_checked_before_anything_is_sent
+all cdp page::tests::a_trace_over_its_size_is_refused_and_its_stream_still_closed
+all cdp page::tests::a_trace_chrome_may_still_hold_stays_held_until_a_discard_is_answered
+all cdp page::tests::a_measuring_script_that_fails_to_run_is_removed_again
+all ext:ops a stream is read only for the tab's own finished trace, until it is closed
+all ext:events a trace's events cross only while it runs, and its completion ends the recording
+chrome engine_chrome trace_saves_a_performance_trace_and_the_page_s_own_numbers
+chrome engine_chrome emulation_reaches_the_page_and_clears_on_clear_and_close
+chrome engine_chrome a_trace_whose_reload_fails_ends_what_it_started
+
+# On a machine that sets work, a sign-in, a provider, a pop-up or the phone viewer happens anyway (SR-92).
+all lib work::tests::work_is_off_only_when_absent_or_false_and_any_other_value_is_on_and_said
+all lib engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so
+all mcp sign_in_tools_are_not_listed_with_work_on
+all install work_writes_work_and_dev_tools_and_a_later_install_keeps_them
+chrome verification with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over
+
 # An agent's script and a password phantab filled share a page, in either order (SR-90, SR-39, SR-80).
 all lib engine::tests::a_script_marks_its_tab_until_it_closes_and_a_fill_marks_its_document
 chrome engine_chrome a_tab_a_script_ran_on_is_never_signed_in_or_up

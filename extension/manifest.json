@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "phantab bridge",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Lets the local phantab service drive pages in this Chrome profile, without Chrome's remote-debugging approval prompt.",
   "homepage_url": "https://github.com/Mmore35/phantab",
   "minimum_chrome_version": "125",

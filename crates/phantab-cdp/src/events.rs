@@ -34,8 +34,8 @@ pub fn reads_event(method: &str) -> bool {
     EVENTS.binary_search(&method).is_ok()
 }
 
-/// The developer tools' events (THREAT-MODEL SR-90), sorted: read only for a page whose console or
-/// network the service is recording, on a connection whose welcome declared `devTools`. The extension
+/// The developer tools' events (THREAT-MODEL SR-90, SR-91), sorted: read only for a page whose console,
+/// network or trace the service is recording, on a connection whose welcome declared `devTools`. The extension
 /// forwards them only from such a tab's own target (`extension/src/cdp-methods.ts`, `DEVTOOLS_EVENTS`,
 /// which a test keeps equal to this list), so a page that never asks sends what it sent before. No
 /// `...ExtraInfo` event is here, or ever forwarded: those carry the raw headers, cookies included.
@@ -47,6 +47,8 @@ pub const DEVTOOLS_EVENTS: &[&str] = &[
     "Network.responseReceived",
     "Runtime.consoleAPICalled",
     "Runtime.exceptionThrown",
+    "Tracing.bufferUsage",
+    "Tracing.tracingComplete",
 ];
 
 /// Whether `method` is one of [`DEVTOOLS_EVENTS`].

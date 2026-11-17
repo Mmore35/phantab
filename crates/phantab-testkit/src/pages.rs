@@ -29,6 +29,7 @@ pub(crate) static PAGES: &[(&str, &str)] = &[
     ("engine/history", include_str!("../fixtures/engine/history.html")),
     ("engine/hover", include_str!("../fixtures/engine/hover.html")),
     ("engine/login", include_str!("../fixtures/engine/login.html")),
+    ("engine/measure", include_str!("../fixtures/engine/measure.html")),
     ("engine/moves", include_str!("../fixtures/engine/moves.html")),
     ("engine/one-frame", include_str!("../fixtures/engine/one-frame.html")),
     ("engine/popup", include_str!("../fixtures/engine/popup.html")),

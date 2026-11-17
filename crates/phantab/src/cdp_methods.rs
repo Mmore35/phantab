@@ -105,7 +105,10 @@ mod tests {
         domain.len() > 1
             && domain.chars().all(|c| c.is_ascii_alphabetic())
             && domain.starts_with(|c: char| c.is_ascii_uppercase())
-            && domain.chars().nth(1).is_some_and(|c| c.is_ascii_lowercase() || domain == "DOM")
+            && domain
+                .chars()
+                .nth(1)
+                .is_some_and(|c| c.is_ascii_lowercase() || ["DOM", "IO"].contains(&domain))
     }
 
     /// Whether a string literal's text is a `"Domain.method"` CDP name.
@@ -482,7 +485,23 @@ mod tests {
     /// its events are the service's [`phantab_cdp::DEVTOOLS_EVENTS`], never an `...ExtraInfo` one.
     #[test]
     fn the_developer_tools_part_is_exact_and_holds_no_cookie_command() {
-        let want = ["Log.enable", "Network.enable", "Network.getResponseBody", "Runtime.terminateExecution"];
+        let want = [
+            "Emulation.clearGeolocationOverride",
+            "Emulation.setCPUThrottlingRate",
+            "Emulation.setEmulatedMedia",
+            "Emulation.setGeolocationOverride",
+            "Emulation.setUserAgentOverride",
+            "IO.close",
+            "IO.read",
+            "Log.enable",
+            "Network.emulateNetworkConditions",
+            "Network.enable",
+            "Network.getResponseBody",
+            "Page.removeScriptToEvaluateOnNewDocument",
+            "Runtime.terminateExecution",
+            "Tracing.end",
+            "Tracing.start",
+        ];
         assert_eq!(DEVTOOLS.iter().copied().collect::<Vec<_>>(), want);
         for m in DEVTOOLS.iter().chain(DEVTOOLS_EVENTS.iter()) {
             assert!(!ALLOWED.contains(m), "{m} is in both parts");

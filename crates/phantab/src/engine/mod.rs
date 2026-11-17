@@ -15,6 +15,7 @@ mod echo;
 mod files;
 mod guardrails;
 mod marks;
+mod measure;
 mod ops;
 mod profiles;
 mod quiet;
@@ -100,6 +101,8 @@ pub(crate) struct State {
     script_marks: Vec<marks::TabMark>,
     /// The documents a password was filled into, by tab, which no script runs on ([`marks`]).
     fill_marks: Vec<(marks::TabMark, u64)>,
+    /// The one trace `browser_trace` runs (THREAT-MODEL SR-91).
+    trace: Option<measure::Tracing>,
 }
 
 /// A live view token and the page it shows. A local token opens the viewer on this machine and never
@@ -428,6 +431,9 @@ impl Engine {
         if let Some(Value::Object(q)) = &st.quiet {
             m.insert("quietDebugging".into(), Value::Object(Engine::quiet_status(q)));
         }
+        if let Some(w) = crate::work::status(&self.setup.config) {
+            m.insert(crate::work::KEY.into(), w);
+        }
         m
     }
 
@@ -598,8 +604,19 @@ impl PageService for Engine {
 impl Engine {
     /// [`PageService::call`] before its redaction.
     async fn call_raw(&self, method: EngineMethod, args: Value, client: &str) -> EngineResult {
-        if matches!(method, EngineMethod::Evaluate | EngineMethod::Console | EngineMethod::Network) {
+        if matches!(
+            method,
+            EngineMethod::Evaluate
+                | EngineMethod::Console
+                | EngineMethod::Network
+                | EngineMethod::Emulate
+                | EngineMethod::Trace
+        ) {
             devtools::require(&self.setup.config, method)?;
+        }
+        // `work` turns the sign-in tools off, before any page or provider is touched (SR-92).
+        if matches!(method, EngineMethod::SignIn | EngineMethod::SignUp) && self.setup.config.work() {
+            return Err(EngineError(crate::work::refusal(method.name())));
         }
         match method {
             EngineMethod::Pages => Ok(self.pages(client)),
@@ -623,6 +640,8 @@ impl Engine {
             EngineMethod::Evaluate => self.evaluate(client, &args).await,
             EngineMethod::Console => self.console(client, &args).await,
             EngineMethod::Network => self.network(client, &args).await,
+            EngineMethod::Emulate => self.emulate(client, &args).await,
+            EngineMethod::Trace => self.trace(client, &args).await,
         }
     }
 }

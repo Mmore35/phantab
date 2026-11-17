@@ -56,10 +56,20 @@ struct State {
     next_answers: HashMap<i64, (bool, Option<String>)>,
     /// Whether the welcome declared `devTools` (SR-90).
     dev_tools: bool,
-    /// tabId → the recordings the service started on its own target: `console`, `network`.
+    /// tabId → the recordings the service started on its own target: `console`, `network`, `trace`.
     recording: HashMap<i64, HashSet<&'static str>>,
+    /// tabId → the stream its finished trace left, the only handle `IO.read` and `IO.close` reach (SR-91).
+    streams: HashMap<i64, String>,
     /// tabId → what Chrome sent this extension, and what it forwarded.
     traffic: HashMap<i64, Traffic>,
+}
+
+impl State {
+    /// Ends the tab's recordings and forgets its trace's stream (`background.ts`, `stopRecording`).
+    fn stop_recording(&mut self, tab: i64) {
+        self.recording.remove(&tab);
+        self.streams.remove(&tab);
+    }
 }
 
 /// One tab's CDP events: every one Chrome sent, and those forwarded, of them developer-tools ones.
@@ -72,7 +82,13 @@ pub struct Traffic {
 
 /// The recording a developer-tools event belongs to, as `background.ts`'s `recordingOf`.
 fn recording_of(method: &str) -> &'static str {
-    if method.starts_with("Network.") { "network" } else { "console" }
+    if method.starts_with("Tracing.") {
+        "trace"
+    } else if method.starts_with("Network.") {
+        "network"
+    } else {
+        "console"
+    }
 }
 
 /// Whether the extension forwards `method` from `tab` (`background.ts`, `chrome.debugger.onEvent`).
@@ -403,7 +419,7 @@ impl Ext {
         let target = self.target(tab)?;
         self.cdp(None, "Target.closeTarget", json!({ "targetId": target })).await?;
         lock(&self.state).tabs.remove(&tab);
-        lock(&self.state).recording.remove(&tab);
+        lock(&self.state).stop_recording(tab);
         let _ = self.out.send(json!({ "event": "removed", "tabId": tab }));
         Ok(json!({}))
     }
@@ -448,6 +464,15 @@ impl Ext {
                             }
                             t.forwarded += 1;
                             t.devtools += usize::from(phantab_cdp::reads_devtools_event(&method));
+                            // A finished trace ends its recording and leaves its stream (`background.ts`).
+                            if method == "Tracing.tracingComplete" {
+                                if let Some(on) = st.recording.get_mut(&tab) {
+                                    on.remove("trace");
+                                }
+                                if let Some(stream) = params["stream"].as_str() {
+                                    st.streams.insert(tab, stream.to_owned());
+                                }
+                            }
                         }
                         let mut ev =
                             json!({ "event": "cdp", "tabId": tab, "method": method, "params": params });
@@ -462,7 +487,7 @@ impl Ext {
         });
         let mut s = lock(&self.state);
         s.attached.insert(tab, (root, forward));
-        s.recording.remove(&tab);
+        s.stop_recording(tab);
         drop(s);
         Ok(json!({}))
     }
@@ -480,6 +505,7 @@ impl Ext {
             _ if a["sessionId"].is_string() => None,
             "Log.enable" => Some("console"),
             "Network.enable" => Some("network"),
+            "Tracing.start" => Some("trace"),
             _ => None,
         };
         let session = {
@@ -495,6 +521,18 @@ impl Ext {
                 return Box::pin(std::future::ready(Err(e)));
             };
             let session = a["sessionId"].as_str().map_or_else(|| root.clone(), SessionId::new);
+            // A stream read or close only for the tab's own finished trace (`background.ts`, SR-91).
+            if matches!(method.as_str(), "IO.read" | "IO.close") {
+                let own =
+                    s.streams.get(&tab).is_some_and(|h| a["params"]["handle"].as_str() == Some(h.as_str()));
+                if a["sessionId"].is_string() || !own {
+                    let e = format!("CDP method not allowed: {method} (not this tab's trace)");
+                    return Box::pin(std::future::ready(Err(e)));
+                }
+                if method == "IO.close" {
+                    s.streams.remove(&tab);
+                }
+            }
             if let Some(kind) = starts {
                 s.recording.entry(tab).or_default().insert(kind);
             }
@@ -538,7 +576,7 @@ impl Ext {
 
     async fn detached_by_chrome(&self, tab: i64) {
         lock(&self.state).attached.remove(&tab);
-        lock(&self.state).recording.remove(&tab);
+        lock(&self.state).stop_recording(tab);
         lock(&self.state).next_answers.remove(&tab);
         tokio::time::sleep(Duration::from_millis(200)).await;
         let open = self.target_info(tab).await.is_ok();
@@ -584,7 +622,7 @@ impl Ext {
             "detach" => {
                 // An extension's own detach fires no onDetach.
                 let entry = lock(&self.state).attached.remove(&tab);
-                lock(&self.state).recording.remove(&tab);
+                lock(&self.state).stop_recording(tab);
                 if let Some((sid, forward)) = entry {
                     forward.abort();
                     self.cdp(None, "Target.detachFromTarget", json!({ "sessionId": sid.as_str() })).await?;

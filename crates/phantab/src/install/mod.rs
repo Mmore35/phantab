@@ -522,6 +522,15 @@ fn set_sign_in_provider(config: &mut Map<String, Value>, raw: &str) -> Result<()
     Ok(())
 }
 
+/// `--work` (THREAT-MODEL SR-92): `work` and `devTools` on, every other setting kept. An install without it
+/// changes neither, so a work laptop stays one across updates; turning them off is an edit of config.json.
+fn set_work(config: &mut Map<String, Value>, work: bool) {
+    if work {
+        config.insert(crate::work::KEY.to_owned(), Value::Bool(true));
+        config.insert("devTools".to_owned(), Value::Bool(true));
+    }
+}
+
 /// The sign-in provider flags, in this order: `--sign-in-provider`, each `--remove-sign-in-provider`,
 /// each `--add-sign-in-provider`, `--sign-in-save-to`. What they leave is checked as the service reads
 /// it, so a config the service would refuse is never written.
@@ -623,6 +632,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
     let profiles = other_profiles(args, &mut config, &user_data_dir)?;
     config.insert("installedSource".to_owned(), Value::String(binary.to_owned()));
     set_sign_in_providers(&mut config, args)?;
+    set_work(&mut config, args.work);
     let binary = std::fs::read(exe).with_context(|| format!("Could not read {}", exe.display()))?;
     let extension = extension_source(args.extension_dir.as_deref(), exe)?;
     // SR-74: the installed binary reinstalling from the installed folder itself (no --extension-dir) copies

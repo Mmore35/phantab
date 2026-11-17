@@ -108,6 +108,7 @@ otherwise read it. Removing the stray `~/node_modules` also works.
 | `PHANTAB_RUNTIME` | the service; set per test to a temp dir by `crates/phantab/tests/common` | runtime dir |
 | `PHANTAB_CLIENT` | the CLI; tests clear it and set it per case | CLI client id |
 | `PHANTAB_TEST_*` | test builds only: passed through to a fake sign-in provider (SR-14) | fake provider control |
+| `PHANTAB_TEST_TRACE_RELOAD_MS` | the service, test builds only (`test-seams`) | how long a trace's reload waits, in ms, instead of the 30 s navigation time limit |
 | `CARGO_TARGET_DIR` | cargo | keep parallel sessions apart |
 
 ### Traps
@@ -307,6 +308,7 @@ exists.
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
 | An agent's script and a password phantab filled share a page, in either order | `lib`, `signin_fake_page`, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
+| On a machine that sets `work`, an agent signs in, a provider starts, a check pops up by itself or the phone viewer listens | `lib`, `mcp`, `verification` (real Chrome) |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
   list and checks each name is still in the source, without building. `--chrome` also runs the lines
@@ -404,6 +406,7 @@ A dev-dependency of every crate with browser or service tests.
 | `GET /slow?ms=<n>&then=<path>` | waits `n` ms (at most 120000), then serves `then` (or a "Waited n ms" page) |
 | `GET /redirect?to=<url>&status=<code>` | a redirect, default 302 to `/engine/basic` |
 | `GET /status?code=<n>` | an empty page with that status, default 500 |
+| `GET /picture?ms=<n>` | after `n` ms (800 by default), a 600×400 SVG detailed enough to be a page's largest paint |
 | `GET /cookie/set` | `set`, with an httpOnly cookie no page shows (`DEVTOOLS_COOKIE`) |
 | `GET /cookie/check` | whether that cookie and the `Authorization` value `engine/devtools` builds came along; never their values |
 | any `/hook/<name>` | `ok`, held while a gate of that name is closed |
@@ -412,10 +415,10 @@ A dev-dependency of every crate with browser or service tests.
 | `/captcha-frame/*[?fixture=<key>]` | a stub page for captcha frame URLs, or the fixture page `<key>` there, so a stand-in check can sit at a provider-looking URL |
 | anything else | 404 `none` |
 
-### Fixture pages (164)
+### Fixture pages (165)
 | Group | Keys |
 |---|---|
-| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/shots` (a page taller than the view, with a box in the document, one in an open shadow root, one in `engine/shot-frame`, a website frame, and one below the tall part), `engine/wait`, `engine/hover` (a menu that opens on CSS `:hover`), `engine/drag` (a list sorted by mouse events), `engine/drag-covered` (that list under a clear submit button over the whole view, or with `?over=drop` over the drop item alone; with `later=1` the button shows on the first `mousemove`; with `slide=1` that `mousemove` covers the drop item with something clear for 600 ms and lays the button over the start at 300 ms), `engine/drag-html5` (the same list sorted by HTML5 drag and drop), `engine/upload` (a single and a multiple file input beside a text field), `engine/upload-frame` (`engine/upload` in another site's frame), `engine/history` (a page with an in-memory counter and a link on), `engine/resend` (a form that posts), `engine/devtools` (a page that logs an error, throws, fails two requests and is sent an httpOnly cookie, framing `engine/devtools-frame` from the twin site), `changes`, `navigates` |
+| engine | `engine/basic`, `engine/dialogs`, `engine/framed-task` (a task form in a frame, inside open shadow roots), `engine/task-form`, `engine/record` (a filled record beside password, card and code fields), `engine/framed-pay` (`engine/clobber-pay` in a frame), `engine/two-frames` (two `engine/one-frame` frames, one holding its controls only in an open shadow root), `engine/handoff`, `engine/login`, `engine/moves`, `engine/popup`, `engine/shots` (a page taller than the view, with a box in the document, one in an open shadow root, one in `engine/shot-frame`, a website frame, and one below the tall part), `engine/wait`, `engine/hover` (a menu that opens on CSS `:hover`), `engine/drag` (a list sorted by mouse events), `engine/drag-covered` (that list under a clear submit button over the whole view, or with `?over=drop` over the drop item alone; with `later=1` the button shows on the first `mousemove`; with `slide=1` that `mousemove` covers the drop item with something clear for 600 ms and lays the button over the start at 300 ms), `engine/drag-html5` (the same list sorted by HTML5 drag and drop), `engine/upload` (a single and a multiple file input beside a text field), `engine/upload-frame` (`engine/upload` in another site's frame), `engine/history` (a page with an in-memory counter and a link on), `engine/resend` (a form that posts), `engine/devtools` (a page that logs an error, throws, fails two requests and is sent an httpOnly cookie, framing `engine/devtools-frame` from the twin site), `engine/measure` (a late picture that is the largest paint, a layout shift 300 ms after load, a fixed amount of computing inline and from a timer, and the `engine/devtools` cookie and header; `?late=<ms>` sets the picture's wait), `changes`, `navigates` |
 | snapshot | `snapshot/busy`, `snapshot/deep`, `snapshot/inner`, `snapshot/long-text`, `snapshot/many`, `shadow/nested`, `frames/cross-site`, `forms/controls` |
 | sign-in, one step | `sign-in/one`, `framed`, `nested`, `crossframe`, `shadow`, `noform`, `outside`, `deep`, `react`, `jsaction`, `actionfield`, `landed` |
 | sign-in, steps | `userstep`, `passstep`, `passthencode`, `code`, `passthenkey`, `securitykey`, `codebeside`, `opensframe`, `inertpass`, `aca`, `aca-c` |
@@ -480,7 +483,8 @@ Lane 6 holds phantab's own fixed outputs to golden files checked into the reposi
 formats that agents, providers and installed configs depend on. A change that alters one fails the
 lane until the golden file is updated in the same PR, so every such change shows in review. Update a
 golden file only on purpose, and say in the PR why the output changed. The tool list is
-`crates/phantab/tests/fixtures/tools-list.json`; rewrite it from the built binary with
+`crates/phantab/tests/fixtures/tools-list.json`, with `tools-list-devtools.json` beside it for
+`devTools: true` and `tools-list-work.json` for `work: true`; rewrite them from the built binary with
 `PHANTAB_UPDATE_GOLDEN=1 cargo test -p phantab --test mcp`. The page functions' hashes and the seal's
 vectors are constants in their unit tests. The lane needs nothing beyond `cargo test` and runs on every
 platform.
@@ -534,6 +538,15 @@ Test files, by the short names used above:
   popping up, a page the owner holds staying with them, a widget waiting for the agent to ask, the
   viewer's Done and Not now, and the remote listener: only the live view, only through the owner's route, and only with a live link. In
   every case the only input the page gets is the owner's own (relayed) input; Phantab sends none.
+- Lane 3, the acceptance run for a work laptop (real Chrome): `work_parity_acceptance`, through two
+  `phantab mcp` processes as agents run them, with the config `phantab install --work` writes. Agent A
+  fills the seven fields of `engine/task-form` (framed in shadow roots by `engine/framed-task`) in one
+  `browser_act`, reads them back in a snapshot, reads a computed style (DevTools MCP's
+  `get_css_styles`), saves a PNG of the form and hands the page over; its own writes and close are then
+  refused, while agent B fills a second copy on the same site. With `work` on, the tool list has no
+  sign-in or sign-up tool and `browser_status` lists what is off. Its no-Chrome test checks that each
+  row of the parity table (`docs/COMING-FROM-DEVTOOLS-MCP.md`) names a fixture page and a test, not
+  ignored, that opens it.
 - Lane 3, sign-in over a scripted page (no Chrome): `signin_fake_page`, the fake provider and a CDP page
   whose frames answer each in-page function by its source. The cases a real page cannot stage on cue: a shown password or a code in a `tel` field held until blank, a frame that
   kept the password and does not answer, a code shown back in the page, a report the frame tree does not

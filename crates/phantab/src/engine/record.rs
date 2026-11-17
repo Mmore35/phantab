@@ -96,6 +96,9 @@ pub(crate) struct RecState {
     pub verification: Option<Verification>,
     /// When this page last popped a check up for the owner by itself (the per-page rate limit).
     pub verify_history: VecDeque<Instant>,
+    /// What `browser_emulate` set on the page, as the page list shows it (THREAT-MODEL SR-91); empty
+    /// when none. A re-attach starts a new debugging session, which has none.
+    pub emulation: serde_json::Map<String, Value>,
 }
 
 /// What kind of verification check a page shows.
@@ -270,6 +273,7 @@ impl Rec {
                 pointer_held: None,
                 verification: None,
                 verify_history: VecDeque::new(),
+                emulation: serde_json::Map::new(),
             }),
         }
     }
