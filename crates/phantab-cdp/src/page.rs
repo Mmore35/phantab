@@ -1499,6 +1499,17 @@ impl Page {
         Ok(crate::TraceData { bytes, data_lost, full })
     }
 
+    /// Ends the page's trace without reading it: Chrome stops tracing (it traces one client at a time,
+    /// browser-wide) and the stream it leaves is closed unread. The page has no trace afterwards.
+    pub async fn trace_discard(&self, wait: Duration) -> Result<(), CdpError> {
+        let ended = self.trace_wait(wait).await;
+        self.inner.state.lock().recording.trace = None;
+        if let (_, Some(handle)) = ended? {
+            self.send("IO.close", json!({ "handle": handle })).await?;
+        }
+        Ok(())
+    }
+
     /// Sends `Tracing.end` and waits for its `Tracing.tracingComplete`.
     async fn trace_wait(&self, wait: Duration) -> Result<(bool, Option<String>), CdpError> {
         if self.inner.state.lock().recording.trace.is_none() {

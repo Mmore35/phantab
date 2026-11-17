@@ -14,6 +14,7 @@ mod devtools;
 mod echo;
 mod files;
 mod guardrails;
+mod measure;
 mod ops;
 mod profiles;
 mod quiet;
@@ -95,6 +96,8 @@ pub(crate) struct State {
     echoes: Vec<Arc<crate::signin::Echo>>,
     /// The tabs whose screenshots are refused for it.
     echo_marks: Vec<echo::EchoMark>,
+    /// The one trace `browser_trace` runs (THREAT-MODEL SR-91).
+    trace: Option<measure::Tracing>,
 }
 
 /// A live view token and the page it shows. A local token opens the viewer on this machine and never
@@ -592,7 +595,14 @@ impl PageService for Engine {
 impl Engine {
     /// [`PageService::call`] before its redaction.
     async fn call_raw(&self, method: EngineMethod, args: Value, client: &str) -> EngineResult {
-        if matches!(method, EngineMethod::Evaluate | EngineMethod::Console | EngineMethod::Network) {
+        if matches!(
+            method,
+            EngineMethod::Evaluate
+                | EngineMethod::Console
+                | EngineMethod::Network
+                | EngineMethod::Emulate
+                | EngineMethod::Trace
+        ) {
             devtools::require(&self.setup.config, method)?;
         }
         match method {
@@ -617,6 +627,8 @@ impl Engine {
             EngineMethod::Evaluate => self.evaluate(client, &args).await,
             EngineMethod::Console => self.console(client, &args).await,
             EngineMethod::Network => self.network(client, &args).await,
+            EngineMethod::Emulate => self.emulate(client, &args).await,
+            EngineMethod::Trace => self.trace(client, &args).await,
         }
     }
 }

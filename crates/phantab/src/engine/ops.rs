@@ -700,6 +700,8 @@ impl Engine {
         let release = arg(args, "release").is_some_and(truthy);
         if release {
             self.may_release(&r)?;
+            // The owner gets the tab as it is, without what the agent emulated on it (SR-91).
+            self.end_emulation(&r).await;
         }
         // Paused already, so shown already, unless a hand-back's failed keep left its window hidden: that one
         // is shown again, as the owner asked. The record already holds its site, being paused. A live check
@@ -949,6 +951,12 @@ impl Engine {
         };
         if let Some(t) = viewer_tab {
             let _ = self.bridge().op_in(&r.profile, "closeTab", json!({ "tabId": t })).await;
+        }
+        // A trace ends before its tab closes or waits as a spare (SR-91).
+        self.stop_trace_of(id).await;
+        // An owner's tab stays open: what the agent emulated on it ends (SR-91).
+        if !owns_tab && isolated.is_none() {
+            self.end_emulation(&r).await;
         }
         if let Some(b) = isolated {
             b.close().await?;

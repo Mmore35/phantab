@@ -114,6 +114,8 @@ impl Engine {
             st.viewers.retain(|v| v.page != id);
             r
         };
+        // A trace never outlives its page (THREAT-MODEL SR-91).
+        self.drop_trace(id);
         if r.is_isolated() {
             self.echo_page_gone(id);
         }
@@ -346,6 +348,8 @@ impl Engine {
         let generation = {
             let mut s = r.lock();
             s.page = linked.page.clone();
+            // A new debugging session: the old one's emulation ended with it.
+            s.emulation.clear();
             s.link = Some(linked.link);
             s.detached = None;
             s.generation += 1;
@@ -449,6 +453,9 @@ impl Engine {
         }
         if let Some(d) = &s.detached {
             m.insert("detached".into(), Value::String(d.message.clone()));
+        }
+        if !s.emulation.is_empty() {
+            m.insert("emulation".into(), Value::Object(s.emulation.clone()));
         }
         m
     }

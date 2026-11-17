@@ -70,14 +70,16 @@ pub enum EngineMethod {
     Wait,
     SignIn,
     SignUp,
-    /// Developer tools (THREAT-MODEL SR-90), refused unless `devTools` is on.
+    /// Developer tools (THREAT-MODEL SR-90, SR-91), refused unless `devTools` is on.
     Evaluate,
     Console,
     Network,
+    Emulate,
+    Trace,
 }
 
 impl EngineMethod {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::Pages,
         Self::Connect,
         Self::Open,
@@ -95,6 +97,8 @@ impl EngineMethod {
         Self::Evaluate,
         Self::Console,
         Self::Network,
+        Self::Emulate,
+        Self::Trace,
     ];
 
     /// The method's name on the wire.
@@ -118,6 +122,8 @@ impl EngineMethod {
             Self::Evaluate => "evaluate",
             Self::Console => "console",
             Self::Network => "network",
+            Self::Emulate => "emulate",
+            Self::Trace => "trace",
         }
     }
 
@@ -134,7 +140,8 @@ impl EngineMethod {
     /// - `snapshot`, `screenshot` and `act` touch one page: its CDP session, its keyboard and mouse
     ///   state, its emulation, its site lease (an atomic check-and-take under the engine's state lock).
     ///   They wait for an exclusive call, that page's earlier calls and the client's earlier calls.
-    ///   `evaluate`, `console` and `network` touch one page the same way: a script, its recording.
+    ///   `evaluate`, `console`, `network`, `emulate` and `trace` touch one page the same way: a script,
+    ///   its recording, its emulation, its trace (one engine-wide, taken under the state lock).
     /// - `pages`, `connect` and `tabs` read records, the bridge and the profile check's status fields.
     /// - `open` arms the OS hook that hides the first Chrome window to appear at the workspace's
     ///   position, which a click on another page could open; `attach` checks a tab is unassigned, then
@@ -149,7 +156,9 @@ impl EngineMethod {
             | Self::Act
             | Self::Evaluate
             | Self::Console
-            | Self::Network => Some(Turn::page(client, page_id(args))),
+            | Self::Network
+            | Self::Emulate
+            | Self::Trace => Some(Turn::page(client, page_id(args))),
             Self::Pages | Self::Connect | Self::Tabs => Some(Turn::shared(client)),
             Self::Open | Self::Attach | Self::Show | Self::Resume | Self::Close => Some(Turn::Exclusive),
         }

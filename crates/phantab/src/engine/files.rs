@@ -68,6 +68,11 @@ impl Target {
         Ok(())
     }
 
+    /// Where it is saved.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn exists(&self) -> EngineError {
         EngineError(format!(
             "path: {} already exists. Pass overwrite true to replace it, or give another name.",
