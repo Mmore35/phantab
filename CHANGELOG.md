@@ -19,7 +19,9 @@ Releases page; `CONTRIBUTING.md` says how one is made.
   one element, found as `browser_act` finds one (frames and open shadow roots included), and `width`
   and `height` set the view's size for that picture alone, put back after it. The path must be
   absolute and its folder must exist; an existing file is replaced only with `overwrite: true`. A page
-  whose screenshot is refused refuses every form of it.
+  whose screenshot is refused refuses every form of it. On a page handed to the owner, whose view is
+  his window, `fullPage`, `selector`, `width` and `height` are refused until handback; the plain
+  picture is not.
 - `browser_snapshot` takes `path` the same way and saves the whole snapshot there as JSON, redacted as
   its answer is.
 - Any form can be read and filled, including one in a frame inside shadow roots, the way some apps

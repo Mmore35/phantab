@@ -204,7 +204,9 @@ Results can be files. `browser_screenshot` takes a PNG or JPEG of the view, the 
 element, at a view size of your choosing (390 wide for a phone), and with `path` saves it there and
 answers only the path and size, so an image costs the agent no tokens. `browser_snapshot` with `path`
 saves the whole snapshot as JSON. The path must be absolute and its folder must exist; an existing
-file is replaced only with `overwrite: true`. When the agent's work is done and you are to finish it
+file is replaced only with `overwrite: true`. While you hold a page (`browser_show`), its view is
+your window, so the agent gets only the plain picture of it: no full page, element or view size
+until you hand it back. When the agent's work is done and you are to finish it
 yourself, `browser_show` with `release: true` gives you the tab for good: it stays open as your
 ordinary tab and leaves the agent's list.
 

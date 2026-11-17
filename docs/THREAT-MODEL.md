@@ -750,11 +750,14 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   back, a sign-up's new password on the page, SR-82) comes before any argument is read, so it refuses
   every form: `path`, `format`, `fullPage`, `selector`, `width` and `height`. `width` and `height`
   emulate the view for that picture alone through the already-allowed
-  `Emulation.setDeviceMetricsOverride`, put back after it, also when it fails, and are refused on a
-  page handed to the owner. No CDP method was added. *L1: `engine::files` tests (relative, missing
-  folder, existing file, a file that appears after the check), every new form refused on a marked page
-  and its saved snapshot redacted
-  (`after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes`); L3:
+  `Emulation.setDeviceMetricsOverride`, put back after it, also when it fails. On a page handed to
+  the owner its view is his window, so `width`, `height`, `selector` (which scrolls the element into
+  view) and `fullPage` (which Chrome captures beyond the view) are refused there before Chrome is
+  asked anything; the plain picture of the view is not. No CDP method was added. *L1:
+  `engine::files` tests (relative, missing folder, existing file, a file that appears after the
+  check), every new form refused on a marked page and its saved snapshot redacted
+  (`after_an_echo_every_answer_is_redacted_and_the_tab_refuses_screenshots_until_it_closes`), a held
+  page's refusals (`a_held_page_refuses_a_picture_that_moves_its_view`); L3:
   `screenshots_and_snapshots_are_saved_as_files_at_the_size_asked`.*
 
 - **SR-89** The steps that act beyond a click or a keystroke: `upload`, `dialog`, `back`, `forward` and
