@@ -200,7 +200,7 @@ that such a machine usually forbids, whatever else the config says:
 
 `false` or no `work` at all is off. Any other value counts as on, and `browser_status` says it was not
 understood. `browser_status` lists what `work` turned off. It turns nothing on: `devTools` is its own
-setting, which `phantab install --work` writes beside it (`docs/WORK-LAPTOP.md`). It is read at
+setting, which `phantab install --work` writes beside it (`docs/INSTALL-WINDOWS.md`). It is read at
 service start, as `devTools` is. The threat model's SR-92 has the details.
 
 ## Gaps (the light check)

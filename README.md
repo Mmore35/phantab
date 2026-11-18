@@ -136,7 +136,7 @@ No Rust or Node needed, no admin rights; everything stays in your user folder.
 4. Restart your agent and ask it to *open example.com with phantab and read the title*.
 
 Step-by-step guides, including what to do when a company policy blocks unsigned programs:
-`docs/WORK-LAPTOP.md` (Windows) and `docs/INSTALL-MAC.md` (macOS).
+`docs/INSTALL-WINDOWS.md` (Windows) and `docs/INSTALL-MAC.md` (macOS).
 
 ## Install from source
 ```
@@ -256,7 +256,7 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
 - **On a work laptop, set `work`.** `"work": true` turns off the sign-in tools, every sign-in
   provider, the automatic hand-off of a human check (`browser_show` still hands a page over) and the
   phone viewer; `phantab install --work` writes it with `devTools` (`docs/GUARDRAILS.md` § A work
-  laptop, `docs/WORK-LAPTOP.md`).
+  laptop, `docs/INSTALL-WINDOWS.md`).
 - **Agents share a site.** By default, several agents, and you, can change one site at once
   (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
   ServiceNow, for example, the current update set and application scope, so one agent's switch moves
@@ -444,7 +444,7 @@ Other browsers are not supported.
 - `docs/VAULTS.md`: sign-in providers, several at once, and writing one.
 - `docs/BITWARDEN.md`: the built-in Bitwarden source.
 - `docs/REMOTE.md`: doing a human check (a CAPTCHA, for example) from your phone or another computer.
-- `docs/WORK-LAPTOP.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.
+- `docs/INSTALL-WINDOWS.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.
 - `docs/MAC.md`: how phantab behaves on macOS.
 - `docs/TESTING.md`, `CONTRIBUTING.md`: building, testing and contributing.
 - `CHANGELOG.md`: what changed in each release.

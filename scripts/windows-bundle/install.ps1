@@ -9,7 +9,7 @@
   1. Checks every file against SHA256SUMS.txt and clears the downloaded-file mark (Unblock-File).
   2. Tests that Windows lets an unsigned program run here and from %LOCALAPPDATA% the way Chrome starts
      phantab (through cmd.exe, or directly when Chrome's NativeHostsExecutablesLaunchDirectly policy is
-     on). If not, it stops and says what blocked it and what to ask IT for (docs/WORK-LAPTOP.md).
+     on). If not, it stops and says what blocked it and what to ask IT for (docs/INSTALL-WINDOWS.md).
   3. Runs `phantab.exe install`, which copies itself to %LOCALAPPDATA%\phantab\bin, the extension to
      %LOCALAPPDATA%\phantab\extension, registers the native host dev.phantab.bridge under HKCU, and adds
      the MCP entry to %USERPROFILE%\.claude.json (and to Codex's config.toml when that file exists).
@@ -151,7 +151,7 @@ function Test-DirectLaunchPolicy {
     return $false
 }
 
-# What a refusal most likely was, and what to ask IT for (docs/WORK-LAPTOP.md, section 2's table). Keep
+# What a refusal most likely was, and what to ask IT for (docs/INSTALL-WINDOWS.md, section 2's table). Keep
 # this file ASCII: Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page.
 function Get-Explanation($result, $exe) {
     $t = "$($result.text) exit=$($result.code)"

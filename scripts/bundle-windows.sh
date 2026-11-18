@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Packs the Windows x64 bundle: one zip a Windows user installs from with no Rust, Node or repo access
-# (docs/WORK-LAPTOP.md). Run it on Windows x64 (Git Bash) after release.sh has built the tag's half
+# (docs/INSTALL-WINDOWS.md). Run it on Windows x64 (Git Bash) after release.sh has built the tag's half
 # with the extension:
 #
 #   scripts/release.sh [--build-only] --extension <tag>
@@ -12,7 +12,7 @@
 #   extension/           the unpacked extension Chrome loads; it must zip to release.sh's extension.zip
 #   install.ps1          user-level install, uninstall and the unsigned-program check (no admin)
 #   unsigned-check.exe   a harmless unsigned test program (scripts/windows-bundle/unsigned-check.rs)
-#   WORK-LAPTOP.md       the quickstart
+#   INSTALL-WINDOWS.md   the quickstart
 #   LICENSE, NOTICE      phantab's licence and notice, from the repo root (the bundle refuses without them)
 #   THIRD-PARTY-LICENSES the licences of the crates linked into phantab.exe (scripts/third-party-licenses.mjs)
 #   build-info.txt       release.sh's build-info for the binary: version, commit, toolchain, lockfile
@@ -50,7 +50,7 @@ done
 sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
 [ "$(sha256_of "$exe")" = "$(cut -d' ' -f1 "$exe.sha256")" ] || die "$exe does not match its .sha256"
 
-# install.ps1, WORK-LAPTOP.md and unsigned-check.rs come from this checkout, not from release.sh's
+# install.ps1, INSTALL-WINDOWS.md and unsigned-check.rs come from this checkout, not from release.sh's
 # output, so a release bundle needs the checkout to be the commit release.sh built, unchanged. A
 # --build-only test build only warns: testing a script change before committing it is its use.
 info="$out/build-info-windows-x64.txt"
@@ -92,7 +92,7 @@ cp "$exe" "$stage/phantab.exe"
 cp -R extension/dist "$stage/extension"
 cp scripts/windows-bundle/install.ps1 "$stage/install.ps1"
 cp "$work/unsigned-check.exe" "$stage/unsigned-check.exe"
-cp docs/WORK-LAPTOP.md "$stage/WORK-LAPTOP.md"
+cp docs/INSTALL-WINDOWS.md "$stage/INSTALL-WINDOWS.md"
 cp LICENSE "$stage/LICENSE"
 cp NOTICE "$stage/NOTICE"
 node scripts/third-party-licenses.mjs x86_64-pc-windows-gnu "$stage/THIRD-PARTY-LICENSES" ||

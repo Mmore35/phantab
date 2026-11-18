@@ -401,12 +401,12 @@ decisions, and comments on them are welcome in an issue.
    agent can see of another's work.
 10. **Ask IT before installing on a managed machine.** phantab loads an unpacked extension that uses
     the browser's debugging permission, and lets an agent act in your signed-in browser. Many
-    organizations forbid that by policy regardless of how sound the tool is. `docs/WORK-LAPTOP.md` has
+    organizations forbid that by policy regardless of how sound the tool is. `docs/INSTALL-WINDOWS.md` has
     the message to send. This is advice to users, not a change to phantab.
 
 ## Notes for a managed work machine
 
-- Take the zip's hash from the release page itself, as `docs/WORK-LAPTOP.md` now says. That one
+- Take the zip's hash from the release page itself, as `docs/INSTALL-WINDOWS.md` now says. That one
   comparison is the anchor of trust for everything the installer checks afterwards.
 - In a team: each person compares the hash themselves, and installs for themselves. Nothing is
   shared between users, and no admin right is used.

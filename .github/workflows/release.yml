@@ -21,7 +21,7 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "scripts/**"
-      - "docs/WORK-LAPTOP.md"
+      - "docs/INSTALL-WINDOWS.md"
       - "docs/INSTALL-MAC.md"
       - "rust-toolchain.toml"
       - "Cargo.lock"

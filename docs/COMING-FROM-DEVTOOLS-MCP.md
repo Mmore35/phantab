@@ -7,7 +7,7 @@ DevTools MCP tools have a phantab call; a few are left out (§ Not included).
 
 The developer tools (`browser_evaluate`, `browser_console`, `browser_network`, `browser_emulate`,
 `browser_trace`) are off unless `config.json` has `"devTools": true` (`docs/GUARDRAILS.md`). On a work
-laptop, `phantab install --work` turns them on (`docs/WORK-LAPTOP.md` § 4).
+laptop, `phantab install --work` turns them on (`docs/INSTALL-WINDOWS.md` § 4).
 
 ## Tool by tool
 Each example is a call a test makes and checks, written as the agent sends it (the test named in the
@@ -63,7 +63,7 @@ The `steps` form is the one to use. The tests in `engine_chrome` send each step 
 - **`devTools`.** Off by default: the five developer tools are not listed and are refused.
 - **`work`.** For a work laptop or a managed machine: no sign-in or sign-up tool, no sign-in provider,
   no automatic hand-off of a human check (the check is reported; `browser_show` still hands the page
-  over), and no phone viewer. `browser_status` lists what is off (`docs/WORK-LAPTOP.md` § 4).
+  over), and no phone viewer. `browser_status` lists what is off (`docs/INSTALL-WINDOWS.md` § 4).
 
 ## Not included
 - **Insight analysis** (`performance_analyze_insight`): phantab gives the numbers and the trace file,

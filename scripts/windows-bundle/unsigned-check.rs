@@ -1,4 +1,4 @@
-// unsigned-check: the Windows bundle's harmless test program (docs/WORK-LAPTOP.md § 2).
+// unsigned-check: the Windows bundle's harmless test program (docs/INSTALL-WINDOWS.md § 2).
 //
 // It prints one line and exits 0. It reads nothing, writes nothing and opens no network connection, so
 // whether it runs depends only on whether Windows lets an unsigned program run from a user folder
