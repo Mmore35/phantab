@@ -151,7 +151,7 @@ xattr -dr com.apple.quarantine "$here" 2>/dev/null || true
 chmod +x "$bundled"
 if ! said="$("$bundled" install --help 2>&1)" || [[ "$said" != *"Usage: phantab install"* ]]; then
   [ -n "$said" ] && say "  macOS said: $said"
-  stop "phantab does not run here. If a window said it cannot be verified: System Settings, Privacy & Security, Open Anyway, then run this again. On a company Mac the device policy may forbid unsigned programs: ask IT to allow phantab (its SHA-256 is in SHA256SUMS.txt)."
+  stop "phantab does not run here. If a window said it cannot be verified: System Settings, Privacy & Security, Open Anyway, then run this again. A device policy that forbids unsigned programs blocks it until phantab is allowed (its SHA-256 is in SHA256SUMS.txt)."
 fi
 say "  ok: phantab runs"
 if [ "$check_only" = 1 ]; then
