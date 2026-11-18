@@ -3,8 +3,33 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
+## 0.6.1 (2026-11-17)
+An install flag for the developer tools, and one Windows install guide.
+
+### Removed
+- The `work` setting and `phantab install --work` (with the bundles' `install.ps1 -Work` and
+  `install.sh --work`). A `config.json` that still holds `"work": true` now ignores the key, as it
+  ignores any key it does not know: the sign-in tools are listed again, sign-in providers start, a
+  human check is handed to the owner after its grace, and `remoteViewer` listens as configured.
+  `devTools` keeps whatever value the config gives it. `install --work` is refused as an unknown flag.
+
+### Added
+- `phantab install --dev-tools` (the bundles' `install.ps1 -DevTools` and `install.sh --dev-tools`)
+  writes `"devTools": true` to `config.json` and keeps every other setting. A later install without it
+  keeps it (`docs/INSTALL-WINDOWS.md` § 4).
+
+### Changed
+- The Windows install guide is renamed `docs/INSTALL-WINDOWS.md`, and the bundle ships it under that
+  name. It keeps the hash check, the optional check run, the install, update
+  and undo, and the developer tools; the table of policies and whom to ask, the message to send and the
+  `chrome://policy` list left it.
+- `install.ps1` and `install.sh` say what blocked a run and print the programs' hashes, with no advice
+  about whom to ask. `install.ps1`'s check messages are reworded to match.
+- The engine test form's ids are `request.*` and its setter `requestForm`, with neutral sample texts;
+  the DevTools acceptance test is `devtools_mcp_acceptance.rs`.
+
 ## 0.6.0 (2026-11-16)
-At parity with Chrome DevTools MCP for a work laptop: forms in frames and shadow roots filled and read
+At parity with Chrome DevTools MCP: forms in frames and shadow roots filled and read
 back, agents sharing a site, the developer tools, emulation and traces, and the `work` setting.
 
 ### Changed
@@ -27,7 +52,7 @@ back, agents sharing a site, the developer tools, emulation and traces, and the 
 - `browser_snapshot` takes `path` the same way and saves the whole snapshot there as JSON, redacted as
   its answer is.
 - Any form can be read and filled, including one in a frame inside shadow roots, the way some apps
-  (such as ServiceNow) hold theirs. A selector in `browser_act`'s `click`, `fill` and `select`
+  hold theirs. A selector in `browser_act`'s `click`, `fill` and `select`
   steps finds its element in the main document first, then in each website frame. With guardrails
   `parity` (the default), a snapshot shows what each text field holds as `value=`, so the agent can
   check its own work; a password, and every field of a form that holds a new password, a card field,
@@ -71,15 +96,9 @@ back, agents sharing a site, the developer tools, emulation and traces, and the 
   120) and a 20 MB size limit, one trace at a time. The stop answers the page's own load time, largest
   paint and its element, layout shift, long tasks and ten slowest requests, a missing number with its
   reason. No screenshots, request headers or cookies are recorded. Reload the extension.
-- The `work` setting, for a work laptop or a managed machine (`docs/GUARDRAILS.md` § A work laptop).
-  `"work": true` in `config.json` turns off `browser_sign_in` and `browser_sign_up` (not listed, and
-  refused naming the setting), every sign-in provider, the automatic hand-off of a human check (the
-  check is reported; `browser_show {verification: true}` still hands the page over) and the phone
-  viewer, whatever else the config says. Any value but `true` or `false` counts as on, and
-  `browser_status` lists what is off and says when the value was not understood.
-- `phantab install --work` (and the bundles' `install.ps1 -Work` and `install.sh --work`) writes
-  `"work": true` and `"devTools": true` to `config.json` and keeps every other setting. A later
-  install without it keeps both (`docs/WORK-LAPTOP.md`).
+- The `work` setting and `phantab install --work`, which turned off the sign-in tools, sign-in
+  providers, the automatic hand-off of a human check and the phone viewer, and wrote `devTools` on.
+  0.6.1 removed them.
 - `docs/COMING-FROM-DEVTOOLS-MCP.md`: each Chrome DevTools MCP tool, the phantab call that replaces
   it with an example a test makes, what is different on purpose and what is not included.
 - `browser_act` takes `["type", text]`: it types at the focus, as after a `click_xy` on a field.

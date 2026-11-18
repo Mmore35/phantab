@@ -1,6 +1,6 @@
 {
   "name": "phantab-extension",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "description": "phantab bridge: the Chrome MV3 extension that relays the local phantab service to chrome.debugger in your Chrome profile.",
