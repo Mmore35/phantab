@@ -552,7 +552,8 @@ fn sign_in_provider_is_written_kept_and_removed_only_by_the_installer() {
 }
 
 /// `--dev-tools` writes `devTools` on and keeps every other setting; an install without it removes
-/// nothing, and a `false` already there is turned on.
+/// nothing, and a `false` already there is turned on. Only the install that turns it on says to restart
+/// a running service.
 #[test]
 fn dev_tools_writes_dev_tools_and_a_later_install_keeps_it() {
     let world = Fixture::new("dev-tools").with_runtime(r#"{"kept":true}"#);
@@ -561,7 +562,9 @@ fn dev_tools_writes_dev_tools_and_a_later_install_keeps_it() {
     config["devTools"] = json!(false);
     config["siteLock"] = json!("exclusive");
     std::fs::write(&path, config.to_string()).unwrap();
-    world.run(&world.argv(&["--dev-tools"])).unwrap();
+    let restart = "Developer tools turned on: restart only the phantab service";
+    let out = world.run(&world.argv(&["--dev-tools"])).unwrap();
+    assert!(out.contains(restart), "a running service read devTools at its start: {out}");
     let written = world.config();
     assert_eq!(written["devTools"], json!(true));
     assert_eq!(written.get("work"), None, "nothing else is written");
@@ -569,7 +572,10 @@ fn dev_tools_writes_dev_tools_and_a_later_install_keeps_it() {
     assert_eq!(written["siteLock"], json!("exclusive"));
     assert_eq!(written["profileDirectory"], json!("Default"));
     assert_eq!(written["userDataDir"], config["userDataDir"]);
-    world.run(&world.argv(&[])).unwrap();
+    let out = world.run(&world.argv(&["--dev-tools"])).unwrap();
+    assert!(!out.contains(restart), "devTools was already on: {out}");
+    let out = world.run(&world.argv(&[])).unwrap();
+    assert!(!out.contains(restart), "no --dev-tools: {out}");
     assert_eq!(world.config()["devTools"], json!(true), "a later install keeps it");
 }
 

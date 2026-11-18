@@ -15,7 +15,8 @@ An install flag for the developer tools, and one Windows install guide.
 
 ### Added
 - `phantab install --dev-tools` (the bundles' `install.ps1 -DevTools` and `install.sh --dev-tools`)
-  writes `"devTools": true` to `config.json` and keeps every other setting. A later install without it
+  writes `"devTools": true` to `config.json` and keeps every other setting, and says when it turns the
+  setting on that a phantab service already running must be restarted. A later install without it
   keeps it (`docs/INSTALL-WINDOWS.md` § 4).
 
 ### Changed

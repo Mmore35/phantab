@@ -403,6 +403,9 @@ Say 'Installed. Two steps left, both yours:'
 Say "  1. In Chrome ($ChromeProfile): open chrome://extensions, turn on Developer mode, click Load unpacked,"
 Say "     and pick $runtime\extension"
 Say "  2. Quit and reopen Claude Code. Its MCP entry is '$ServerName'."
-if ($DevTools) { Say 'devTools is on in config.json: Claude Code lists the developer tools once it is reopened.' }
+if ($DevTools) {
+    Say 'devTools is on in config.json: Claude Code lists the developer tools once it is reopened. A phantab'
+    Say 'service already running must be restarted first: only the phantab service, once its pages are drained; never close Chrome.'
+}
 Say 'To undo: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -RemoveFiles'
 exit 0

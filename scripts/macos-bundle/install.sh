@@ -214,5 +214,8 @@ say "Installed. Two steps left, both yours:"
 say "  1. In Chrome ($profile): open chrome://extensions, turn on Developer mode, click Load unpacked,"
 say "     and pick $runtime/extension (in the file picker, Cmd+Shift+G and paste that path)"
 say "  2. Quit and reopen Claude Code. Its MCP entry is '$server_name'."
-[ "$dev_tools" = 0 ] || say "devTools is on in config.json: Claude Code lists the developer tools once it is reopened."
+if [ "$dev_tools" != 0 ]; then
+  say "devTools is on in config.json: Claude Code lists the developer tools once it is reopened. A phantab"
+  say "service already running must be restarted first: only the phantab service, once its pages are drained; never close Chrome."
+fi
 say "To undo: bash install.sh --uninstall --remove-files"

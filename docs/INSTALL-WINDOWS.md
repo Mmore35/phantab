@@ -70,8 +70,9 @@ for one page) and `browser_trace` (a performance trace and its numbers). `docs/G
 § Developer tools says what each can reach.
 
 A later install without `-DevTools`, an update for instance, keeps it. To turn it off, set it to
-`false` in `config.json`. It is read when phantab starts, so after a change quit and reopen Claude
-Code.
+`false` in `config.json`. The phantab service reads it when it starts and keeps running after Claude
+Code closes, so after a change restart only the phantab service, once its pages are drained (never
+close Chrome), then quit and reopen Claude Code. Install says so when it turns the setting on.
 
 **Check it:** the agent's tool list has the five developer tools after the others. After an update,
 reload the extension at `chrome://extensions`, or it does not relay the developer tools.
