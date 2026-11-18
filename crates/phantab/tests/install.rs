@@ -562,7 +562,10 @@ fn dev_tools_writes_dev_tools_and_a_later_install_keeps_it() {
     config["devTools"] = json!(false);
     config["siteLock"] = json!("exclusive");
     std::fs::write(&path, config.to_string()).unwrap();
-    let restart = "Developer tools turned on: restart only the phantab service";
+    // The whole line, so a lost line continuation (a run of spaces mid-sentence) fails here.
+    let restart = "Developer tools turned on: restart only the phantab service, once its pages are drained, so it \
+                   reads devTools; never close Chrome. Until then a service already running refuses the developer \
+                   tools.";
     let out = world.run(&world.argv(&["--dev-tools"])).unwrap();
     assert!(out.contains(restart), "a running service read devTools at its start: {out}");
     let written = world.config();

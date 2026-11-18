@@ -428,7 +428,8 @@ fn report(
     if prepared.dev_tools_turned_on {
         writeln!(
             out,
-            "Developer tools turned on: restart only the phantab service, once its pages are drained, so it              reads devTools; never close Chrome. Until then a service already running refuses the developer tools."
+            "Developer tools turned on: restart only the phantab service, once its pages are drained, so it \
+             reads devTools; never close Chrome. Until then a service already running refuses the developer tools."
         )?;
     }
     Ok(())
