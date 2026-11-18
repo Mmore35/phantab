@@ -526,7 +526,7 @@ fn set_sign_in_provider(config: &mut Map<String, Value>, raw: &str) -> Result<()
 /// changes neither, so a work laptop stays one across updates; turning them off is an edit of config.json.
 fn set_work(config: &mut Map<String, Value>, work: bool) {
     if work {
-        config.insert(crate::work::KEY.to_owned(), Value::Bool(true));
+        config.insert("work".to_owned(), Value::Bool(true));
         config.insert("devTools".to_owned(), Value::Bool(true));
     }
 }

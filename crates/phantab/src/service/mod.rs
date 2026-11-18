@@ -117,17 +117,15 @@ async fn serve() -> anyhow::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     // A remote view that cannot start leaves the rest of Phantab running; status says why.
-    // With `work` on the phone viewer never listens, whatever `remoteViewer` says (SR-92).
-    let viewer = config.remote_viewer.as_ref().filter(|_| !config.work());
-    let (remote, remote_listener) = match viewer.map(crate::runtime::RemoteViewer::checked) {
-        None if config.remote_viewer.is_some() => (RemoteState::Work, None),
-        None => (RemoteState::Off, None),
-        Some(Err(e)) => (RemoteState::Failed(e), None),
-        Some(Ok(r)) => match TcpListener::bind(r.addr).await {
-            Ok(l) => (RemoteState::Listening(r), Some(l)),
-            Err(e) => (RemoteState::Failed(format!("remoteViewer.listen {}: {e}", r.addr)), None),
-        },
-    };
+    let (remote, remote_listener) =
+        match config.remote_viewer.as_ref().map(crate::runtime::RemoteViewer::checked) {
+            None => (RemoteState::Off, None),
+            Some(Err(e)) => (RemoteState::Failed(e), None),
+            Some(Ok(r)) => match TcpListener::bind(r.addr).await {
+                Ok(l) => (RemoteState::Listening(r), Some(l)),
+                Err(e) => (RemoteState::Failed(format!("remoteViewer.listen {}: {e}", r.addr)), None),
+            },
+        };
     if let RemoteState::Failed(e) = &remote {
         tracing::warn!(error = %e, "remote viewer off");
     }
@@ -238,8 +236,6 @@ async fn serve_remote(svc: Arc<Service>, listener: TcpListener) {
 #[derive(Debug)]
 enum RemoteState {
     Off,
-    /// Set up, and kept off by `work` (SR-92).
-    Work,
     Failed(String),
     Listening(crate::runtime::RemoteListen),
 }
@@ -371,12 +367,6 @@ impl Service {
         // Absent when it is not set up, so a status without it reads as before.
         match &self.remote {
             RemoteState::Off => {}
-            RemoteState::Work => {
-                m.insert(
-                    "remoteViewer".into(),
-                    json!({ "listening": false, "off": "work is on in config.json, so the phone viewer never listens" }),
-                );
-            }
             RemoteState::Failed(e) => {
                 m.insert("remoteViewer".into(), json!({ "listening": false, "error": e }));
             }

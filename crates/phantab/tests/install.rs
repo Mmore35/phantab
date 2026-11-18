@@ -551,34 +551,6 @@ fn sign_in_provider_is_written_kept_and_removed_only_by_the_installer() {
     assert_eq!(read(), None);
 }
 
-/// SR-92: `--work` writes `work` and `devTools` on and keeps every other setting; an install without it
-/// removes neither, and a `false` already there is turned on.
-#[test]
-fn work_writes_work_and_dev_tools_and_a_later_install_keeps_them() {
-    let world = Fixture::new("work").with_runtime(r#"{"kept":true}"#);
-    let path = world.runtime.join("config.json");
-    let mut config = world.config();
-    config["work"] = json!(false);
-    config["devTools"] = json!(false);
-    config["siteLock"] = json!("exclusive");
-    std::fs::write(&path, config.to_string()).unwrap();
-    world.run(&world.argv(&["--work"])).unwrap();
-    let written = world.config();
-    assert_eq!(written["work"], json!(true));
-    assert_eq!(written["devTools"], json!(true));
-    assert_eq!(written["retained"], json!({"kept": true}));
-    assert_eq!(written["siteLock"], json!("exclusive"));
-    assert_eq!(written["profileDirectory"], json!("Default"));
-    assert_eq!(written["userDataDir"], config["userDataDir"]);
-    world.run(&world.argv(&[])).unwrap();
-    let later = world.config();
-    assert_eq!(
-        (&later["work"], &later["devTools"]),
-        (&json!(true), &json!(true)),
-        "a later install keeps them"
-    );
-}
-
 #[test]
 fn sign_in_providers_are_added_replaced_and_removed_and_a_bad_list_is_never_written() {
     let world = Fixture::new("providers").with_runtime("1");

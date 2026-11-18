@@ -197,7 +197,7 @@ fn every_parity_row_has_a_test_page_and_a_test_that_passes_on_it() {
     }
 }
 
-/// A service on a temp runtime with the config `phantab install --work` writes (`work` and `devTools` on,
+/// A service on a temp runtime with the config `phantab install --dev-tools` writes (`devTools` on,
 /// guardrails left at its default, `parity`), and the CDP-backed extension connected to it.
 struct Lane {
     ext: CdpExtension,
@@ -214,7 +214,7 @@ impl Lane {
         rt.install_extension_in_profile();
         rt.write_config(&json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
-            "work": true, "devTools": true,
+            "devTools": true,
         }));
         let svc = tokio::task::block_in_place(|| {
             let child = rt
@@ -438,44 +438,6 @@ async fn agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_an
         // The page stays the owner's until handback, so A cannot close it either.
         let close = a.refused("browser_close", &json!({ "pageId": page }));
         assert!(close.contains("handed to the owner"), "{close}");
-    });
-    lane.finish().await;
-}
-
-/// Part 3: with `work` on, `tools/list` has no sign-in or sign-up tool (and has the developer tools,
-/// which `devTools` turns on), and `browser_status` names the four things `work` turned off.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_work_on_no_sign_in_tool_is_listed_and_status_names_what_is_off() {
-    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
-    let _turn = SERIAL.lock().await;
-    let lane = Lane::start(&chrome).await;
-    tokio::task::block_in_place(|| {
-        let mut a = Agent::start(&lane.rt, "agent-a");
-        let listed = a.request("tools/list", &json!({}));
-        let names: Vec<&str> =
-            listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for gone in ["browser_sign_in", "browser_sign_up"] {
-            assert!(!names.contains(&gone), "{gone} in {names:?}");
-        }
-        for kept in [
-            "browser_show",
-            "browser_evaluate",
-            "browser_console",
-            "browser_network",
-            "browser_emulate",
-            "browser_trace",
-        ] {
-            assert!(names.contains(&kept), "{kept} not in {names:?}");
-        }
-        let status = Agent::head(&a.ok("browser_status", &json!({})));
-        assert_eq!(status["work"]["on"], json!(true), "{status}");
-        let off: Vec<&str> =
-            status["work"]["off"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(off, phantab::work::OFF, "{status}");
-        assert_eq!(status["work"].get("note"), None, "{status}");
-        // An agent that calls it anyway, from an old tool list, is told there is no such tool.
-        let refused = a.refused("browser_sign_in", &json!({ "url": "https://example.test/login" }));
-        assert_eq!(refused, "Unknown tool");
     });
     lane.finish().await;
 }

@@ -431,9 +431,6 @@ impl Engine {
         if let Some(Value::Object(q)) = &st.quiet {
             m.insert("quietDebugging".into(), Value::Object(Engine::quiet_status(q)));
         }
-        if let Some(w) = crate::work::status(&self.setup.config) {
-            m.insert(crate::work::KEY.into(), w);
-        }
         m
     }
 
@@ -613,10 +610,6 @@ impl Engine {
                 | EngineMethod::Trace
         ) {
             devtools::require(&self.setup.config, method)?;
-        }
-        // `work` turns the sign-in tools off, before any page or provider is touched (SR-92).
-        if matches!(method, EngineMethod::SignIn | EngineMethod::SignUp) && self.setup.config.work() {
-            return Err(EngineError(crate::work::refusal(method.name())));
         }
         match method {
             EngineMethod::Pages => Ok(self.pages(client)),

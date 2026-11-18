@@ -275,14 +275,6 @@ impl Engine {
         };
         if !live && !closed && is_website(&page.url()) {
             match detect_within(&page, CALL_BUDGET).await {
-                // With `work` on, nothing is handed over by itself: the agent is told, and asks (SR-92).
-                Seen::Check(CheckKind::Wall) if self.setup.config.work() => {
-                    return Some(json!({
-                        "state": "wall",
-                        "kind": "wall",
-                        "next": "This page shows a verification check in front of it. The work setting turns phantab's automatic hand-off off: tell the owner, or call browser_show {pageId, verification: true} so they can solve it; the page comes back to you by itself once it clears.",
-                    }));
-                }
                 Seen::Check(CheckKind::Wall) => self.begin(r, CheckKind::Wall, false),
                 Seen::Check(CheckKind::Widget) => {
                     return Some(json!({
