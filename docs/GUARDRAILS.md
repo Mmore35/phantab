@@ -141,6 +141,9 @@ relays their Chrome commands or events.
 { "profileDirectory": "Default", "devTools": true }
 ```
 
+`phantab install --dev-tools` (the bundles' `install.ps1 -DevTools` and `install.sh --dev-tools`)
+writes it and keeps every other setting; a later install without the flag keeps it.
+
 On, what each one reaches:
 
 - `browser_evaluate` runs the agent's function in the page's own world, in the main document or a
@@ -181,27 +184,6 @@ On, what each one reaches:
 
 After updating phantab, reload the extension at `chrome://extensions` so it relays the developer
 tools. The threat model's SR-90 and SR-91 have the details.
-
-## A work laptop (`work`)
-On a work laptop or a managed machine, `"work": true` in `config.json` turns off the parts of phantab
-that such a machine usually forbids, whatever else the config says:
-
-- `browser_sign_in` and `browser_sign_up`: the agent is not shown them, and a call to one is refused
-  with an error naming the setting. Sign in yourself in the page, or hand it over with `browser_show`.
-- Sign-in providers: none is started, even with `signInProvider` or `signInProviders` set.
-- The automatic hand-off of a human check: the agent is told a check is there, and nothing pops up by
-  itself. `browser_show {verification: true}` still hands the page to you, and it comes back to the
-  agent once you clear the check.
-- The phone viewer: `remoteViewer` never listens, so no port opens.
-
-```json
-{ "profileDirectory": "Default", "work": true, "devTools": true }
-```
-
-`false` or no `work` at all is off. Any other value counts as on, and `browser_status` says it was not
-understood. `browser_status` lists what `work` turned off. It turns nothing on: `devTools` is its own
-setting, which `phantab install --work` writes beside it (`docs/INSTALL-WINDOWS.md`). It is read at
-service start, as `devTools` is. The threat model's SR-92 has the details.
 
 ## Gaps (the light check)
 - A control in a website frame that a `click` finds by selector is read in its own frame. A `click_xy`

@@ -87,7 +87,6 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T97 | With `devTools` on, an injected agent saves the owner's cookies or authorization in a trace file (a request's headers, a response's `Set-Cookie`, Chrome's command line naming the profile folder), saves pictures of the page in it, or reads another Chrome stream than its own trace's. | SR-91; the URLs and page timings a trace holds are residual R23 | L1, L3 |
 | T98 | With `devTools` on, an injected agent leaves an emulation on the owner's page (a slowed CPU, an offline network, a false location or user agent), or a trace running after its page closes, so the owner's own browsing is changed or recorded. | SR-91 | L1, L3 |
 | T99 | With `devTools` on, an injected agent uses `browser_emulate`'s location to make a site read a position without the owner's permission. | SR-91 | L3 |
-| T100 | On a work laptop or a managed machine that sets `work`, an agent signs in or makes an account with a saved login, a provider is started, a human check pops up by itself, or the phone viewer opens a port, none of which that machine allows. | SR-92 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -952,29 +951,6 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   fixture's cookie and token, which the page did send), `emulation_reaches_the_page_and_clears_on_clear_and_close`,
   `a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit`,
   `developer_tools_are_off_unless_set`.*
-
-- **SR-92** The `work` setting, for a work laptop or a managed machine: `config.json`'s `work`, read at
-  service start (and by `phantab mcp` for its tool list). Absent or `false` is off and `true` is on;
-  any other value counts as on, the strict choice, and `browser_status` says it was not understood.
-  On, four things are off whatever else the config sets:
-  - The sign-in tools: `browser_sign_in` and `browser_sign_up` are not listed, and the service refuses
-    `sign_in` and `sign_up` naming the setting before it touches a page or a provider.
-  - Sign-in providers: the engine gives the sign-in pipeline no provider, so none is started, even
-    with `signInProvider` or `signInProviders` set.
-  - The automatic hand-off of a human check: a wall is reported to the agent as it is (`state`
-    `wall`, with a `next` line), and nothing pops up by itself after the grace. `browser_show
-    {verification: true}` still hands the page to the owner (SR-68 onward apply to that hand-off), and
-    the page comes back once the check clears.
-  - The phone viewer: the `remoteViewer` listener is never bound, so no port opens, and the hand-off
-    has no link.
-  `browser_status` lists the four under `work`, and `remoteViewer` as not listening because of it.
-  `work` turns nothing on: `devTools` is its own setting (SR-90), which `phantab install --work` also
-  writes.
-  *L1: `work::tests` (which values are on, and the note), `engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so`;
-  `mcp` `sign_in_tools_are_not_listed_with_work_on` (a golden list),
-  `install` `work_writes_work_and_dev_tools_and_a_later_install_keeps_them` (a temp folder); L3:
-  `with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over` (status, the closed viewer
-  port, both refusals, no pop-up past the grace, the hand-off on asking).*
 
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
