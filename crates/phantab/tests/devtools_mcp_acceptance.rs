@@ -1,17 +1,15 @@
-//! Lane 3: the acceptance run for phantab on a work laptop at parity with Chrome `DevTools` MCP
-//! (`docs/COMING-FROM-DEVTOOLS-MCP.md`), in three parts:
+//! Lane 3: the acceptance run for phantab at parity with Chrome `DevTools` MCP
+//! (`docs/COMING-FROM-DEVTOOLS-MCP.md`), in two parts:
 //!
 //! 1. Every row of the parity table that names a phase has a test page and a test that passes on it
 //!    ([`PARITY`]; the rows earlier phases proved name their tests, and the one row with none,
 //!    `get_css_styles`, is a call in part 2).
-//! 2. Two agents through `phantab mcp`, as an agent runs it, with the config `phantab install --work`
+//! 2. Two agents through `phantab mcp`, as an agent runs it, with the config `phantab install --dev-tools`
 //!    writes: agent A fills the seven fields of a task form in a frame inside shadow roots in one
 //!    `browser_act`, reads the seven values back in a snapshot, saves a PNG of the form and hands the
 //!    page over; while it is held, agent B fills a second copy of the form on the same site.
-//! 3. With `work` on, the tool list has no sign-in or sign-up tool and `browser_status` names what is
-//!    off.
 //!
-//! Parts 2 and 3 skip without `PHANTAB_TEST_CHROME`. Headless (`PHANTAB_TEST_WINDOWS=none`), against the
+//! Part 2 skips without `PHANTAB_TEST_CHROME`. Headless (`PHANTAB_TEST_WINDOWS=none`), against the
 //! fake extension that does every bridge op on a real Chrome (`common/cdp_extension.rs`). Nothing here
 //! reads anything outside the repository and its temp folders.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -147,7 +145,7 @@ const PARITY: [Row; 18] = [
         "get_css_styles",
         "5",
         "engine/framed-task",
-        "work_parity_acceptance",
+        "devtools_mcp_acceptance",
         "agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_another_copy",
     ),
     row(
@@ -197,7 +195,7 @@ fn every_parity_row_has_a_test_page_and_a_test_that_passes_on_it() {
     }
 }
 
-/// A service on a temp runtime with the config `phantab install --work` writes (`work` and `devTools` on,
+/// A service on a temp runtime with the config `phantab install --dev-tools` writes (`devTools` on,
 /// guardrails left at its default, `parity`), and the CDP-backed extension connected to it.
 struct Lane {
     ext: CdpExtension,
@@ -214,7 +212,7 @@ impl Lane {
         rt.install_extension_in_profile();
         rt.write_config(&json!({
             "profileDirectory": "test", "userDataDir": rt.user_data_dir(), "chromeExecutable": chrome,
-            "work": true, "devTools": true,
+            "devTools": true,
         }));
         let svc = tokio::task::block_in_place(|| {
             let child = rt
@@ -333,13 +331,13 @@ impl Drop for Agent {
 /// The seven fields of `engine/task-form`, with what one agent puts in each.
 fn form(values: [&str; 7]) -> Vec<(&'static str, String)> {
     let fields = [
-        "#task\\.short_description",
-        "#sys_display\\.task\\.assignment_group",
-        "#task\\.state",
-        "#task\\.priority",
-        "#task\\.due_date",
-        "#task\\.work_notes",
-        "#task\\.description",
+        "#request\\.short_description",
+        "#request\\.assignment_group",
+        "#request\\.state",
+        "#request\\.priority",
+        "#request\\.due_date",
+        "#request\\.notes",
+        "#request\\.description",
     ];
     fields.into_iter().zip(values.map(str::to_owned)).collect()
 }
@@ -373,19 +371,19 @@ async fn agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_an
     let lane = Lane::start(&chrome).await;
     let url = lane.fixtures.url("/engine/framed-task");
     let dir = tempfile::tempdir().unwrap();
-    let png = dir.path().join("task form.png");
+    let png = dir.path().join("request form.png");
 
     tokio::task::block_in_place(|| {
         let mut a = Agent::start(&lane.rt, "agent-a");
         let mut b = Agent::start(&lane.rt, "agent-b");
         let a_fields = form([
-            "VPN token expired",
-            "Network Operations",
-            "Work in Progress",
+            "Order arrived damaged",
+            "Customer Care",
+            "In Progress",
             "2 - High",
             "2026-12-01",
-            "Called the user.",
-            "The token expired overnight.",
+            "Called the customer.",
+            "The box was crushed in transit.",
         ]);
         let page = Agent::head(&a.ok("browser_open", &json!({ "url": url })))["pageId"].clone();
         let filled = a.ok("browser_act", &json!({ "pageId": page, "steps": fill_steps(&a_fields) }));
@@ -403,7 +401,7 @@ async fn agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_an
 
         let saved = Agent::head(&a.ok(
             "browser_screenshot",
-            &json!({ "pageId": page, "selector": "#task", "format": "png", "path": png }),
+            &json!({ "pageId": page, "selector": "#request", "format": "png", "path": png }),
         ));
         assert_eq!(saved["path"], json!(png.display().to_string()), "{saved}");
         assert_eq!(saved["mimeType"], json!("image/png"), "{saved}");
@@ -414,18 +412,18 @@ async fn agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_an
         a.ok("browser_show", &json!({ "pageId": page }));
         let own = a.refused(
             "browser_act",
-            &json!({ "pageId": page, "steps": [["fill", "#task\\.short_description", "after"]] }),
+            &json!({ "pageId": page, "steps": [["fill", "#request\\.short_description", "after"]] }),
         );
         assert!(own.contains("handed to the owner"), "{own}");
 
         let b_fields = form([
-            "Printer offline",
-            "Desk Support",
+            "Late delivery",
+            "Shipping",
             "Open",
             "3 - Moderate",
             "2026-12-02",
-            "Asked for the asset tag.",
-            "The printer on floor two is offline.",
+            "Asked for the tracking number.",
+            "The parcel is two days late.",
         ]);
         let second = Agent::head(&b.ok("browser_open", &json!({ "url": url })))["pageId"].clone();
         assert_ne!(second, page);
@@ -438,44 +436,6 @@ async fn agent_a_fills_saves_and_hands_over_a_framed_form_while_agent_b_fills_an
         // The page stays the owner's until handback, so A cannot close it either.
         let close = a.refused("browser_close", &json!({ "pageId": page }));
         assert!(close.contains("handed to the owner"), "{close}");
-    });
-    lane.finish().await;
-}
-
-/// Part 3: with `work` on, `tools/list` has no sign-in or sign-up tool (and has the developer tools,
-/// which `devTools` turns on), and `browser_status` names the four things `work` turned off.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_work_on_no_sign_in_tool_is_listed_and_status_names_what_is_off() {
-    let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
-    let _turn = SERIAL.lock().await;
-    let lane = Lane::start(&chrome).await;
-    tokio::task::block_in_place(|| {
-        let mut a = Agent::start(&lane.rt, "agent-a");
-        let listed = a.request("tools/list", &json!({}));
-        let names: Vec<&str> =
-            listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for gone in ["browser_sign_in", "browser_sign_up"] {
-            assert!(!names.contains(&gone), "{gone} in {names:?}");
-        }
-        for kept in [
-            "browser_show",
-            "browser_evaluate",
-            "browser_console",
-            "browser_network",
-            "browser_emulate",
-            "browser_trace",
-        ] {
-            assert!(names.contains(&kept), "{kept} not in {names:?}");
-        }
-        let status = Agent::head(&a.ok("browser_status", &json!({})));
-        assert_eq!(status["work"]["on"], json!(true), "{status}");
-        let off: Vec<&str> =
-            status["work"]["off"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(off, phantab::work::OFF, "{status}");
-        assert_eq!(status["work"].get("note"), None, "{status}");
-        // An agent that calls it anyway, from an old tool list, is told there is no such tool.
-        let refused = a.refused("browser_sign_in", &json!({ "url": "https://example.test/login" }));
-        assert_eq!(refused, "Unknown tool");
     });
     lane.finish().await;
 }

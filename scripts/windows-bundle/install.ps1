@@ -9,7 +9,7 @@
   1. Checks every file against SHA256SUMS.txt and clears the downloaded-file mark (Unblock-File).
   2. Tests that Windows lets an unsigned program run here and from %LOCALAPPDATA% the way Chrome starts
      phantab (through cmd.exe, or directly when Chrome's NativeHostsExecutablesLaunchDirectly policy is
-     on). If not, it stops and says what blocked it and what to ask IT for (docs/WORK-LAPTOP.md).
+     on). If not, it stops, says what blocked it and prints the programs' hashes (docs/INSTALL-WINDOWS.md).
   3. Runs `phantab.exe install`, which copies itself to %LOCALAPPDATA%\phantab\bin, the extension to
      %LOCALAPPDATA%\phantab\extension, registers the native host dev.phantab.bridge under HKCU, and adds
      the MCP entry to %USERPROFILE%\.claude.json (and to Codex's config.toml when that file exists).
@@ -26,13 +26,13 @@
 .PARAMETER QuietDebugging
   Hide Chrome's "started debugging this browser" bar without asking: adds the flag to Chrome's own HKCU
   Run-key entry and the shortcuts that start it. Without it, phantab install asks once at a terminal.
-.PARAMETER Work
-  For a work laptop or a managed machine: writes "work": true and "devTools": true to phantab's
-  config.json (docs/WORK-LAPTOP.md). A later run without -Work keeps both.
+.PARAMETER DevTools
+  Turns the developer tools on: writes "devTools": true to phantab's config.json
+  (docs/INSTALL-WINDOWS.md). A later run without -DevTools keeps it.
 .PARAMETER CheckOnly
   Run only steps 1 and 2: the unsigned-program test. Installs nothing.
 .PARAMETER SkipCheck
-  Skip step 2. For a PC where IT allowed phantab.exe itself (a hash rule) but not the test program, or
+  Skip step 2. For a PC that allows phantab.exe itself (a hash rule) but not the test program, or
   where Chrome's launch policy comes from the cloud and so is not visible to this script.
 .PARAMETER Uninstall
   Undo the install: puts back the client entries and native host registration it replaced.
@@ -48,7 +48,7 @@ param(
     [string]$ChromeProfile,
     [string]$ServerName = 'phantab',
     [switch]$QuietDebugging,
-    [switch]$Work,
+    [switch]$DevTools,
     [switch]$CheckOnly,
     [switch]$SkipCheck,
     [switch]$Uninstall,
@@ -57,7 +57,7 @@ param(
 )
 
 # Written for Windows PowerShell 5.1 and for Constrained Language Mode, which AppLocker or WDAC puts an
-# unsigned script in on a managed PC: cmdlets and $env: only, no .NET types, no Add-Type. Native programs
+# unsigned script in: cmdlets and $env: only, no .NET types, no Add-Type. Native programs
 # run through Start-Process: a 5.1 `&` call that redirects stderr turns each stderr line into an error.
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -114,7 +114,7 @@ function Invoke-Program($file, $arguments) {
 # The programs this script runs, each with its hash from SHA256SUMS.txt: what an allow rule names. A hash
 # rule covers the file wherever it sits (this folder and %LOCALAPPDATA%\phantab\bin alike); a path rule for
 # the installed copy alone would not cover the bundled copy the install runs from here.
-function Get-RuleAsk {
+function Get-Hashes {
     $lines = @()
     $sums = Join-Path $here 'SHA256SUMS.txt'
     if (Test-Path -LiteralPath $sums) {
@@ -123,8 +123,8 @@ function Get-RuleAsk {
             if ($parts.Count -eq 2 -and $parts[1] -like '*.exe') { $lines += "      $($parts[1])  SHA-256 $($parts[0])" }
         }
     }
-    return " Ask IT for allow rules by file hash for:`n$($lines -join "`n")`n" +
-        '    unsigned-check.exe is only this test: if IT allows phantab.exe alone, run this again with -SkipCheck. ' +
+    return " The programs it runs, by SHA-256 hash:`n$($lines -join "`n")`n" +
+        '    unsigned-check.exe is only this test: where phantab.exe alone is allowed, run this again with -SkipCheck. ' +
         'A hash rule must be redone for each new version.'
 }
 
@@ -151,32 +151,32 @@ function Test-DirectLaunchPolicy {
     return $false
 }
 
-# What a refusal most likely was, and what to ask IT for (docs/WORK-LAPTOP.md, section 2's table). Keep
-# this file ASCII: Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page.
+# What a refusal most likely was, and the programs' hashes. Keep this file ASCII: Windows PowerShell 5.1
+# reads a script without a BOM in the ANSI code page.
 function Get-Explanation($result, $exe) {
     $t = "$($result.text) exit=$($result.code)"
     if (-not (Test-Path -LiteralPath $exe)) {
-        return 'The file disappeared: antivirus (Defender or the company''s EDR) quarantined it.' + (Get-RuleAsk)
+        return 'The file disappeared: antivirus (Defender or another) quarantined it.' + (Get-Hashes)
     }
     if ($t -match 'disabled by your administrator') {
         return 'The Command Prompt is turned off by policy (DisableCMD), and Chrome starts native messaging ' +
-            'hosts through cmd.exe. Ask IT to turn on the Chrome policy NativeHostsExecutablesLaunchDirectly ' +
-            '(Chrome 120 or later): Chrome then starts phantab directly, and the cmd.exe policy can stay. Once ' +
+            'hosts through cmd.exe. With the Chrome policy NativeHostsExecutablesLaunchDirectly on (Chrome 120 ' +
+            'or later), Chrome starts phantab directly, and the cmd.exe policy can stay. Once ' +
             'chrome://policy shows it, run this again (add -SkipCheck if it is set from the cloud).'
     }
     if ($t -match 'Smart App Control' -or ($t -match 'Application Control|4551|800711C7' -and (Test-SmartAppControlOn))) {
         return 'Smart App Control blocked it. It has no per-app exception: only a signed build, or Smart App ' +
-            'Control turned off (IT''s call on a company PC), gets past it.'
+            'Control turned off, gets past it.'
     }
     if ($t -match 'Application Control|Device Guard|App Control|4551|800711C7') {
-        return 'Windows Defender Application Control (WDAC / App Control for Business) blocked it.' + (Get-RuleAsk)
+        return 'Windows Defender Application Control (WDAC / App Control for Business) blocked it.' + (Get-Hashes)
     }
     if ($t -match 'group policy|1260|Software Restriction') {
         return 'AppLocker (or Software Restriction Policies) blocked it: programs may not run from your user ' +
-            'folders.' + (Get-RuleAsk)
+            'folders.' + (Get-Hashes)
     }
     if ($t -match 'Access is denied|denied') {
-        return 'Windows denied it (Access is denied), usually AppLocker or WDAC.' + (Get-RuleAsk)
+        return 'Windows denied it (Access is denied), usually AppLocker or WDAC.' + (Get-Hashes)
     }
     if ($result.ok) {
         return "It exited 0 but did not print what it should, so something else answered: $($result.text)"
@@ -392,7 +392,7 @@ if (-not $keep) { $flags += @('--user-data-dir', $userData, '--profile', $Chrome
 $flags += @('--server-name', $ServerName) + $clients
 if ($NativeHostKey) { $flags += @('--native-host-key', $NativeHostKey) }
 if ($QuietDebugging) { $flags += @('--quiet-debugging', 'on') }
-if ($Work) { $flags += @('--work') }
+if ($DevTools) { $flags += @('--dev-tools') }
 & $bundled @flags
 if ($LASTEXITCODE -ne 0) { Stop-Install "phantab install exited $LASTEXITCODE (its message is above)." }
 $why = Test-Runs 'the installed phantab.exe, started the way Chrome starts it' $installed 'install --help' $okHelp -ViaCmd:(-not $direct)
@@ -403,6 +403,9 @@ Say 'Installed. Two steps left, both yours:'
 Say "  1. In Chrome ($ChromeProfile): open chrome://extensions, turn on Developer mode, click Load unpacked,"
 Say "     and pick $runtime\extension"
 Say "  2. Quit and reopen Claude Code. Its MCP entry is '$ServerName'."
-if ($Work) { Say 'work and devTools are on in config.json; browser_status lists what work turned off.' }
+if ($DevTools) {
+    Say 'devTools is on in config.json: Claude Code lists the developer tools once it is reopened. A phantab'
+    Say 'service already running must be restarted first: only the phantab service, once its pages are drained; never close Chrome.'
+}
 Say 'To undo: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -RemoveFiles'
 exit 0

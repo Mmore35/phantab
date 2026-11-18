@@ -98,7 +98,7 @@ fn kind(word: &str) -> Option<&'static str> {
     }
 }
 
-/// The keys that work a focused control: Enter submits a field's form, Space presses a button.
+/// The keys that operate a focused control: Enter submits a field's form, Space presses a button.
 const PRESSING: &[&str] = &["Enter", "NumpadEnter", " ", "Space", "Spacebar"];
 
 /// The steps asked about whatever the page holds: an upload sends a file from this computer to the site,

@@ -126,11 +126,11 @@ try {
     $said = & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bad 'install.ps1') -CheckOnly *>&1 | Out-String
     Check ($LASTEXITCODE -eq 1 -and $said -match 'does not match SHA256SUMS') 'install.ps1 refuses a bundle whose file changed'
 
-    # From here on, Constrained Language Mode: what AppLocker or WDAC puts an unsigned script in on a
-    # managed PC. Not $env:__PSLockdownPolicy: Windows 11's PowerShell 5.1 ignores it in a process
-    # environment. Instead each run lowers its own session to CLM first, and a script file it then
-    # starts inherits that mode when no system policy is enforced (the probe proves it). The trap makes
-    # an error that ends the script exit 1, as -File would.
+    # From here on, Constrained Language Mode: what AppLocker or WDAC puts an unsigned script in. Not
+    # $env:__PSLockdownPolicy: Windows 11's PowerShell 5.1 ignores it in a process environment. Instead
+    # each run lowers its own session to CLM first, and a script file it then starts inherits that mode
+    # when no system policy is enforced (the probe proves it). The trap makes an error that ends the
+    # script exit 1, as -File would.
     function Invoke-Clm($file, [string]$arguments) {
         & $ps -NoProfile -ExecutionPolicy Bypass -Command "trap { exit 1 }; `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; & '$file' $arguments; exit `$LASTEXITCODE"
     }

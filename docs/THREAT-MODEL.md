@@ -87,7 +87,6 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T97 | With `devTools` on, an injected agent saves the owner's cookies or authorization in a trace file (a request's headers, a response's `Set-Cookie`, Chrome's command line naming the profile folder), saves pictures of the page in it, or reads another Chrome stream than its own trace's. | SR-91; the URLs and page timings a trace holds are residual R23 | L1, L3 |
 | T98 | With `devTools` on, an injected agent leaves an emulation on the owner's page (a slowed CPU, an offline network, a false location or user agent), or a trace running after its page closes, so the owner's own browsing is changed or recorded. | SR-91 | L1, L3 |
 | T99 | With `devTools` on, an injected agent uses `browser_emulate`'s location to make a site read a position without the owner's permission. | SR-91 | L3 |
-| T100 | On a work laptop or a managed machine that sets `work`, an agent signs in or makes an account with a saved login, a provider is started, a human check pops up by itself, or the phone viewer opens a port, none of which that machine allows. | SR-92 | L1, L3 |
 | T88 | With `guardrails` `light` or `full` (phantab only), a page that wants an injected agent's payment, password change or delete to go through unasked shadows the DOM names the sensitive-set check reads (a form field named `querySelector` or `querySelectorAll`), so the check throws and an unreadable page lets the act through. | SR-77; an agent that sets `ownerConfirmed` unasked is residual R3 | L3 |
 
 ### B2 and B3: clients, local processes and the service port
@@ -953,29 +952,6 @@ Each requirement is a release blocker, and each is tested in the lanes named.
   `a_cpu_slowdown_lengthens_the_load_and_a_trace_ends_at_its_time_limit`,
   `developer_tools_are_off_unless_set`.*
 
-- **SR-92** The `work` setting, for a work laptop or a managed machine: `config.json`'s `work`, read at
-  service start (and by `phantab mcp` for its tool list). Absent or `false` is off and `true` is on;
-  any other value counts as on, the strict choice, and `browser_status` says it was not understood.
-  On, four things are off whatever else the config sets:
-  - The sign-in tools: `browser_sign_in` and `browser_sign_up` are not listed, and the service refuses
-    `sign_in` and `sign_up` naming the setting before it touches a page or a provider.
-  - Sign-in providers: the engine gives the sign-in pipeline no provider, so none is started, even
-    with `signInProvider` or `signInProviders` set.
-  - The automatic hand-off of a human check: a wall is reported to the agent as it is (`state`
-    `wall`, with a `next` line), and nothing pops up by itself after the grace. `browser_show
-    {verification: true}` still hands the page to the owner (SR-68 onward apply to that hand-off), and
-    the page comes back once the check clears.
-  - The phone viewer: the `remoteViewer` listener is never bound, so no port opens, and the hand-off
-    has no link.
-  `browser_status` lists the four under `work`, and `remoteViewer` as not listening because of it.
-  `work` turns nothing on: `devTools` is its own setting (SR-90), which `phantab install --work` also
-  writes.
-  *L1: `work::tests` (which values are on, and the note), `engine::tests::work_refuses_sign_in_and_sign_up_starts_no_provider_and_status_says_so`;
-  `mcp` `sign_in_tools_are_not_listed_with_work_on` (a golden list),
-  `install` `work_writes_work_and_dev_tools_and_a_later_install_keeps_them` (a temp folder); L3:
-  `with_work_on_a_wall_is_only_reported_and_show_still_hands_it_over` (status, the closed viewer
-  port, both refusals, no pop-up past the grace, the hand-off on asking).*
-
 ### Verification hand-off
 - **SR-68** Phantab never solves a verification check. During a check it only reads: the CDP frame
   tree, the challenge frame's box as its parent lays it out, whether that frame's element shows (read
@@ -1487,7 +1463,7 @@ they apply; these are its own.
   `unmaintained = "all"`, `unsound = "all"`; vulnerabilities always fail. Each `ignore` entry carries a
   reason and a review date. Only crates.io; no git dependencies; no wildcards. *L1
   (`scripts/check.sh`; `scripts/release.sh`, which refuses to build).*
-  phantab status: `deny.toml` is set, and `cargo deny check` passes (cargo-deny 0.20.2). There is no CI, so nothing runs this on a PR by itself, and there is no longer a weekly scheduled advisory re-check: a RUSTSEC entry published after the last change is caught only when someone runs `scripts/check.sh` or `scripts/release.sh`. `release.sh` refuses to build while it fails or cargo-deny is not installed; `check.sh` reports a missing cargo-deny as INCOMPLETE (exit 2), not a pass.
+  phantab status: `deny.toml` is set, and `cargo deny check` passes (cargo-deny 0.20.2) with one exception: RUSTSEC-2026-0543 (chrono is unmaintained; not a vulnerability), ignored because rmcp requires chrono (its timestamps, and schemars' `chrono04` schema impls that rmcp's `server` feature turns on), phantab calls none of it, and no rmcp release is without it; review by 2027-02-17. The same id is ignored for cargo-audit in `.cargo/audit.toml` (SR-56). There is no CI, so nothing runs this on a PR by itself, and there is no longer a weekly scheduled advisory re-check: a RUSTSEC entry published after the last change is caught only when someone runs `scripts/check.sh` or `scripts/release.sh`. `release.sh` refuses to build while it fails or cargo-deny is not installed; `check.sh` reports a missing cargo-deny as INCOMPLETE (exit 2), not a pass.
 - **SR-56** Releases build with `--locked` and the pinned toolchain. `cargo audit --deny warnings`
   runs before the release build as a second source. The extension's packages install with `npm ci
   --ignore-scripts`, so no package's install script runs (none has one). `npm audit
@@ -1496,7 +1472,7 @@ they apply; these are its own.
   commit, never by a tag that can be moved (`tests/install.rs`,
   `workflows_name_every_action_by_its_commit`). *L1 (`scripts/release.sh`, which refuses to build; also
   `scripts/check.sh`).*
-  phantab status: `scripts/release.sh` refuses to build while either audit fails or cargo-audit is not installed, and `scripts/check.sh` runs both (a missing cargo-audit is a skip there, reported INCOMPLETE, exit 2). Both are run by hand; nothing runs them by itself. Both pass (cargo-audit 0.22.2). `release.sh` also refuses build settings from outside the repo (`RUSTFLAGS`, `CARGO_PROFILE_RELEASE_*`, a `[build]` or `[profile]` in a cargo config) and records `rustc -vV` and the linker's version in its build-info.
+  phantab status: `scripts/release.sh` refuses to build while either audit fails or cargo-audit is not installed, and `scripts/check.sh` runs both (a missing cargo-audit is a skip there, reported INCOMPLETE, exit 2). Both are run by hand; nothing runs them by itself. Both pass (cargo-audit 0.22.2), cargo-audit with one exception in `.cargo/audit.toml`: RUSTSEC-2026-0543 (chrono is unmaintained), for the reason SR-55 gives; review by 2027-02-17. `release.sh` also refuses build settings from outside the repo (`RUSTFLAGS`, `CARGO_PROFILE_RELEASE_*`, a `[build]` or `[profile]` in a cargo config) and records `rustc -vV` and the linker's version in its build-info.
 - **SR-57** The shipped extension holds only first-party compiled code and the manifest: no
   third-party runtime package. *L1: `dist/` file list and import check.*
 - **SR-58** `unsafe` appears only in `phantab-window`'s OS modules, each block with `// SAFETY:`;

@@ -135,8 +135,8 @@ No Rust or Node needed, no admin rights; everything stays in your user folder.
    Windows, `~/Library/Application Support/phantab/extension` on macOS).
 4. Restart your agent and ask it to *open example.com with phantab and read the title*.
 
-Step-by-step guides, including what to do when a company policy blocks unsigned programs:
-`docs/WORK-LAPTOP.md` (Windows) and `docs/INSTALL-MAC.md` (macOS).
+Step-by-step guides, including what the install says when Windows or macOS blocks an unsigned
+program: `docs/INSTALL-WINDOWS.md` (Windows) and `docs/INSTALL-MAC.md` (macOS).
 
 ## Install from source
 ```
@@ -220,15 +220,15 @@ from your computer into a file input, answer the page's next dialog (`["dialog",
 prompt's text), and go back, forward or reload. With guardrails `light` or `full`, every upload and
 every dialog accept waits for your yes (`docs/GUARDRAILS.md`).
 
-Developer tools are off unless `config.json` sets `"devTools": true` (`docs/GUARDRAILS.md` §
-Developer tools). Then `browser_evaluate` runs a script in the page, as its own scripts run, and
-answers its result (a form's own objects, say, such as `g_form` on ServiceNow); `browser_console`
-gives the page's errors, warnings and uncaught exceptions; and `browser_network` lists its requests,
-failed ones first, with one request's headers and body on asking. Each page is recorded from the
-first call that asks about it. `browser_emulate` slows a page's CPU or network, or sets its location,
-user agent or colour scheme, until cleared; `browser_trace` saves a performance trace that Chrome's
-Performance panel opens, and answers the page's load, largest paint, layout shift, long tasks and
-slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
+Developer tools are off unless `config.json` sets `"devTools": true`, which `phantab install
+--dev-tools` writes (`docs/GUARDRAILS.md` § Developer tools). Then `browser_evaluate` runs a script in
+the page, as its own scripts run, and answers its result (a form's own objects, say, such as a
+`requestForm` the page defines); `browser_console` gives the page's errors, warnings and uncaught
+exceptions; and `browser_network` lists its requests, failed ones first, with one request's headers
+and body on asking. Each page is recorded from the first call that asks about it. `browser_emulate`
+slows a page's CPU or network, or sets its location, user agent or colour scheme, until cleared;
+`browser_trace` saves a performance trace that Chrome's Performance panel opens, and answers the
+page's load, largest paint, layout shift, long tasks and slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
 leave phantab, and nothing reads a cookie. With guardrails `light` or `full`, every script waits for
 your yes. A script and a password phantab fills never share a page: phantab signs in and signs up only
 on a tab no script ran on (open a fresh page for it), and runs no script on a page it filled a password
@@ -247,20 +247,16 @@ a page it reads, it can do as you, on every site you are signed in to. Read this
   - `full`: `light`, plus sign-in limits and stops, your handback before the agent resumes a page you
     hold, and your confirmation before an agent recovers another session's page.
 
-  **On a work machine, or anywhere an agent reads untrusted pages, use `full`.** Secrets stay out of
-  logs and files in every mode. See `docs/GUARDRAILS.md`, including what the confirmation cannot stop.
+  **Wherever an agent reads untrusted pages, use `full`.** Secrets stay out of logs and files in
+  every mode. See `docs/GUARDRAILS.md`, including what the confirmation cannot stop.
 - **Developer tools are off.** With `"devTools": true`, an agent can run any script in a page, as the
   site's own scripts can: read what the page shows and holds (cookies a script can read included) and
   act as you there. Your httpOnly cookies and every request's cookie and authorization headers stay
   out of its reach. Turn it on only where you would let the agent open DevTools on your tabs.
-- **On a work laptop, set `work`.** `"work": true` turns off the sign-in tools, every sign-in
-  provider, the automatic hand-off of a human check (`browser_show` still hands a page over) and the
-  phone viewer; `phantab install --work` writes it with `devTools` (`docs/GUARDRAILS.md` § A work
-  laptop, `docs/WORK-LAPTOP.md`).
 - **Agents share a site.** By default, several agents, and you, can change one site at once
-  (`siteLock: shared`). Agents signed in as one user also share what the site keeps per user: on
-  ServiceNow, for example, the current update set and application scope, so one agent's switch moves
-  the other's work too. Set `siteLock` to `exclusive` for one writer per site (`docs/GUARDRAILS.md`).
+  (`siteLock: shared`). Agents signed in as one user also share the state a site keeps for the
+  signed-in user, so one agent's switch of it moves the other's work too. Set `siteLock` to
+  `exclusive` for one writer per site (`docs/GUARDRAILS.md`).
 - **The extension's permissions.** The bridge extension asks for `debugger` (to drive tabs) and
   `<all_urls>` (to reach every site), plus `tabs`, `nativeMessaging`, `alarms`, `storage` and
   `scripting`. Those are broad on purpose: they are what lets an agent act in any tab. It has no
@@ -444,7 +440,7 @@ Other browsers are not supported.
 - `docs/VAULTS.md`: sign-in providers, several at once, and writing one.
 - `docs/BITWARDEN.md`: the built-in Bitwarden source.
 - `docs/REMOTE.md`: doing a human check (a CAPTCHA, for example) from your phone or another computer.
-- `docs/WORK-LAPTOP.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.
+- `docs/INSTALL-WINDOWS.md`, `docs/INSTALL-MAC.md`: installing from a release bundle.
 - `docs/MAC.md`: how phantab behaves on macOS.
 - `docs/TESTING.md`, `CONTRIBUTING.md`: building, testing and contributing.
 - `CHANGELOG.md`: what changed in each release.

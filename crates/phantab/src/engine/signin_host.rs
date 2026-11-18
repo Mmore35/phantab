@@ -111,11 +111,7 @@ impl Host for Engine {
         mine.then_some(r as Arc<dyn SignInRecord>)
     }
 
-    /// None while `work` is on, whatever the config sets up: no provider is ever started (SR-92).
     fn provider(&self) -> Option<Value> {
-        if self.setup.config.work() {
-            return None;
-        }
         crate::signin::source::provider_config(&self.setup.config)
     }
 

@@ -92,13 +92,6 @@ impl Config {
     pub fn dev_tools(&self) -> bool {
         self.other.get("devTools") == Some(&Value::Bool(true))
     }
-
-    /// `work` (THREAT-MODEL SR-92, [`crate::work`]): on unless absent or `false`, so a mistyped value
-    /// takes the strict choice.
-    #[must_use]
-    pub fn work(&self) -> bool {
-        crate::work::on(self)
-    }
 }
 
 /// `remoteViewer` in `config.json`: a second listener, on loopback, that serves only the live view. The

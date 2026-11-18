@@ -308,7 +308,6 @@ exists.
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
 | An agent's script and a password phantab filled share a page, in either order | `lib`, `signin_fake_page`, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |
-| On a machine that sets `work`, an agent signs in, a provider starts, a check pops up by itself or the phone viewer listens | `lib`, `mcp`, `verification` (real Chrome) |
 
 - Run it alone with `scripts/security-check.sh`, about two minutes on a warm build. `--list` prints the
   list and checks each name is still in the source, without building. `--chrome` also runs the lines
@@ -484,7 +483,7 @@ formats that agents, providers and installed configs depend on. A change that al
 lane until the golden file is updated in the same PR, so every such change shows in review. Update a
 golden file only on purpose, and say in the PR why the output changed. The tool list is
 `crates/phantab/tests/fixtures/tools-list.json`, with `tools-list-devtools.json` beside it for
-`devTools: true` and `tools-list-work.json` for `work: true`; rewrite them from the built binary with
+`devTools: true`; rewrite them from the built binary with
 `PHANTAB_UPDATE_GOLDEN=1 cargo test -p phantab --test mcp`. The page functions' hashes and the seal's
 vectors are constants in their unit tests. The lane needs nothing beyond `cargo test` and runs on every
 platform.
@@ -538,13 +537,12 @@ Test files, by the short names used above:
   popping up, a page the owner holds staying with them, a widget waiting for the agent to ask, the
   viewer's Done and Not now, and the remote listener: only the live view, only through the owner's route, and only with a live link. In
   every case the only input the page gets is the owner's own (relayed) input; Phantab sends none.
-- Lane 3, the acceptance run for a work laptop (real Chrome): `work_parity_acceptance`, through two
-  `phantab mcp` processes as agents run them, with the config `phantab install --work` writes. Agent A
-  fills the seven fields of `engine/task-form` (framed in shadow roots by `engine/framed-task`) in one
-  `browser_act`, reads them back in a snapshot, reads a computed style (DevTools MCP's
+- Lane 3, the acceptance run at parity with Chrome DevTools MCP (real Chrome): `devtools_mcp_acceptance`,
+  through two `phantab mcp` processes as agents run them, with the config `phantab install --dev-tools`
+  writes. Agent A fills the seven fields of `engine/task-form` (framed in shadow roots by
+  `engine/framed-task`) in one `browser_act`, reads them back in a snapshot, reads a computed style (DevTools MCP's
   `get_css_styles`), saves a PNG of the form and hands the page over; its own writes and close are then
-  refused, while agent B fills a second copy on the same site. With `work` on, the tool list has no
-  sign-in or sign-up tool and `browser_status` lists what is off. Its no-Chrome test checks that each
+  refused, while agent B fills a second copy on the same site. Its no-Chrome test checks that each
   row of the parity table (`docs/COMING-FROM-DEVTOOLS-MCP.md`) names a fixture page and a test, not
   ignored, that opens it.
 - Lane 3, sign-in over a scripted page (no Chrome): `signin_fake_page`, the fake provider and a CDP page

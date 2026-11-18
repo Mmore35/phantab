@@ -46,7 +46,7 @@ transcript on disk, in the provider's logs.
   you or by a page it reads. `parity` is the name of the default guardrails setting for that reason:
   phantab adds nothing, and your agent's own rules and approvals are the guardrails. `light` and `full`
   put phantab's own confirmations in front of payments, password changes and deletions
-  (`docs/GUARDRAILS.md`). On a work machine, or where an agent reads untrusted pages, use `full`.
+  (`docs/GUARDRAILS.md`). Where an agent reads untrusted pages, use `full`.
 
 ## Why it matters
 Most browser tools start an agent in a browser of its own: a clean profile, signed in to nothing. That

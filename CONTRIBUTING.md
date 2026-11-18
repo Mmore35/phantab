@@ -12,7 +12,8 @@ issue: `SECURITY.md`.
 - `unsafe` is denied workspace-wide. The only exception is `phantab-window`'s OS modules: each `unsafe`
   block there carries a `// SAFETY:` comment saying why it holds.
 - `cargo deny check` is clean: licences, advisories, sources. New dependencies need a licence on the
-  allow-list in `deny.toml`.
+  allow-list in `deny.toml`. An advisory exception, with its reason and review date, goes in both
+  `deny.toml` and `.cargo/audit.toml`.
 - No secret, token or saved-login value goes into a log, an error, a result or a file the service
   writes. The sign-in rules are the requirements SR-38 to SR-47 in `docs/THREAT-MODEL.md`.
 - Every behaviour change comes with a test in the lane that can see it (`docs/TESTING.md`).
@@ -76,7 +77,7 @@ builds. The same steps also run by hand: `release.sh --extension <tag>` and the 
 Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` on each.
 
 - Windows bundle (one zip a Windows user installs from with no Rust, Node or repo access,
-  `docs/WORK-LAPTOP.md`): after `scripts/release.sh [--build-only] --extension <tag>` on Windows,
+  `docs/INSTALL-WINDOWS.md`): after `scripts/release.sh [--build-only] --extension <tag>` on Windows,
   `scripts/bundle-windows.sh <tag>`. It writes `dist/<tag>/phantab-windows-x64-bundle.zip` (so `upload`
   adds it to the draft) and tests it: an install from the zip alone into a throwaway user folder and
   HKCU key, in Constrained Language Mode, then an uninstall. It leaves this machine's phantab alone.

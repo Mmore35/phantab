@@ -165,6 +165,8 @@ struct Prepared {
     removed_profiles: Vec<Other>,
     /// Whether `otherProfiles` changed. A running service read the list at its start (SR-76).
     profiles_changed: bool,
+    /// Whether `--dev-tools` turned `devTools` on. A running service read it at its start (SR-90).
+    dev_tools_turned_on: bool,
     /// Whether every profile is allowed but those left out (`--all-profiles on`, the default), or only
     /// those named with `--add-profile`.
     all_profiles: bool,
@@ -423,6 +425,13 @@ fn report(
              so it reads them; never close Chrome. Until then it allows the profiles it started with."
         )?;
     }
+    if prepared.dev_tools_turned_on {
+        writeln!(
+            out,
+            "Developer tools turned on: restart only the phantab service, once its pages are drained, so it \
+             reads devTools; never close Chrome. Until then a service already running refuses the developer tools."
+        )?;
+    }
     Ok(())
 }
 
@@ -522,13 +531,11 @@ fn set_sign_in_provider(config: &mut Map<String, Value>, raw: &str) -> Result<()
     Ok(())
 }
 
-/// `--work` (THREAT-MODEL SR-92): `work` and `devTools` on, every other setting kept. An install without it
-/// changes neither, so a work laptop stays one across updates; turning them off is an edit of config.json.
-fn set_work(config: &mut Map<String, Value>, work: bool) {
-    if work {
-        config.insert(crate::work::KEY.to_owned(), Value::Bool(true));
-        config.insert("devTools".to_owned(), Value::Bool(true));
-    }
+/// `--dev-tools` (THREAT-MODEL SR-90): `devTools` on, every other setting kept. An install without it
+/// leaves `devTools` as it is, so the developer tools stay on across updates; turning them off is an
+/// edit of config.json. Whether it turned them on: they were not already the JSON boolean `true`.
+fn set_dev_tools(config: &mut Map<String, Value>, dev_tools: bool) -> bool {
+    dev_tools && config.insert("devTools".to_owned(), Value::Bool(true)) != Some(Value::Bool(true))
 }
 
 /// The sign-in provider flags, in this order: `--sign-in-provider`, each `--remove-sign-in-provider`,
@@ -632,7 +639,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
     let profiles = other_profiles(args, &mut config, &user_data_dir)?;
     config.insert("installedSource".to_owned(), Value::String(binary.to_owned()));
     set_sign_in_providers(&mut config, args)?;
-    set_work(&mut config, args.work);
+    let dev_tools_turned_on = set_dev_tools(&mut config, args.dev_tools);
     let binary = std::fs::read(exe).with_context(|| format!("Could not read {}", exe.display()))?;
     let extension = extension_source(args.extension_dir.as_deref(), exe)?;
     // SR-74: the installed binary reinstalling from the installed folder itself (no --extension-dir) copies
@@ -682,6 +689,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
         other_profiles: profiles.allowed,
         removed_profiles: profiles.removed,
         profiles_changed: profiles.changed,
+        dev_tools_turned_on,
         all_profiles: profiles.all,
         left_out: profiles.left_out,
     })
@@ -1298,6 +1306,7 @@ mod tests {
             other_profiles: Vec::new(),
             removed_profiles: Vec::new(),
             profiles_changed: false,
+            dev_tools_turned_on: false,
             all_profiles: true,
             left_out: Vec::new(),
         };

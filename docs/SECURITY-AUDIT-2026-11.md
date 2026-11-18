@@ -1,8 +1,8 @@
 # Security audit, November 2026
 
 Audited: phantab's `main` on 2026-11-13, after v0.3.0. Written for anyone deciding whether to run
-phantab, in particular on a managed work machine, or for a team where one person passes the download
-to others.
+phantab, in particular where agents read untrusted pages, or for a team where one person passes the
+download to others.
 
 ## Verdict
 
@@ -14,12 +14,12 @@ matters when the download passes through other hands, and six low. Six are fixed
 seventh, finding 4, is fixed in v0.4.0, which redacts a secret a site shows back instead of stopping
 (decision 2 below).
 
-Two of the fixes matter most for a work machine or a shared rollout:
+Two of the fixes matter most for a shared rollout or for agents that read untrusted pages:
 
 - The install guide now says where to take the download's hash from. Before, it compared the
   download with a hash file that travels with it.
 - The sensitive-step check can no longer be switched off by a page. That check only runs with
-  `guardrails` set to `light` or `full`, and `full` is what this report recommends on a work machine.
+  `guardrails` set to `light` or `full`, and `full` is what this report recommends where an agent reads untrusted pages.
 
 The v0.3.0 bundle was cut before the fixes and does not have them. v0.3.0 with the default
 `guardrails` setting is missing only finding 2, which is low; with `light` or `full` it is also
@@ -55,8 +55,7 @@ The gate includes `cargo deny`, `cargo audit` and `npm audit`.
 - Real-Chrome lanes ran on macOS only. The Windows gate does not run them, by the gate's own rule.
   Windows-only code is covered by unit tests and by reading it. The Windows window lane (SR-24,
   SR-25) opens real windows and runs only by hand. It was not run in this audit.
-- No test on a real managed work machine. Its policies (AppLocker, WDAC, Chrome policy) are set by
-  its organization.
+- Not tested under AppLocker, WDAC or a Chrome policy.
 - Not every line was read. The macOS Keychain store, the Windows access-list code and the Bitwarden
   pin file were read in outline and through their tests, not line by line.
 
@@ -74,7 +73,7 @@ The gate includes `cargo deny`, `cargo audit` and `npm audit`.
 
 ### 1. The download was checked against a hash that travels with it (medium for a rollout, fixed)
 
-**What was wrong.** The work-laptop and Mac guides said: check the zip against the `.sha256` file
+**What was wrong.** The Windows and Mac guides said: check the zip against the `.sha256` file
 beside it. The installer then checks every file against `SHA256SUMS.txt`, which is inside the zip.
 Both lists come from the same place as the files they vouch for. They prove the copy is whole. They
 do not prove it is the copy that was released.
@@ -172,7 +171,7 @@ account. It cannot learn the password by doing so.
 **How likely.** Low. The site's own lockout is what stops it.
 
 **Fix.** The threat model now says which mode the limits need. The behaviour is unchanged, because
-the default is a deliberate choice. On a work machine this report recommends `full`.
+the default is a deliberate choice. Where an agent reads untrusted pages this report recommends `full`.
 
 ### 6. The release workflow ran actions by tag (low, fixed)
 
@@ -222,7 +221,7 @@ under Open decisions.
 | Two small scripts run in the page's own world: popups as tabs, and the passkey counter. | A known and documented trade-off: pages expect them in their own world (SR-61, SR-75). This audit changed nothing there. |
 | One debugging message may be up to 256 MiB, and a page's event queue has no cap. | A page that floods the browser can slow the service. It gains no access. Decision 8. |
 | A Windows runtime folder owned by the Administrators group is accepted. | An administrator can already do anything on the machine. |
-| On a domain-joined laptop, the stored Bitwarden session key is protected by Windows for your account, and a domain administrator can recover such keys. | True of every program that uses Windows' store. Worth knowing on a managed work machine. R16. |
+| On a domain-joined PC, the stored Bitwarden session key is protected by Windows for your account, and a domain administrator can recover such keys. | True of every program that uses Windows' store. R16. |
 
 ## Checked and found sound
 
@@ -339,7 +338,7 @@ Every requirement in `docs/THREAT-MODEL.md` was checked against the code and its
 ## Residual risks
 
 These are open by design and are written up in `docs/THREAT-MODEL.md` § Residual risks. The ones that
-matter most on a managed work machine:
+matter most:
 
 - **R1. A program running as you can do what you can.** It can read the token, rewrite your
   registrations, swap the extension, or take the extension's place on the link. phantab notices
@@ -360,7 +359,7 @@ matter most on a managed work machine:
 - **R15. A runtime folder that existed before install, in a place others can write.** The default
   folder, under your own profile, is not affected. Do not point `--runtime` at a shared folder.
 - **R16. The stored Bitwarden session key opens for any program running as you.** On a domain-joined
-  laptop a domain administrator can recover it too.
+  PC a domain administrator can recover it too.
 - **R20. A program running as you can reset the sign-in limits and write its own approvals.** Part
   of R1.
 
@@ -370,7 +369,7 @@ None of these was changed. Each would alter what an agent can do, costs somethin
 the maintainers have not settled. Item 1 is a setting each user chooses; the rest are open maintainer
 decisions, and comments on them are welcome in an issue.
 
-1. **Which `guardrails` setting on a work machine.** Recommended: `full`. The default, `parity`,
+1. **Which `guardrails` setting where an agent reads untrusted pages.** Recommended: `full`. The default, `parity`,
    gives the agent every access you have and leaves all approvals to the agent's own setup. `light`
    adds a confirmation before payments, password changes and deletes. `full` adds the sign-in limits
    and stops, your handback before `resume`, and a confirmation before a session takes over another's
@@ -383,10 +382,10 @@ decisions, and comments on them are welcome in an issue.
 4. **Owner consent that an agent cannot assert (R3).** A real fix needs an owner gesture outside the
    agent's reach, such as a click in the extension. It adds a step for you on every confirmed action
    and changes the tool surface.
-5. **Code signing.** The Windows build is unsigned. A managed machine's IT must allow it by hash,
-   again for each version, and a hash rule for `phantab.exe` says nothing about the extension folder
-   beside it. A signing certificate would let IT allow the publisher once and would close finding 1 at
-   its root. It costs money and a yearly renewal. For a team rollout this is the main practical
+5. **Code signing.** The Windows build is unsigned. A policy that forbids unsigned programs must allow
+   it by hash, again for each version, and a hash rule for `phantab.exe` says nothing about the
+   extension folder beside it. A signing certificate would let such a policy allow the publisher once
+   and would close finding 1 at its root. It costs money and a yearly renewal. For a team rollout this is the main practical
    hurdle. A cheaper
    half step: build the extension's hashes into the program, so one allowed hash vouches for both.
 6. **Refuse an older version on install.** It would stop someone talking a user into an old build
@@ -399,14 +398,14 @@ decisions, and comments on them are welcome in an issue.
 9. **Tighter walls between sessions.** Show the last disconnect message only to the session it
    concerns, and ask for a confirmation before any adoption in every mode. This changes what one
    agent can see of another's work.
-10. **Ask IT before installing on a managed machine.** phantab loads an unpacked extension that uses
-    the browser's debugging permission, and lets an agent act in your signed-in browser. Many
-    organizations forbid that by policy regardless of how sound the tool is. `docs/WORK-LAPTOP.md` has
-    the message to send. This is advice to users, not a change to phantab.
+10. **Check what the machine's policy allows before installing.** phantab loads an unpacked extension
+    that uses the browser's debugging permission, and lets an agent act in your signed-in browser. A
+    device policy may forbid that regardless of how sound the tool is. This is advice to users, not a
+    change to phantab.
 
-## Notes for a managed work machine
+## Notes for an install
 
-- Take the zip's hash from the release page itself, as `docs/WORK-LAPTOP.md` now says. That one
+- Take the zip's hash from the release page itself, as `docs/INSTALL-WINDOWS.md` now says. That one
   comparison is the anchor of trust for everything the installer checks afterwards.
 - In a team: each person compares the hash themselves, and installs for themselves. Nothing is
   shared between users, and no admin right is used.

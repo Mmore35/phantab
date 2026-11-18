@@ -551,32 +551,35 @@ fn sign_in_provider_is_written_kept_and_removed_only_by_the_installer() {
     assert_eq!(read(), None);
 }
 
-/// SR-92: `--work` writes `work` and `devTools` on and keeps every other setting; an install without it
-/// removes neither, and a `false` already there is turned on.
+/// `--dev-tools` writes `devTools` on and keeps every other setting; an install without it removes
+/// nothing, and a `false` already there is turned on. Only the install that turns it on says to restart
+/// a running service.
 #[test]
-fn work_writes_work_and_dev_tools_and_a_later_install_keeps_them() {
-    let world = Fixture::new("work").with_runtime(r#"{"kept":true}"#);
+fn dev_tools_writes_dev_tools_and_a_later_install_keeps_it() {
+    let world = Fixture::new("dev-tools").with_runtime(r#"{"kept":true}"#);
     let path = world.runtime.join("config.json");
     let mut config = world.config();
-    config["work"] = json!(false);
     config["devTools"] = json!(false);
     config["siteLock"] = json!("exclusive");
     std::fs::write(&path, config.to_string()).unwrap();
-    world.run(&world.argv(&["--work"])).unwrap();
+    // The whole line, so a lost line continuation (a run of spaces mid-sentence) fails here.
+    let restart = "Developer tools turned on: restart only the phantab service, once its pages are drained, so it \
+                   reads devTools; never close Chrome. Until then a service already running refuses the developer \
+                   tools.";
+    let out = world.run(&world.argv(&["--dev-tools"])).unwrap();
+    assert!(out.contains(restart), "a running service read devTools at its start: {out}");
     let written = world.config();
-    assert_eq!(written["work"], json!(true));
     assert_eq!(written["devTools"], json!(true));
+    assert_eq!(written.get("work"), None, "nothing else is written");
     assert_eq!(written["retained"], json!({"kept": true}));
     assert_eq!(written["siteLock"], json!("exclusive"));
     assert_eq!(written["profileDirectory"], json!("Default"));
     assert_eq!(written["userDataDir"], config["userDataDir"]);
-    world.run(&world.argv(&[])).unwrap();
-    let later = world.config();
-    assert_eq!(
-        (&later["work"], &later["devTools"]),
-        (&json!(true), &json!(true)),
-        "a later install keeps them"
-    );
+    let out = world.run(&world.argv(&["--dev-tools"])).unwrap();
+    assert!(!out.contains(restart), "devTools was already on: {out}");
+    let out = world.run(&world.argv(&[])).unwrap();
+    assert!(!out.contains(restart), "no --dev-tools: {out}");
+    assert_eq!(world.config()["devTools"], json!(true), "a later install keeps it");
 }
 
 #[test]
@@ -867,6 +870,7 @@ fn help_and_bad_flags() {
     assert!(world.run(&words(&["--help"])).unwrap().contains("Usage: phantab install"));
     let mut out = Vec::new();
     assert_eq!(phantab::install::run_with(&words(&["--bogus"]), false, &world.exe, &mut out).unwrap(), 2);
+    assert_eq!(phantab::install::run_with(&words(&["--work"]), false, &world.exe, &mut out).unwrap(), 2);
 }
 
 /// The real binary, end to end: a copy of it is installed and the entries run that copy, which then

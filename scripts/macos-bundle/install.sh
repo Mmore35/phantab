@@ -22,8 +22,8 @@
 #                          is already bound to.
 #   --server-name <name>   the MCP entry's name. Default phantab.
 #   --chrome <path>        the Chrome program, when it is not /Applications/Google Chrome.app.
-#   --work                 for a work laptop or a managed machine: writes "work": true and "devTools": true
-#                          to phantab's config.json (docs/WORK-LAPTOP.md). A later run without it keeps both.
+#   --dev-tools            turns the developer tools on: writes "devTools": true to phantab's config.json
+#                          (docs/INSTALL-MAC.md). A later run without it keeps it.
 #   --check-only           steps 1 and 2 only. Installs nothing.
 #   --uninstall            undo the install: puts back the client entries and the native host it replaced.
 #   --remove-files         with --uninstall: also delete ~/Library/Application Support/phantab. Remove the
@@ -42,13 +42,13 @@ codex_config="$HOME/.codex/config.toml"
 say() { printf '%s\n' "$*"; }
 stop() { printf '\nphantab install stopped: %s\n' "$*" >&2; exit 1; }
 
-profile="" server_name=phantab chrome="" work=0 check_only=0 uninstall=0 remove_files=0
+profile="" server_name=phantab chrome="" dev_tools=0 check_only=0 uninstall=0 remove_files=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) [ $# -ge 2 ] || stop "--profile needs a folder name"; profile="$2"; shift ;;
     --server-name) [ $# -ge 2 ] || stop "--server-name needs a name"; server_name="$2"; shift ;;
     --chrome) [ $# -ge 2 ] || stop "--chrome needs a path"; chrome="$2"; shift ;;
-    --work) work=1 ;;
+    --dev-tools) dev_tools=1 ;;
     --check-only) check_only=1 ;;
     --uninstall) uninstall=1 ;;
     --remove-files) remove_files=1 ;;
@@ -151,7 +151,7 @@ xattr -dr com.apple.quarantine "$here" 2>/dev/null || true
 chmod +x "$bundled"
 if ! said="$("$bundled" install --help 2>&1)" || [[ "$said" != *"Usage: phantab install"* ]]; then
   [ -n "$said" ] && say "  macOS said: $said"
-  stop "phantab does not run here. If a window said it cannot be verified: System Settings, Privacy & Security, Open Anyway, then run this again. On a company Mac the device policy may forbid unsigned programs: ask IT to allow phantab (its SHA-256 is in SHA256SUMS.txt)."
+  stop "phantab does not run here. If a window said it cannot be verified: System Settings, Privacy & Security, Open Anyway, then run this again. A device policy that forbids unsigned programs blocks it until phantab is allowed (its SHA-256 is in SHA256SUMS.txt)."
 fi
 say "  ok: phantab runs"
 if [ "$check_only" = 1 ]; then
@@ -204,7 +204,7 @@ flags=(install --runtime "$runtime")
 [ -z "$chrome" ] || flags+=(--chrome "$chrome")
 flags+=(--server-name "$server_name" --claude-config "$claude_config")
 [ ! -f "$codex_config" ] || flags+=(--codex-config "$codex_config")
-[ "$work" = 0 ] || flags+=(--work)
+[ "$dev_tools" = 0 ] || flags+=(--dev-tools)
 "$bundled" "${flags[@]}" || stop "phantab install failed (its message is above)."
 said="$("$installed" install --help 2>&1)" || true
 [[ "$said" == *"Usage: phantab install"* ]] || stop "phantab is installed, but the installed copy does not run: $said"
@@ -214,5 +214,8 @@ say "Installed. Two steps left, both yours:"
 say "  1. In Chrome ($profile): open chrome://extensions, turn on Developer mode, click Load unpacked,"
 say "     and pick $runtime/extension (in the file picker, Cmd+Shift+G and paste that path)"
 say "  2. Quit and reopen Claude Code. Its MCP entry is '$server_name'."
-[ "$work" = 0 ] || say "work and devTools are on in config.json; browser_status lists what work turned off."
+if [ "$dev_tools" != 0 ]; then
+  say "devTools is on in config.json: Claude Code lists the developer tools once it is reopened. A phantab"
+  say "service already running must be restarted first: only the phantab service, once its pages are drained; never close Chrome."
+fi
 say "To undo: bash install.sh --uninstall --remove-files"
