@@ -1,0 +1,9 @@
+# cargo-audit's config, read from the repo root by `scripts/check.sh` and `scripts/release.sh` (SR-56).
+# Each ignored id carries a reason and a review date, as in `deny.toml` (SR-55), which holds the same list.
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0543: chrono is unmaintained, not a vulnerability. rmcp requires it (its timestamps,
+    # and schemars' chrono04 schema impls that rmcp's server feature turns on); phantab calls none of
+    # it; no rmcp release is without it. Review 2027-02-17.
+    "RUSTSEC-2026-0543",
+]

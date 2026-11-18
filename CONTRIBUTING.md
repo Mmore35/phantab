@@ -12,7 +12,8 @@ issue: `SECURITY.md`.
 - `unsafe` is denied workspace-wide. The only exception is `phantab-window`'s OS modules: each `unsafe`
   block there carries a `// SAFETY:` comment saying why it holds.
 - `cargo deny check` is clean: licences, advisories, sources. New dependencies need a licence on the
-  allow-list in `deny.toml`.
+  allow-list in `deny.toml`. An advisory exception, with its reason and review date, goes in both
+  `deny.toml` and `.cargo/audit.toml`.
 - No secret, token or saved-login value goes into a log, an error, a result or a file the service
   writes. The sign-in rules are the requirements SR-38 to SR-47 in `docs/THREAT-MODEL.md`.
 - Every behaviour change comes with a test in the lane that can see it (`docs/TESTING.md`).

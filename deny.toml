@@ -9,7 +9,9 @@ version = 2
 yanked = "deny"
 unmaintained = "all"
 unsound = "all"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not a vulnerability; rmcp requires it (its timestamps, and schemars' chrono04 schema impls that rmcp's server feature turns on); phantab calls none of it; no rmcp release is without it; review 2027-02-17" },
+]
 
 [licenses]
 version = 2
