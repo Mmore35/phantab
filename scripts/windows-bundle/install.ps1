@@ -26,9 +26,9 @@
 .PARAMETER QuietDebugging
   Hide Chrome's "started debugging this browser" bar without asking: adds the flag to Chrome's own HKCU
   Run-key entry and the shortcuts that start it. Without it, phantab install asks once at a terminal.
-.PARAMETER Work
-  For a work laptop or a managed machine: writes "work": true and "devTools": true to phantab's
-  config.json (docs/WORK-LAPTOP.md). A later run without -Work keeps both.
+.PARAMETER DevTools
+  Turns the developer tools on: writes "devTools": true to phantab's config.json
+  (docs/INSTALL-WINDOWS.md). A later run without -DevTools keeps it.
 .PARAMETER CheckOnly
   Run only steps 1 and 2: the unsigned-program test. Installs nothing.
 .PARAMETER SkipCheck
@@ -48,7 +48,7 @@ param(
     [string]$ChromeProfile,
     [string]$ServerName = 'phantab',
     [switch]$QuietDebugging,
-    [switch]$Work,
+    [switch]$DevTools,
     [switch]$CheckOnly,
     [switch]$SkipCheck,
     [switch]$Uninstall,
@@ -392,7 +392,7 @@ if (-not $keep) { $flags += @('--user-data-dir', $userData, '--profile', $Chrome
 $flags += @('--server-name', $ServerName) + $clients
 if ($NativeHostKey) { $flags += @('--native-host-key', $NativeHostKey) }
 if ($QuietDebugging) { $flags += @('--quiet-debugging', 'on') }
-if ($Work) { $flags += @('--work') }
+if ($DevTools) { $flags += @('--dev-tools') }
 & $bundled @flags
 if ($LASTEXITCODE -ne 0) { Stop-Install "phantab install exited $LASTEXITCODE (its message is above)." }
 $why = Test-Runs 'the installed phantab.exe, started the way Chrome starts it' $installed 'install --help' $okHelp -ViaCmd:(-not $direct)
@@ -403,6 +403,6 @@ Say 'Installed. Two steps left, both yours:'
 Say "  1. In Chrome ($ChromeProfile): open chrome://extensions, turn on Developer mode, click Load unpacked,"
 Say "     and pick $runtime\extension"
 Say "  2. Quit and reopen Claude Code. Its MCP entry is '$ServerName'."
-if ($Work) { Say 'work and devTools are on in config.json; browser_status lists what work turned off.' }
+if ($DevTools) { Say 'devTools is on in config.json: Claude Code lists the developer tools once it is reopened.' }
 Say 'To undo: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -RemoveFiles'
 exit 0

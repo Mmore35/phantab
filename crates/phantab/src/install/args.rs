@@ -36,9 +36,9 @@ Other:
                                     that uses Chrome's debugger then attaches silently. Answers the
                                     question an install at a terminal asks once; with no client flag it
                                     changes only that
-  --work                            a work laptop or a managed machine: writes \"work\": true and
-                                    \"devTools\": true to config.json (docs/WORK-LAPTOP.md). Later
-                                    installs keep both, with or without it
+  --dev-tools                       writes \"devTools\": true to config.json, which turns the
+                                    developer tools on (docs/GUARDRAILS.md). Later installs keep it,
+                                    with or without the flag
   --extension-dir <dir>             the built extension (default: extension/ beside the binary, else in
                                     a debug build the source tree's extension/dist)
   --uninstall                       uninstall instead
@@ -53,8 +53,8 @@ pub(crate) struct Args {
     pub user_data_dir: Option<PathBuf>,
     pub chrome: Option<PathBuf>,
     pub uninstall: bool,
-    /// `--work`: write `work` and `devTools` on (THREAT-MODEL SR-92). Without it nothing is removed.
-    pub work: bool,
+    /// `--dev-tools`: write `devTools` on (THREAT-MODEL SR-90). Without it nothing is removed.
+    pub dev_tools: bool,
     pub sign_in_provider: Option<String>,
     pub add_sign_in_providers: Vec<String>,
     pub remove_sign_in_providers: Vec<String>,
@@ -144,11 +144,11 @@ pub(crate) fn parse(words: &[String]) -> Result<Args, String> {
             "add-profile" => args.add_profiles.push(value(name)?),
             "remove-profile" => args.remove_profiles.push(value(name)?),
             "native-host-key" => args.native_host_key = Some(value(name)?),
-            "uninstall" | "work" | "help" if inline.is_some() => {
+            "uninstall" | "dev-tools" | "help" if inline.is_some() => {
                 return Err(format!("--{name} takes no value"));
             }
             "uninstall" => args.uninstall = true,
-            "work" => args.work = true,
+            "dev-tools" => args.dev_tools = true,
             "help" => args.help = true,
             _ => return Err(format!("unrecognized flag: --{name}")),
         }
@@ -184,7 +184,7 @@ mod tests {
             "Other",
             "--all-profiles=off",
             "--uninstall",
-            "--work",
+            "--dev-tools",
         ]))
         .unwrap();
         assert_eq!(a.add_profiles, ["Work", "Profile 5"]);
@@ -198,8 +198,8 @@ mod tests {
         assert_eq!(a.sign_in_provider.as_deref(), Some("[]"));
         assert_eq!(a.quiet_debugging, Some(true));
         assert!(a.uninstall);
-        assert!(a.work);
-        assert!(!parse(&[]).unwrap().work, "absent: config.json keeps what it has");
+        assert!(a.dev_tools);
+        assert!(!parse(&[]).unwrap().dev_tools, "absent: config.json keeps what it has");
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(error, r#"--all-profiles takes on or off, not "maybe""#);
         assert!(parse(&strings(&["--all-profiles"])).is_err());
         assert!(parse(&strings(&["--uninstall=yes"])).is_err());
-        assert_eq!(parse(&strings(&["--work=yes"])).unwrap_err(), "--work takes no value");
+        assert_eq!(parse(&strings(&["--dev-tools=yes"])).unwrap_err(), "--dev-tools takes no value");
         assert!(parse(&strings(&["--migrate-from"])).is_err());
         assert!(parse(&strings(&["--instance-root", "x"])).is_err());
     }

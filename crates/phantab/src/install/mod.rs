@@ -522,11 +522,11 @@ fn set_sign_in_provider(config: &mut Map<String, Value>, raw: &str) -> Result<()
     Ok(())
 }
 
-/// `--work` (THREAT-MODEL SR-92): `work` and `devTools` on, every other setting kept. An install without it
-/// changes neither, so a work laptop stays one across updates; turning them off is an edit of config.json.
-fn set_work(config: &mut Map<String, Value>, work: bool) {
-    if work {
-        config.insert("work".to_owned(), Value::Bool(true));
+/// `--dev-tools` (THREAT-MODEL SR-90): `devTools` on, every other setting kept. An install without it
+/// leaves `devTools` as it is, so the developer tools stay on across updates; turning them off is an
+/// edit of config.json.
+fn set_dev_tools(config: &mut Map<String, Value>, dev_tools: bool) {
+    if dev_tools {
         config.insert("devTools".to_owned(), Value::Bool(true));
     }
 }
@@ -632,7 +632,7 @@ fn prepare(args: &args::Args, exe: &Path, runtime: &Path, binary: &str) -> Resul
     let profiles = other_profiles(args, &mut config, &user_data_dir)?;
     config.insert("installedSource".to_owned(), Value::String(binary.to_owned()));
     set_sign_in_providers(&mut config, args)?;
-    set_work(&mut config, args.work);
+    set_dev_tools(&mut config, args.dev_tools);
     let binary = std::fs::read(exe).with_context(|| format!("Could not read {}", exe.display()))?;
     let extension = extension_source(args.extension_dir.as_deref(), exe)?;
     // SR-74: the installed binary reinstalling from the installed folder itself (no --extension-dir) copies
