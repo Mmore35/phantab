@@ -1491,8 +1491,8 @@ mod tests {
         );
         assert!(snapshot);
         // `type` takes its text, a number written as its digits.
-        let (first, then, _) = plan(json!({ "steps": [["type", "Reset the VPN token"], ["type", 42]] }));
-        assert_eq!(first, json!({ "action": "type", "text": "Reset the VPN token" }));
+        let (first, then, _) = plan(json!({ "steps": [["type", "Send a replacement"], ["type", 42]] }));
+        assert_eq!(first, json!({ "action": "type", "text": "Send a replacement" }));
         assert_eq!(then, json!([{ "action": "type", "text": "42" }]));
         assert!(!plan(json!({ "steps": [["click", "#a"]], "snapshot": false })).2);
         // The older form keeps its snapshot opt-in.

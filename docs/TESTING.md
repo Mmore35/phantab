@@ -537,13 +537,12 @@ Test files, by the short names used above:
   popping up, a page the owner holds staying with them, a widget waiting for the agent to ask, the
   viewer's Done and Not now, and the remote listener: only the live view, only through the owner's route, and only with a live link. In
   every case the only input the page gets is the owner's own (relayed) input; Phantab sends none.
-- Lane 3, the acceptance run for a work laptop (real Chrome): `work_parity_acceptance`, through two
-  `phantab mcp` processes as agents run them, with the config `phantab install --work` writes. Agent A
-  fills the seven fields of `engine/task-form` (framed in shadow roots by `engine/framed-task`) in one
-  `browser_act`, reads them back in a snapshot, reads a computed style (DevTools MCP's
+- Lane 3, the acceptance run at parity with Chrome DevTools MCP (real Chrome): `devtools_mcp_acceptance`,
+  through two `phantab mcp` processes as agents run them, with the config `phantab install --dev-tools`
+  writes. Agent A fills the seven fields of `engine/task-form` (framed in shadow roots by
+  `engine/framed-task`) in one `browser_act`, reads them back in a snapshot, reads a computed style (DevTools MCP's
   `get_css_styles`), saves a PNG of the form and hands the page over; its own writes and close are then
-  refused, while agent B fills a second copy on the same site. With `work` on, the tool list has no
-  sign-in or sign-up tool and `browser_status` lists what is off. Its no-Chrome test checks that each
+  refused, while agent B fills a second copy on the same site. Its no-Chrome test checks that each
   row of the parity table (`docs/COMING-FROM-DEVTOOLS-MCP.md`) names a fixture page and a test, not
   ignored, that opens it.
 - Lane 3, sign-in over a scripted page (no Chrome): `signin_fake_page`, the fake provider and a CDP page

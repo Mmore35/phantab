@@ -853,29 +853,29 @@ async fn mcp_tools_and_cli_calls_drive_real_pages() {
 
 /// The values a record's fields hold, as `engine/record`'s snapshot shows them at parity.
 const RECORD_VALUES: [(&str, &str); 3] = [
-    ("short", "VPN token expired for a test user"),
-    ("group", "Network Operations"),
-    ("notes", "Called user at 09:10, reset pending."),
+    ("short", "Order 1042 arrived damaged"),
+    ("group", "Customer Care"),
+    ("notes", "Called the customer at 09:10, refund pending."),
 ];
 /// What `engine/record` holds that no snapshot shows, in any mode: a password, a password-change form's
 /// other field, a card number and a one-time code.
 const RECORD_HIDDEN: [&str; 5] = ["hunter2", "new-secret-1", "a.test.user", "4111111111111111", "123456"];
 
-/// At parity (the default), a task form in a frame inside open shadow roots, the way some apps (such as
-/// `ServiceNow`) hold theirs, is filled by selector in one `browser_act`, and the snapshot after shows what
-/// each field now holds; `type` types at the focus; and a record shows its text fields' values but never a
+/// At parity (the default), a task form in a frame inside open shadow roots, the way some web apps hold
+/// theirs, is filled by selector in one `browser_act`, and the snapshot after shows what each field now
+/// holds; `type` types at the focus; and a record shows its text fields' values but never a
 /// password's, nor any field of a form that holds a new password, a card field, a code field or two
 /// password fields (THREAT-MODEL R8).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn framed_forms_are_filled_by_selector_and_show_their_values_at_parity() {
     const FILLED: [(&str, &str); 7] = [
-        ("#task\\.short_description", "VPN token expired"),
-        ("#sys_display\\.task\\.assignment_group", "Network Operations"),
-        ("#task\\.state", "Work in Progress"),
-        ("#task\\.priority", "2 - High"),
-        ("#task\\.due_date", "2026-12-01"),
-        ("#task\\.work_notes", "Called the user."),
-        ("#task\\.description", "The token expired overnight."),
+        ("#request\\.short_description", "Order arrived damaged"),
+        ("#request\\.assignment_group", "Customer Care"),
+        ("#request\\.state", "In Progress"),
+        ("#request\\.priority", "2 - High"),
+        ("#request\\.due_date", "2026-12-01"),
+        ("#request\\.notes", "Called the customer."),
+        ("#request\\.description", "The box was crushed in transit."),
     ];
     let Some(chrome) = phantab_testkit::skip_unless_chrome() else { return };
     let _turn = SERIAL.lock().await;
@@ -949,16 +949,16 @@ async fn framed_forms_are_filled_by_selector_and_show_their_values_at_parity() {
     assert!(
         lane.until(Duration::from_secs(30), async || {
             snap = lane.snap("a", &a).await;
-            element(&snap, "task.short_description").is_some()
+            element(&snap, "request.short_description").is_some()
         })
         .await,
         "{snap}"
     );
-    let field = element(&snap, "task.short_description").unwrap().clone();
+    let field = element(&snap, "request.short_description").unwrap().clone();
     lane.act("a", &a, json!({ "action": "click_xy", "x": field["x"], "y": field["y"] })).await.unwrap();
-    lane.act("a", &a, json!({ "action": "type", "text": "Reset the VPN token" })).await.unwrap();
+    lane.act("a", &a, json!({ "action": "type", "text": "Send a replacement" })).await.unwrap();
     let after = lane.snap("a", &a).await;
-    assert_eq!(element(&after, "task.short_description").unwrap()["value"], json!("Reset the VPN token"));
+    assert_eq!(element(&after, "request.short_description").unwrap()["value"], json!("Send a replacement"));
 
     // Proof 4: a record shows its text fields' values, and never a password's.
     let rec = lane.open("a", "/engine/record").await;
@@ -1030,7 +1030,7 @@ async fn a_typed_space_is_checked_as_a_press_of_space() {
 
     let rec = lane.open("a", "/engine/record").await;
     lane.act("a", &rec, json!({ "action": "fill", "selector": "#short", "text": "Note:" })).await.unwrap();
-    lane.act("a", &rec, json!({ "action": "type", "text": " reset the VPN token" })).await.unwrap();
+    lane.act("a", &rec, json!({ "action": "type", "text": " send a replacement" })).await.unwrap();
     lane.finish().await;
 }
 
