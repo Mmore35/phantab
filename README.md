@@ -225,10 +225,10 @@ Developer tools are off unless `config.json` sets `"devTools": true`, which `pha
 the page, as its own scripts run, and answers its result (a form's own objects, say, such as a
 `requestForm` the page defines); `browser_console` gives the page's errors, warnings and uncaught
 exceptions; and `browser_network` lists its requests, failed ones first, with one request's headers
-and body on asking. Each page is recorded from the first call that asks about it. `browser_emulate` slows a page's CPU or network, or sets its location,
-user agent or colour scheme, until cleared; `browser_trace` saves a performance trace that Chrome's
-Performance panel opens, and answers the page's load, largest paint, layout shift, long tasks and
-slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
+and body on asking. Each page is recorded from the first call that asks about it. `browser_emulate`
+slows a page's CPU or network, or sets its location, user agent or colour scheme, until cleared;
+`browser_trace` saves a performance trace that Chrome's Performance panel opens, and answers the
+page's load, largest paint, layout shift, long tasks and slowest requests. A request's `Cookie`, `Set-Cookie` and `Authorization` headers never
 leave phantab, and nothing reads a cookie. With guardrails `light` or `full`, every script waits for
 your yes. A script and a password phantab fills never share a page: phantab signs in and signs up only
 on a tab no script ran on (open a fresh page for it), and runs no script on a page it filled a password
