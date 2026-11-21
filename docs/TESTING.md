@@ -264,18 +264,26 @@ too once the `x86_64-pc-windows-gnu` target is added (and WinLibs is on PATH); w
 fails, `--build-only` included.
 
 The Windows bundle (`scripts/bundle-windows.sh <tag>`, after `release.sh --extension <tag>`) packs
-that tag's binary and unpacked extension with `install.ps1`, a tiny unsigned test program and
+that tag's binary and unpacked extension with `install.ps1`, a tiny test program (`run-check.exe`) and
 `SHA256SUMS.txt`, then runs `scripts/windows-bundle/test-bundle.ps1` on the zip. The test unzips it,
 cuts PATH to System32 (no cargo, rustc, node, gcc or npm), points `USERPROFILE` and `LOCALAPPDATA` at a
 temp folder with a fake Chrome user-data dir (two profiles; `Profile 7` last used), and passes
 `-NativeHostKey` so the native host goes under a scratch HKCU key. It checks that a changed file is
 refused, then runs `-CheckOnly`, an install, a second install and `-Uninstall -RemoveFiles`, each in a
-session lowered to Constrained Language Mode (what AppLocker or WDAC gives an unsigned script; Windows
-11 ignores `__PSLockdownPolicy` in a process environment, so the session sets its own mode), and
+session lowered to Constrained Language Mode (what AppLocker or WDAC gives a script it has no rule
+for; Windows 11 ignores `__PSLockdownPolicy` in a process environment, so the session sets its own
+mode), and
 asserts the binary, extension, registration, profile binding, BOM-less `.claude.json`, MCP and Codex
 entries, and their removal. Last it compares this machine's real native host value, runtime state and
 client entries with their values before: they must not change. It must print `RESULT: PASSED`; run it
 after any change under `scripts/windows-bundle/`. It is safe to run on a machine in use.
+
+A release's Windows half is signed in the workflow, between `release.sh` and the bundle
+(`scripts/sign-windows.sh`; CONTRIBUTING § Releases). The bundle test covers both kinds: `build-info.txt`
+says which of `phantab.exe`, `run-check.exe` and `install.ps1` were signed and by whom, and the test
+fails unless each of those carries a valid, timestamped signature by that signer, each other one
+carries none, and `install.ps1` reports the same. A build made on your own machine is unsigned, so
+there the signed kind is not exercised: only a workflow run with signing on does that.
 
 The macOS bundle (`scripts/bundle-macos.sh <tag>`, on a Mac after `release.sh --extension <tag>`)
 packs the same way with `install.sh` and runs `scripts/macos-bundle/test-bundle.sh` on the zip. It
@@ -304,7 +312,7 @@ exists.
 | One agent session reaches another's page; a page's markup hides a sensitive step from the check; a page puts its own words where a message names another extension | `lib`, `engine_chrome` (real Chrome) |
 | A page, or a planted program, gets between the owner's passwords and the sign-in form; a site shows the value back on the page; a page holds a password, card number or code in a field a snapshot reads | `signin_provider`, `signin_bitwarden`, `signin_fake_page`, `lib`, `signin_echo` and `engine_chrome` (real Chrome) |
 | An agent saves a screenshot or snapshot to a relative path, a missing folder or a file it would replace | `lib`, `engine_chrome` (real Chrome) |
-| A changed binary, a test build or a moved workflow action reaches an install or a release | `install`, `lib` |
+| A changed binary, a test build, a moved workflow action or a build that may not sign reaches an install or a release | `install`, `lib` |
 | An agent reads a request's cookie or authorization header, or reaches the developer tools with `devTools` off | `cdp` (phantab-cdp's unit tests), `lib`, `bridge`, `mcp`, the extension's `ops` and `events` tests, `engine_chrome` (real Chrome) |
 | An agent's script and a password phantab filled share a page, in either order | `lib`, `signin_fake_page`, `engine_chrome` (real Chrome) |
 | An agent, or any shell without the owner at it, restarts the owner's Chrome | `cli_host`, `lib` |

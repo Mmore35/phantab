@@ -6,10 +6,11 @@
   Run it from the unzipped bundle folder:
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
-  1. Checks every file against SHA256SUMS.txt and clears the downloaded-file mark (Unblock-File).
-  2. Tests that Windows lets an unsigned program run here and from %LOCALAPPDATA% the way Chrome starts
-     phantab (through cmd.exe, or directly when Chrome's NativeHostsExecutablesLaunchDirectly policy is
-     on). If not, it stops, says what blocked it and prints the programs' hashes (docs/INSTALL-WINDOWS.md).
+  1. Checks every file against SHA256SUMS.txt, clears the downloaded-file mark (Unblock-File), and says
+     for phantab.exe, run-check.exe and this script whether each is signed, and by whom.
+  2. Tests that Windows lets phantab run here and from %LOCALAPPDATA% the way Chrome starts it (through
+     cmd.exe, or directly when Chrome's NativeHostsExecutablesLaunchDirectly policy is on). If not, it
+     stops, says what blocked it and prints the programs' hashes (docs/INSTALL-WINDOWS.md).
   3. Runs `phantab.exe install`, which copies itself to %LOCALAPPDATA%\phantab\bin, the extension to
      %LOCALAPPDATA%\phantab\extension, registers the native host dev.phantab.bridge under HKCU, and adds
      the MCP entry to %USERPROFILE%\.claude.json (and to Codex's config.toml when that file exists).
@@ -30,7 +31,7 @@
   Turns the developer tools on: writes "devTools": true to phantab's config.json
   (docs/INSTALL-WINDOWS.md). A later run without -DevTools keeps it.
 .PARAMETER CheckOnly
-  Run only steps 1 and 2: the unsigned-program test. Installs nothing.
+  Run only steps 1 and 2: the file check and the can-it-run test. Installs nothing.
 .PARAMETER SkipCheck
   Skip step 2. For a PC that allows phantab.exe itself (a hash rule) but not the test program, or
   where Chrome's launch policy comes from the cloud and so is not visible to this script.
@@ -56,8 +57,9 @@ param(
     [string]$NativeHostKey
 )
 
-# Written for Windows PowerShell 5.1 and for Constrained Language Mode, which AppLocker or WDAC puts an
-# unsigned script in: cmdlets and $env: only, no .NET types, no Add-Type. Native programs
+# Written for Windows PowerShell 5.1 and for Constrained Language Mode, which AppLocker or WDAC puts a
+# script in unless a rule allows it (an unsigned script always, a signed one until its signer is allowed):
+# cmdlets and $env: only, no .NET types, no Add-Type. Native programs
 # run through Start-Process: a 5.1 `&` call that redirects stderr turns each stderr line into an error.
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -65,6 +67,9 @@ $runtime = Join-Path $env:LOCALAPPDATA 'phantab'
 $installed = Join-Path $runtime 'bin\phantab.exe'
 $claudeConfig = Join-Path $env:USERPROFILE '.claude.json'
 $codexConfig = Join-Path $env:USERPROFILE '.codex\config.toml'
+# Who signed the bundled phantab.exe, when Windows accepts its signature; empty for an unsigned build.
+# Set in step 1, read by the explanations below.
+$signer = ''
 
 function Say($text) { Write-Host $text }
 function Stop-Install($text) {
@@ -73,9 +78,6 @@ function Stop-Install($text) {
     exit 1
 }
 
-# Runs a program, never throwing. ok = it started and exited 0. A program Windows refuses to start
-# throws from Start-Process (AppLocker: "blocked by group policy"); through cmd.exe the refusal is
-# cmd's own text and exit code instead. Both come back in `text`.
 # The file's SHA-256, lowercase. Get-FileHash first; certutil when it can't run (in a session where
 # Constrained Language Mode also covers Microsoft's own modules, Get-FileHash cannot make its hasher).
 function Get-Sha256($file) {
@@ -88,6 +90,29 @@ function Get-Sha256($file) {
     Stop-Install "cannot compute a SHA-256 here (Get-FileHash and certutil both failed) for $file."
 }
 
+# Who signed a file. Get-AuthenticodeSignature is a cmdlet, so it runs in Constrained Language Mode.
+# state: signed (a signature Windows accepts here), unsigned, or odd (a signature Windows does not accept
+# here, or one that could not be read; note says which). who: the signer certificate's subject.
+function Get-Signature($file) {
+    $r = @{ state = 'odd'; who = ''; note = 'the signature could not be read' }
+    try {
+        $sig = Get-AuthenticodeSignature -LiteralPath $file -ErrorAction Stop
+        if ($sig.SignerCertificate) { $r.who = "$($sig.SignerCertificate.Subject)" }
+        $status = "$($sig.Status)"
+        if ($status -eq 'Valid') {
+            $r.state = 'signed'
+        } elseif ($status -eq 'NotSigned') {
+            $r.state = 'unsigned'
+        } else {
+            $r.note = "Windows says $status"
+        }
+    } catch { }
+    return $r
+}
+
+# Runs a program, never throwing. ok = it started and exited 0. A program Windows refuses to start
+# throws from Start-Process (AppLocker: "blocked by group policy"); through cmd.exe the refusal is
+# cmd's own text and exit code instead. Both come back in `text`.
 function Invoke-Program($file, $arguments) {
     $tmp = Join-Path $env:TEMP ('phantab-run-' + (Get-Random))
     $result = @{ ok = $false; code = $null; text = '' }
@@ -123,9 +148,14 @@ function Get-Hashes {
             if ($parts.Count -eq 2 -and $parts[1] -like '*.exe') { $lines += "      $($parts[1])  SHA-256 $($parts[0])" }
         }
     }
+    $rule = 'A hash rule must be redone for each new version.'
+    if ($signer) {
+        $rule = "This build is signed by $signer. A publisher rule for that signer also covers later " +
+            'versions signed the same way; a hash rule must be redone for each new version.'
+    }
     return " The programs it runs, by SHA-256 hash:`n$($lines -join "`n")`n" +
-        '    unsigned-check.exe is only this test: where phantab.exe alone is allowed, run this again with -SkipCheck. ' +
-        'A hash rule must be redone for each new version.'
+        '    run-check.exe is only this test: where phantab.exe alone is allowed, run this again with -SkipCheck. ' +
+        $rule
 }
 
 # Smart App Control's state (0 off, 1 on, 2 evaluating), readable without admin. Its block reports the
@@ -165,8 +195,12 @@ function Get-Explanation($result, $exe) {
             'chrome://policy shows it, run this again (add -SkipCheck if it is set from the cloud).'
     }
     if ($t -match 'Smart App Control' -or ($t -match 'Application Control|4551|800711C7' -and (Test-SmartAppControlOn))) {
+        if ($signer) {
+            return "Smart App Control blocked it, although this build is signed by $signer. It has no " +
+                'per-app exception: turning Smart App Control off is the only way past it from this PC.'
+        }
         return 'Smart App Control blocked it. It has no per-app exception: only a signed build, or Smart App ' +
-            'Control turned off, gets past it.'
+            'Control turned off, gets past it. This build is not signed.'
     }
     if ($t -match 'Application Control|Device Guard|App Control|4551|800711C7') {
         return 'Windows Defender Application Control (WDAC / App Control for Business) blocked it.' + (Get-Hashes)
@@ -277,7 +311,7 @@ if ($Uninstall) {
 
 # ------------------------------------------------------------------------------------------------ install
 $bundled = Join-Path $here 'phantab.exe'
-$check = Join-Path $here 'unsigned-check.exe'
+$check = Join-Path $here 'run-check.exe'
 if (-not (Test-Path -LiteralPath $bundled)) { Stop-Install "run this from the unzipped bundle folder (no phantab.exe in $here)." }
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') {
     Say "Note: this PC is $($env:PROCESSOR_ARCHITECTURE); the bundle is x64 and runs under emulation on ARM64."
@@ -300,24 +334,41 @@ foreach ($line in Get-Content -LiteralPath $sums) {
     $count++
 }
 Say "  ok: $count files match SHA256SUMS.txt"
+# Who signed what runs. A release build is signed; one built by hand or for a test is not. This only
+# reports: docs/INSTALL-WINDOWS.md names the signer a release must show.
+foreach ($name in 'phantab.exe', 'run-check.exe', 'install.ps1') {
+    $file = Join-Path $here $name
+    if (-not (Test-Path -LiteralPath $file)) { continue }
+    $signature = Get-Signature $file
+    if ($signature.state -eq 'signed') {
+        Say "  ${name}: signed by $($signature.who)"
+        if ($name -eq 'phantab.exe') { $signer = $signature.who }
+    } elseif ($signature.state -eq 'unsigned') {
+        Say "  ${name}: not signed"
+    } else {
+        $by = ''
+        if ($signature.who) { $by = "; signer '$($signature.who)'" }
+        Say "  ${name}: its signature is not accepted here ($($signature.note))$by"
+    }
+}
 
 # How Chrome will start phantab: directly under the NativeHostsExecutablesLaunchDirectly policy, else
 # through cmd.exe. The tests start it the same way, and expect each program's own output.
 $direct = Test-DirectLaunchPolicy
-$okCheck = 'unsigned-check: OK'
+$okCheck = 'run-check: OK'
 $okHelp = 'Usage: phantab install'
 if ($SkipCheck) {
     Say '[2/3] Skipped (-SkipCheck)'
 } else {
-    Say '[2/3] Testing that Windows lets an unsigned program run'
+    Say '[2/3] Testing that Windows lets this program run'
     if ($direct) { Say '  Chrome policy NativeHostsExecutablesLaunchDirectly is on: Chrome starts phantab without cmd.exe.' }
-    $why = Test-Runs 'unsigned-check.exe from this folder' $check '' $okCheck
+    $why = Test-Runs 'run-check.exe from this folder' $check '' $okCheck
     if ($why) { Stop-Install $why }
     $probeDir = Join-Path $env:LOCALAPPDATA 'phantab-check'
     New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
-    $probe = Join-Path $probeDir 'unsigned-check.exe'
+    $probe = Join-Path $probeDir 'run-check.exe'
     Copy-Item -LiteralPath $check -Destination $probe -Force
-    $why = Test-Runs 'unsigned-check.exe from %LOCALAPPDATA%, started the way Chrome starts phantab' $probe '' $okCheck -ViaCmd:(-not $direct)
+    $why = Test-Runs 'run-check.exe from %LOCALAPPDATA%, started the way Chrome starts phantab' $probe '' $okCheck -ViaCmd:(-not $direct)
     Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
     if ($why) { Stop-Install $why }
     $why = Test-Runs 'phantab.exe itself' $bundled 'install --help' $okHelp
@@ -325,7 +376,7 @@ if ($SkipCheck) {
 }
 if ($CheckOnly) {
     Say ''
-    Say 'Check passed: unsigned programs run here. Nothing was installed.'
+    Say 'Check passed: Windows lets these programs run here. Nothing was installed.'
     exit 0
 }
 

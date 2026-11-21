@@ -42,7 +42,9 @@ command exits the moment the check ends, and the agent's harness wakes the agent
    `Host` the device sent.
 2. Forward the tailnet port to the listener:
    `tailscale serve --bg --http=8490 http://127.0.0.1:8491`
-3. Restart the service (restart the agent clients, or stop the `phantab` service process).
+3. Restart the service: stop the `phantab` service process, once its pages are drained (never close
+   Chrome). The next call from an agent client starts it again. Restarting the clients alone is not
+   enough: the service keeps running after they close.
 4. Check: the MCP `browser_status` result has `remoteViewer: {listening: true, url, identityChecked:
    true}`. A bad config shows `listening: false` with the reason, and the rest of Phantab runs as usual.
 5. From a device on the tailnet, `http://mypc:8490/view` shows "Nothing is waiting for you."

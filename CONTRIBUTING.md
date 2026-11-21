@@ -19,7 +19,9 @@ issue: `SECURITY.md`.
 - Every behaviour change comes with a test in the lane that can see it (`docs/TESTING.md`).
 - The extension is TypeScript, `strict`. `npm run check` (tsc) and `npm test` are clean.
 - Releases are pinned and reproducible: `--locked`, the toolchain from `rust-toolchain.toml`, and the
-  extension built from `package-lock.json`.
+  extension built from `package-lock.json`. What is reproducible is the unsigned build. A signed
+  Windows file is not: its signature holds a timestamp and a certificate that change with every run.
+  Its `build-info.txt` names the bytes a rebuild gives (`unsigned_sha256`).
 - Comments say why, not what. Record a trap where the next person would fall into it.
 
 ## Building
@@ -74,7 +76,24 @@ Windows and macOS runners (`scripts/release.sh --extension <tag>`, then the plat
 and its test) and puts them in the tag's draft release (`scripts/release.sh upload <tag>`). A
 maintainer publishes the draft. A PR that touches the release scripts runs the same builds as test
 builds. The same steps also run by hand: `release.sh --extension <tag>` and the bundle script on a
-Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` on each.
+Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` on each. A build made
+by hand is not signed.
+
+- Signing (Windows, in the workflow only): a `v*` tag's Windows build runs in the job `build-signed`,
+  which signs `phantab.exe`, `run-check.exe` and `install.ps1` with Azure Artifact Signing between
+  `release.sh` and the bundle. `scripts/sign-windows.sh stage <tag>` puts the three in `dist/.sign/`,
+  the signing action signs them there, and `scripts/sign-windows.sh seal <tag>` refuses to go on
+  unless each carries a valid, timestamped signature by the signer in the variable `SIGNING_SUBJECT`;
+  then the signed program replaces the unsigned one and `build-info-windows-x64.txt` gains `signed=1`,
+  the signer, the signed files and `unsigned_sha256`. The draft job refuses a tag whose Windows half
+  is not signed. The account's ids are variables of the GitHub environment `release-signing`
+  (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `SIGNING_ENDPOINT`, `SIGNING_ACCOUNT`,
+  `SIGNING_PROFILE`, `SIGNING_SUBJECT`); none is a secret, and no key or password is stored. That
+  environment allows `v*` tags only, and the signing account trusts no other environment: both are
+  part of who can sign (`docs/THREAT-MODEL.md` SR-56), so change neither casually.
+- To try signing without a release: add the branch to the environment's allowed refs, start the
+  workflow by hand on it with `sign` on, then take the branch off again. The result is a signed test
+  build (`v0.0.0-ci`), kept as a workflow artifact; `upload` refuses it.
 
 - Windows bundle (one zip a Windows user installs from with no Rust, Node or repo access,
   `docs/INSTALL-WINDOWS.md`): after `scripts/release.sh [--build-only] --extension <tag>` on Windows,
@@ -99,6 +118,20 @@ Windows x64 machine and on an Apple silicon Mac, then `release.sh upload <tag>` 
 - That path gate runs only in the release build, not in `scripts/check.sh`, and it refuses any
   `\Users\`, `/Users/` or `/home/` in the binary: a tool description or message gives no example path
   under a home folder.
+- Never run the path gate on a signed file. A signature holds the signer's name, and the gate refuses
+  a file that holds the build machine's user name, so where the two share a word it fails a correct
+  build. The gate runs on the unsigned bytes (`release.sh`, and `build_run_check` in
+  `scripts/windows-bundle/common.sh`); `sign-windows.sh seal` and `release.sh upload` do not repeat it.
+- Signing changes a file's bytes, so anything that hashes a Windows release file must come after
+  `sign-windows.sh seal`: the `.sha256`, the bundle's `SHA256SUMS.txt`, the zip's hash. `seal` and
+  `bundle-windows.sh` refuse a `dist/.sign/` that was staged for another tag or another build.
+- `release.yml` shares the build steps between its two build jobs with a YAML anchor (`&build_steps`,
+  `*build_steps`). GitHub's own runner accepts anchors; an older GitHub Enterprise Server or a local
+  workflow runner may not. A job's `permissions` and `environment` take no expression, which is why
+  signing is a job of its own and not a condition on `build`.
+- To check an action's pin against its release: `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` can
+  answer with an annotated tag object, not the commit. When its `object.type` is `tag`, read
+  `gh api repos/<owner>/<repo>/git/tags/<that sha>` for the commit.
 - GNU Windows builds fail with "error calling dlltool 'dlltool.exe': program not found" until WinLibs'
   `mingw64/bin` is on PATH (`scripts/dev-env.sh`).
 - Branded Chrome 137+ ignores `--load-extension`. Use Chrome for Testing, or load the extension through

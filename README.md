@@ -135,8 +135,9 @@ No Rust or Node needed, no admin rights; everything stays in your user folder.
    Windows, `~/Library/Application Support/phantab/extension` on macOS).
 4. Restart your agent and ask it to *open example.com with phantab and read the title*.
 
-Step-by-step guides, including what the install says when Windows or macOS blocks an unsigned
-program: `docs/INSTALL-WINDOWS.md` (Windows) and `docs/INSTALL-MAC.md` (macOS).
+Step-by-step guides, including who signs the Windows release (from 0.7.0; the macOS build is not
+signed) and what the install says when Windows or macOS blocks a program: `docs/INSTALL-WINDOWS.md`
+(Windows) and `docs/INSTALL-MAC.md` (macOS).
 
 ## Install from source
 ```

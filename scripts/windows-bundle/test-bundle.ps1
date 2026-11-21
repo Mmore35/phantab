@@ -89,9 +89,39 @@ try {
     }
     $odd = @($info | Where-Object { $_ -notmatch '^[A-Za-z][A-Za-z0-9_. -]*=' -or $_ -match '[\\/]' })
     Check ($odd.Count -eq 0) "build-info.txt is key=value lines with no path in them ($($odd -join ' | '))"
+    # Not the signer line: it holds the publisher's name on purpose, and where that name and this user's
+    # share a word the check would fail a correct bundle. It is checked against the signatures below.
     $names = @($env:USERNAME, $env:COMPUTERNAME) | Where-Object { $_ -and $_.Length -ge 3 }
-    $named = @($names | Where-Object { ($info -join "`n") -match "(?i)\b$([regex]::Escape($_))\b" })
+    $unnamed = @($info | Where-Object { $_ -notmatch '^signer=' }) -join "`n"
+    $named = @($names | Where-Object { $unnamed -match "(?i)\b$([regex]::Escape($_))\b" })
     Check ($named.Count -eq 0) "build-info.txt names neither this user nor this machine"
+
+    # Signed or not: build-info.txt says which files scripts/sign-windows.sh sealed, and the two programs
+    # and the script must each agree with it. A signed file must carry a signature Windows accepts, by the
+    # signer build-info.txt names, with a timestamp; any other must carry none.
+    function Info-Value($key) {
+        @($info | Where-Object { $_ -match "^$key=" } | ForEach-Object { $_ -replace "^$key=", '' }) | Select-Object -First 1
+    }
+    $signer = "$(Info-Value 'signer')"
+    $signedFiles = @("$(Info-Value 'signed_files')" -split ' ' | Where-Object { $_ })
+    if ("$(Info-Value 'signed')" -eq '1') {
+        Write-Host "--- a signed build, by $signer"
+        Check ($signer -and ($signedFiles -contains 'phantab.exe') -and ($signedFiles -contains 'run-check.exe')) 'build-info.txt names the signer, and phantab.exe and run-check.exe among the signed files'
+        Check ("$(Info-Value 'unsigned_sha256')" -match '^[0-9a-f]{64}$') "build-info.txt records the program's hash before signing"
+    } else {
+        Write-Host '--- an unsigned build'
+        Check (-not $signer -and $signedFiles.Count -eq 0) 'build-info.txt of an unsigned build names no signer'
+    }
+    foreach ($f in 'phantab.exe', 'run-check.exe', 'install.ps1') {
+        $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $folder.FullName $f)
+        if ($signedFiles -contains $f) {
+            $subject = ''
+            if ($sig.SignerCertificate) { $subject = $sig.SignerCertificate.Subject }
+            Check ("$($sig.Status)" -eq 'Valid' -and $subject -ceq $signer -and $sig.TimeStamperCertificate) "$f is signed by the signer build-info.txt names, with a timestamp ($($sig.Status), '$subject')"
+        } else {
+            Check ("$($sig.Status)" -eq 'NotSigned') "$f is not signed, as build-info.txt says ($($sig.Status))"
+        }
+    }
 
     # A fake Chrome user-data dir: two profiles, the last-used one not "Default", so the test sees
     # install.ps1 pick Chrome's last-used profile rather than a fixed name.
@@ -140,8 +170,14 @@ try {
     Check ("$mode" -eq 'ConstrainedLanguage') "install.ps1 runs in Constrained Language Mode ($mode)"
 
     Write-Host '--- install.ps1 -CheckOnly'
-    Invoke-Clm $script '-CheckOnly'
+    $said = Invoke-Clm $script '-CheckOnly' *>&1 | Out-String
+    Write-Host $said
     Check ($LASTEXITCODE -eq 0) 'install.ps1 -CheckOnly exits 0'
+    # What install.ps1 says about each file must be what the signatures are.
+    foreach ($f in 'phantab.exe', 'run-check.exe', 'install.ps1') {
+        if ($signedFiles -contains $f) { $line = "${f}: signed by $signer" } else { $line = "${f}: not signed" }
+        Check ($said -match "(?m)^\s*$([regex]::Escape($line))\s*$") "install.ps1 reports '$line'"
+    }
     Check (-not (Test-Path $runtime)) '-CheckOnly installs nothing'
 
     Write-Host '--- install.ps1'
@@ -151,7 +187,7 @@ try {
     Check ($said -notmatch 'Guest Profile|System Profile') "only Local State's profiles are offered"
     Check ((Hash-Of $bin) -eq (Hash-Of (Join-Path $folder.FullName 'phantab.exe'))) 'the installed binary is the bundled one'
     Check (Test-Path (Join-Path $runtime 'extension\manifest.json')) 'the extension is installed'
-    Check (-not (Test-Path (Join-Path $local 'phantab-check'))) 'the unsigned-check copy is cleaned up'
+    Check (-not (Test-Path (Join-Path $local 'phantab-check'))) 'the run-check copy is cleaned up'
     $hostValue = $null
     if (Test-Path "HKCU:\$scratchRoot\NativeMessagingHosts\dev.phantab.bridge") {
         $hostValue = (Get-Item "HKCU:\$scratchRoot\NativeMessagingHosts\dev.phantab.bridge").GetValue('')

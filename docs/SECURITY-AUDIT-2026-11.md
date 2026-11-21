@@ -83,13 +83,15 @@ drive or a USB stick, can change the hash file beside it too. That person's chec
 changed program, which would run with their signed-in browser.
 
 **How likely.** Low when you download from GitHub yourself, over a protected connection. Higher for
-someone who gets the zip from a shared place. The build is unsigned, so this one
-comparison is the only anchor there is.
+someone who gets the zip from a shared place. The build was unsigned then, so this one
+comparison was the only anchor there was.
 
 **Fix.** The guides now say: compare with the `sha256:` value GitHub lists beside each file on the
 release page, or with a value the releaser sends you in a message of its own. Never with a file that
 came with the zip. The no-script install path now says the same, since it skips the installer's own
-check. Code signing would remove the problem at its root. That is open decision 5.
+check. Code signing would remove the problem at its root. That was open decision 5; from 0.7.0 the
+Windows programs and install script are signed, and the comparison stays, because the signature does
+not cover the zip or the extension folder.
 
 ### 2. A page could put its own words into a message every agent reads (low, fixed)
 
@@ -388,6 +390,14 @@ decisions, and comments on them are welcome in an issue.
    and would close finding 1 at its root. It costs money and a yearly renewal. For a team rollout this is the main practical
    hurdle. A cheaper
    half step: build the extension's hashes into the program, so one allowed hash vouches for both.
+   Settled for Windows in 0.7.0: a release's `phantab.exe`, `run-check.exe` and `install.ps1` are
+   signed in the release workflow with Azure Artifact Signing, each with a timestamp, and the build
+   refuses to go on unless all three carry a valid signature by the expected signer. The workflow
+   signs in with a short-lived GitHub identity token, so no key or password is stored, and only the
+   job a `v*` tag starts may ask for one (`docs/THREAT-MODEL.md` SR-56). A policy can now allow the
+   signer once. What it leaves: the signature covers those three files, not the zip or the extension
+   folder, so finding 1's hash comparison stays, and the half step above is not done. The macOS build
+   is still unsigned. `docs/INSTALL-WINDOWS.md` § 1 names the signer and says how to check it.
 6. **Refuse an older version on install.** It would stop someone talking a user into an old build
    with a known hole. It would also block a wanted rollback unless a flag allows it.
 7. **Tighten two user-set paths.** Refuse a `.cmd` or a network path as the password program, and

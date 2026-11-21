@@ -177,6 +177,7 @@ Columns: the threat, the requirement that answers it (§ Requirements), and the 
 | T84 | A `cargo test` build of phantab, with the `test-seams` overrides compiled in, is installed or released as the real one. | SR-73 | L1 (`tests/install.rs`, `scripts/check.sh`, `scripts/release.sh`) |
 | T85 | An npm package runs an install script on a build machine, or a compromised dev package (the TypeScript compiler, which writes the shipped JS) is never audited. | SR-56 | L1 (`scripts/check.sh`, `scripts/release.sh`) |
 | T89 | An action the release workflow runs is changed under its tag (`@v4` moved to other code), and the changed code builds or uploads the release. | SR-56 | L1 (`tests/install.rs`) |
+| T100 | A build that is not a release (a pull request that changes the workflow or a script, a manual run of a branch) gets its files signed as the release's signer, so Windows and a publisher rule take a changed program for the real one. | SR-56 | L1 (`tests/install.rs`); the environment's rules and the signing account's trust, which are settings outside the repository |
 
 ### Window control (part of A7)
 
@@ -1470,9 +1471,18 @@ they apply; these are its own.
   --audit-level=high`, dev packages included, fails the release: every package is a dev one, and the
   TypeScript compiler writes the shipped JS. The release workflow names every action it runs by full
   commit, never by a tag that can be moved (`tests/install.rs`,
-  `workflows_name_every_action_by_its_commit`). *L1 (`scripts/release.sh`, which refuses to build; also
+  `workflows_name_every_action_by_its_commit`). The Windows release is signed in that workflow, with
+  Azure Artifact Signing, through two more actions named the same way; no signing key or password is
+  stored anywhere. Who can sign: only the job `build-signed` may ask GitHub for an identity token, and
+  only in the environment `release-signing` (`tests/install.rs`,
+  `only_the_signing_job_may_ask_for_an_identity_token`). The signing account trusts a token only when
+  it names this repository and that environment, and the environment's own rules allow `v*` tags
+  only, so a pull request or a branch cannot get a file signed, whatever it changes in the workflow.
+  After signing, the build goes on only if every signed file carries a valid signature by the
+  expected signer, with a timestamp (`scripts/sign-windows.sh seal`), and a tag's draft release
+  refuses a Windows half that is not signed. *L1 (`scripts/release.sh`, which refuses to build; also
   `scripts/check.sh`).*
-  phantab status: `scripts/release.sh` refuses to build while either audit fails or cargo-audit is not installed, and `scripts/check.sh` runs both (a missing cargo-audit is a skip there, reported INCOMPLETE, exit 2). Both are run by hand; nothing runs them by itself. Both pass (cargo-audit 0.22.2), cargo-audit with one exception in `.cargo/audit.toml`: RUSTSEC-2026-0543 (chrono is unmaintained), for the reason SR-55 gives; review by 2027-02-17. `release.sh` also refuses build settings from outside the repo (`RUSTFLAGS`, `CARGO_PROFILE_RELEASE_*`, a `[build]` or `[profile]` in a cargo config) and records `rustc -vV` and the linker's version in its build-info.
+  phantab status: `scripts/release.sh` refuses to build while either audit fails or cargo-audit is not installed, and `scripts/check.sh` runs both (a missing cargo-audit is a skip there, reported INCOMPLETE, exit 2). Both are run by hand; nothing runs them by itself. Both pass (cargo-audit 0.22.2), cargo-audit with one exception in `.cargo/audit.toml`: RUSTSEC-2026-0543 (chrono is unmaintained), for the reason SR-55 gives; review by 2027-02-17. `release.sh` also refuses build settings from outside the repo (`RUSTFLAGS`, `CARGO_PROFILE_RELEASE_*`, a `[build]` or `[profile]` in a cargo config) and records `rustc -vV` and the linker's version in its build-info. Signing: the two rules that decide who can sign (the account's trust in the environment `release-signing`, and that environment allowing `v*` tags only) are set in Azure and in the repository's GitHub settings, not in a file here, so no test in this repository can see them; a change to either is a change to who can sign. A build made by hand is never signed. The macOS build is not signed.
 - **SR-57** The shipped extension holds only first-party compiled code and the manifest: no
   third-party runtime package. *L1: `dist/` file list and import check.*
 - **SR-58** `unsafe` appears only in `phantab-window`'s OS modules, each block with `// SAFETY:`;

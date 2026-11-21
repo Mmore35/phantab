@@ -1038,6 +1038,74 @@ fn workflows_name_every_action_by_its_commit() {
     assert!(seen > 0, "no workflow uses an action; has the folder moved?");
 }
 
+/// SR-56, L1: only the release workflow's signing job may ask GitHub for an identity token, and it runs in
+/// the environment whose rules say which refs may sign. The token is what the signing account trusts, so
+/// a token in any other job, or the signing job outside that environment, would let a build that is not
+/// a release be signed as the publisher. The signing steps themselves run only where that job turns
+/// them on.
+#[test]
+fn only_the_signing_job_may_ask_for_an_identity_token() {
+    const JOB: &str = "build-signed";
+    let folder = repo().join(".github").join("workflows");
+    let (mut tokens, mut environments, mut switches, mut azure) = (0, 0, 0, 0);
+    for entry in std::fs::read_dir(&folder).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        // A job is a key two spaces in, after `jobs:`. Before that line the file's own settings stand.
+        let (mut in_jobs, mut job) = (false, "");
+        for (number, raw) in lines.iter().enumerate() {
+            let line = raw.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if *raw == "jobs:" {
+                in_jobs = true;
+                continue;
+            }
+            if let Some(name) = raw.strip_prefix("  ").filter(|rest| in_jobs && !rest.starts_with(' ')) {
+                job = name.trim_end_matches(':');
+            }
+            let at = format!("{}:{} (job '{job}'): {line}", path.display(), number + 1);
+            let signing = in_jobs && job == JOB && path.file_name().is_some_and(|name| name == "release.yml");
+            if line.contains("id-token") {
+                assert!(
+                    signing && line == "id-token: write",
+                    "an identity token outside the signing job: {at}"
+                );
+                tokens += 1;
+            }
+            if line.starts_with("environment:") {
+                assert!(
+                    signing && line == "environment: release-signing",
+                    "not the signing environment: {at}"
+                );
+                environments += 1;
+            }
+            if line.starts_with("SIGN:") {
+                assert!(signing, "the signing steps are turned on outside the signing job: {at}");
+                switches += 1;
+            }
+            // A step that signs in to Azure or signs runs only where the signing job's switch is on.
+            if line.starts_with("- uses: azure/") {
+                assert_eq!(
+                    lines.get(number + 1).map(|next| next.trim()),
+                    Some("if: env.SIGN == '1'"),
+                    "{at}"
+                );
+                azure += 1;
+            }
+            assert!(in_jobs || !line.contains("write"), "a write permission for every job: {at}");
+        }
+    }
+    assert_eq!(
+        (tokens, environments, switches),
+        (1, 1, 1),
+        "the signing job's token, environment and switch"
+    );
+    assert_eq!(azure, 2, "the sign-in and the signing step");
+}
+
 /// A program's trimmed stdout, when it runs and exits 0.
 fn stdout_of(program: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program).args(args).output().ok()?;

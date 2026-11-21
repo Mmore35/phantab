@@ -3,6 +3,34 @@
 What changed in each release. Numbers in brackets are pull requests. Releases are on the repository's
 Releases page; `CONTRIBUTING.md` says how one is made.
 
+## 0.7.0 (not yet released)
+The Windows release is signed.
+
+### Added
+- A release's Windows programs and install script carry a digital signature: `phantab.exe`,
+  `run-check.exe` and `install.ps1`, each with a timestamp. `docs/INSTALL-WINDOWS.md` § 1 names the
+  signer and says how to check it. A policy that decides which programs may run can allow the signer
+  once, for later versions too. The signature does not cover the zip or the extension folder, so the
+  hash comparison in the guide stays, and Windows may still warn about a newly released file. The
+  macOS build, and any build made by hand or from source, is not signed.
+- `install.ps1` says in its first step, for each of the three files, whether it is signed and by
+  whom, or that Windows does not accept its signature. Its explanations of a blocked run name the
+  signer when there is one.
+- `scripts/sign-windows.sh` (`stage`, `seal`) and the release workflow's signing job: the workflow
+  signs with Azure Artifact Signing, signing in with a short-lived GitHub identity token, so no key or
+  password is stored. The build stops unless every signed file carries a valid signature by the
+  expected signer, and a tag's draft release refuses a Windows half that is not signed
+  (`CONTRIBUTING.md` § Releases, `docs/THREAT-MODEL.md` SR-56 and T100).
+- `build-info.txt` of a signed build records `signed=1`, the signer, the signed files and
+  `unsigned_sha256`, the program's hash before signing, which is the one a rebuild from the same
+  commit gives.
+
+### Changed
+- The bundle's test program is `run-check.exe` (it was `unsigned-check.exe`) and prints
+  `run-check: OK`. `install.ps1`'s second step is "Testing that Windows lets this program run".
+- `docs/REMOTE.md` said restarting the agent clients restarts the service. It does not: the service
+  keeps running after they close. Stop the service process; the next client call starts it again.
+
 ## 0.6.1 (2026-11-17)
 An install flag for the developer tools, and one Windows install guide.
 

@@ -22,12 +22,27 @@ install checks after this rests on this one comparison. If the zip came from som
 drive, do the comparison yourself.
 Then right-click → **Extract All**, anywhere in your user folder (Downloads is fine).
 
+**Who signed it.** From 0.7.0 on, a release's `phantab.exe`, `run-check.exe` and `install.ps1` each
+carry a digital signature. The signer is `PUBLISHER-NAME-PENDING`. To see it before you run anything,
+in the extracted `phantab-windows-x64` folder:
+`Get-AuthenticodeSignature .\phantab.exe, .\run-check.exe, .\install.ps1 | Format-List Path, Status, SignerCertificate`
+Each `Status` must be `Valid` and each certificate's `Subject` must name that signer. (Or right-click
+the file → **Properties** → **Digital Signatures**.) The install script prints the same in its first
+step. A version before 0.7.0, and a build made from source, is not signed, and the script says so.
+
+The signature covers those three files. It does not cover the extension folder or the zip, so it adds
+to the hash comparison above and does not replace it. Windows or your browser may still warn about the
+download, signed or not: those warnings also go by how many people have already downloaded the same
+file, and each release is a new file.
+
 ## 2. Check first (optional)
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -CheckOnly`, run in the extracted
-`phantab-windows-x64` folder, checks every file's hash and that Windows lets an unsigned program run
-from there and from `%LOCALAPPDATA%` the way Chrome starts phantab, installs nothing, and on a refusal
-says what blocked the run and prints the SHA-256 hashes of `phantab.exe` and `unsigned-check.exe`
-(`-SkipCheck` on the install skips the test program).
+`phantab-windows-x64` folder, checks every file's hash, says who signed the programs and the script,
+and tests that Windows lets a program run from there and from `%LOCALAPPDATA%` the way Chrome starts
+phantab. It installs nothing, and on a refusal says what blocked the run and prints the SHA-256 hashes
+of `phantab.exe` and `run-check.exe` (`-SkipCheck` on the install skips the test program). Where a
+policy decides which programs may run, a signed release lets it allow the signer once, for later
+versions too; an unsigned build needs each version's hashes allowed.
 
 ## 3. Install: three steps
 1. Open PowerShell in the extracted `phantab-windows-x64` folder (type `powershell` in Explorer's
@@ -39,9 +54,13 @@ says what blocked the run and prints the SHA-256 hashes of `phantab.exe` and `un
    `%LOCALAPPDATA%\phantab\extension` (paste it into the folder box).
 3. Quit and reopen Claude Code. Ask it to *open example.com with phantab and read the title*.
 
-**No-script install**, when PowerShell refuses scripts (`running scripts is disabled` or `is not
-digitally signed`). This path skips the script's check of every file, so the zip's hash in step 1 is
-the only check: do not skip it. Run in the folder (the `Set-Content` line only if
+If PowerShell asks `Do you want to run software from this untrusted publisher?`, the PC's policy wants
+signed scripts and has not seen this signer before: check the name is the one in § 1, then choose
+**Run once**.
+
+**No-script install**, when PowerShell refuses scripts (`running scripts is disabled`, or `is not
+digitally signed` for a build that is not signed). This path skips the script's check of every file,
+so the zip's hash in § 1 is the only check of the whole zip: do not skip it. Run in the folder (the `Set-Content` line only if
 `%USERPROFILE%\.claude.json` doesn't exist yet). The profile is a folder name in
 `%LOCALAPPDATA%\Google\Chrome\User Data`: `Default`, `Profile 1`, …
 ```

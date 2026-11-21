@@ -7,6 +7,17 @@
 # A pull request that changes the release scripts, or a manual run, does the same builds as --build-only
 # test builds and keeps them as workflow artifacts; it never makes a release.
 #
+# Signing. A v* tag's Windows build is signed with Azure Artifact Signing: phantab.exe, run-check.exe and
+# install.ps1, between release.sh and the bundle (scripts/sign-windows.sh says why there). So is a manual
+# run started with the `sign` input, which is still a test build. Those runs build Windows in the job
+# build-signed, the only job that may ask GitHub for an identity token (id-token: write) and that uses
+# the environment release-signing; the environment's own rules say which branches and tags may use it.
+# The job signs in to Azure with that token (OpenID Connect): no password or key is stored here, and the
+# account's ids are plain variables (vars.*). Pull-request builds and manual runs without `sign` never
+# reach that job and stay unsigned. It is a job of its own because a job's permissions cannot be an
+# expression, so one job could not hold id-token: write on signing runs only. `tests/install.rs` fails
+# when any other job asks for the token or names an environment (THREAT-MODEL SR-56, T100).
+#
 # Every action is named by its full commit, with the release it is in a comment (THREAT-MODEL SR-56): a
 # tag such as @v4 can be moved to other code, and these jobs build what users install. To take a newer
 # release, change the commit and the comment together; `tests/install.rs` refuses anything else.
@@ -27,27 +38,30 @@ on:
       - "Cargo.lock"
       - "extension/package-lock.json"
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign the Windows test build (needs the release-signing environment to allow this ref)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  # The unsigned builds: both platforms, except on a signing run, where build-signed builds Windows.
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2025
-            platform: windows-x64
-          - os: macos-15
-            platform: macos-arm64
+        include: ${{ fromJSON(((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || inputs.sign) && '[{"os":"macos-15","platform":"macos-arm64"}]' || '[{"os":"windows-2025","platform":"windows-x64"},{"os":"macos-15","platform":"macos-arm64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
-    steps:
+    # build-signed runs these same steps (the alias below). The four signing steps run only there.
+    steps: &build_steps
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -92,6 +106,38 @@ jobs:
           fi
       - name: release.sh
         run: scripts/release.sh $BUILD_ONLY --extension "$TAG"
+      # Signing: only in build-signed, which sets SIGN. stage puts the files to sign in dist/.sign/, the
+      # action signs every .exe and .ps1 there in place, and seal refuses anything not signed by
+      # vars.SIGNING_SUBJECT with a timestamp before the signed program replaces the unsigned one.
+      - name: stage the files to sign
+        if: env.SIGN == '1'
+        env:
+          # "0" ships install.ps1 unsigned, with phantab.exe and run-check.exe still signed.
+          PHANTAB_SIGN_SCRIPT: "1"
+        run: scripts/sign-windows.sh stage "$TAG"
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        if: env.SIGN == '1'
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # The signing certificates last three days, so every signature carries a timestamp.
+      - uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        if: env.SIGN == '1'
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\.sign
+          files-folder-filter: exe,ps1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: seal the signed files
+        if: env.SIGN == '1'
+        env:
+          PHANTAB_SIGNER: ${{ vars.SIGNING_SUBJECT }}
+        run: scripts/sign-windows.sh seal "$TAG"
       - name: bundle (and its install test)
         run: |
           if [ "$RUNNER_OS" = Windows ]; then scripts/bundle-windows.sh "$TAG"; else scripts/bundle-macos.sh "$TAG"; fi
@@ -102,9 +148,32 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The Windows build that gets signed: a v* tag, or a manual run with `sign`. The same steps as build,
+  # with the signing steps on, an identity token to sign in to Azure with, and the environment whose
+  # rules decide which refs may sign.
+  build-signed:
+    if: (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || inputs.sign
+    strategy:
+      matrix:
+        include:
+          - os: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SIGN: "1"
+    defaults:
+      run:
+        shell: bash
+    steps: *build_steps
+
   draft:
     if: github.ref_type == 'tag'
-    needs: build
+    needs: [build, build-signed]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -127,6 +196,9 @@ jobs:
             [ -e "dist/$GITHUB_REF_NAME/${f##*/}" ] || cp "$f" "dist/$GITHUB_REF_NAME/"
           done
           ls -l "dist/$GITHUB_REF_NAME"
+          # A release's Windows half comes from build-signed, sealed: never an unsigned one.
+          grep -qx 'signed=1' "dist/$GITHUB_REF_NAME/build-info-windows-x64.txt" ||
+            { echo "the Windows build is not signed (no signed=1 in its build-info)"; exit 1; }
       - name: release.sh upload (a draft only)
         env:
           GH_TOKEN: ${{ github.token }}

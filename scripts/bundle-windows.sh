@@ -10,27 +10,32 @@
 # it in the draft too). The zip holds one folder, phantab-windows-x64/:
 #   phantab.exe          release.sh's binary, checked against its .sha256
 #   extension/           the unpacked extension Chrome loads; it must zip to release.sh's extension.zip
-#   install.ps1          user-level install, uninstall and the unsigned-program check (no admin)
-#   unsigned-check.exe   a harmless unsigned test program (scripts/windows-bundle/unsigned-check.rs)
+#   install.ps1          user-level install, uninstall and the can-it-run check (no admin)
+#   run-check.exe        a harmless test program (scripts/windows-bundle/run-check.rs)
 #   INSTALL-WINDOWS.md   the quickstart
 #   LICENSE, NOTICE      phantab's licence and notice, from the repo root (the bundle refuses without them)
 #   THIRD-PARTY-LICENSES the licences of the crates linked into phantab.exe (scripts/third-party-licenses.mjs)
 #   build-info.txt       release.sh's build-info for the binary: version, commit, toolchain, lockfile
-#                        hashes; no path, user or host name
+#                        hashes, and for a signed build its signer; no path, user or host name
 #   SHA256SUMS.txt       every file's hash; install.ps1 checks them first
 # Then it runs scripts/windows-bundle/test-bundle.ps1 on the zip (an install and uninstall into a
 # throwaway user folder that never touches this machine's own phantab), unless --no-test.
+#
+# A build that scripts/sign-windows.sh signed and sealed (its build-info says signed=1) is bundled from
+# the signed files in dist/.sign/, after their signatures are checked again; any other build is unsigned
+# and bundled as it always was. Nothing here signs.
 set -euo pipefail
 
 die() { echo "bundle-windows.sh: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/dev-env.sh
+. scripts/windows-bundle/common.sh
 
 test=1 tag=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-test) test=0 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) [ -z "$tag" ] || die "one tag only"; tag="$1" ;;
   esac
@@ -47,20 +52,10 @@ exe="$out/phantab-windows-x64.exe"
 for f in "$exe" "$exe.sha256" "$out/extension.zip" "$out/extension.zip.sha256" "$out/build-info-windows-x64.txt"; do
   [ -f "$f" ] || die "no $f: run scripts/release.sh --extension $tag (add --build-only for a test build) first"
 done
-sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
 [ "$(sha256_of "$exe")" = "$(cut -d' ' -f1 "$exe.sha256")" ] || die "$exe does not match its .sha256"
 
-# install.ps1, INSTALL-WINDOWS.md and unsigned-check.rs come from this checkout, not from release.sh's
-# output, so a release bundle needs the checkout to be the commit release.sh built, unchanged. A
-# --build-only test build only warns: testing a script change before committing it is its use.
 info="$out/build-info-windows-x64.txt"
-built_sha="$(sed -n 's/^sha=//p' "$info")"
-built_only="$(sed -n 's/^build_only=//p' "$info")"
-if [ "$(git rev-parse HEAD)" != "$built_sha" ] || [ -n "$(git status --porcelain)" ]; then
-  [ "$built_only" = 1 ] ||
-    die "$tag was built from $built_sha; check that commit out, with no local changes, before bundling it"
-  echo "bundle-windows.sh: note: the scripts come from this checkout, not from $built_sha as built (a test build)" >&2
-fi
+require_built_checkout "$info" "$tag" bundle-windows.sh
 
 # The unpacked extension must be the very files of extension.zip: zip extension/dist the same
 # deterministic way and compare. A rebuild since release.sh ran (other sources) fails here.
@@ -71,27 +66,43 @@ node scripts/zip-deterministic.mjs extension/dist "$work/extension-check.zip" >/
 [ "$(sha256_of "$work/extension-check.zip")" = "$(cut -d' ' -f1 "$out/extension.zip.sha256")" ] ||
   die "extension/dist is not what $out/extension.zip holds; run release.sh --extension $tag again"
 
-# unsigned-check.exe: bare rustc, no crates, the release's target, the same path remap as release.sh so
-# the build names no local folder. Small and unsigned on purpose. --no-insert-timestamp: GNU ld writes the
-# link time into the PE header otherwise, so the bundle's hash would change on every run.
-echo "==> unsigned-check.exe"
-sysroot="$(rustc --print sysroot)"
-rustc --edition 2021 -C opt-level=s -C strip=symbols -C debuginfo=0 -C link-arg=-Wl,--no-insert-timestamp \
-  --target x86_64-pc-windows-gnu \
-  "--remap-path-prefix=$(cygpath -w "$HOME")=/user-home" "--remap-path-prefix=$(cygpath -w "$sysroot")=/rustup/toolchain" \
-  "--remap-path-prefix=$(cygpath -w "$(pwd)")=/phantab" \
-  -o "$work/unsigned-check.exe" scripts/windows-bundle/unsigned-check.rs
-MSYS2_ARG_CONV_EXCL='*' node scripts/path-gate.mjs "$(cygpath -w "$work/unsigned-check.exe")" \
-  --exact '\Users\' --exact /Users/ --exact /home/ --any-case "$(cygpath -w "$HOME")" ||
-  die "unsigned-check.exe names a local path"
+# Where install.ps1 and run-check.exe come from. An unsigned build: the checkout, and run-check.exe built
+# here. A signed build: the files sign-windows.sh staged and sealed, whose signatures are checked again
+# here, against the signer build-info records, because these are the bytes that ship.
+install_ps1=scripts/windows-bundle/install.ps1
+run_check="$work/run-check.exe"
+if [ "$(info_value "$info" signed)" = 1 ]; then
+  signer="$(info_value "$info" signer)"
+  signed_files="$(info_value "$info" signed_files)"
+  [ -n "$signer" ] && [ -n "$signed_files" ] || die "$info says signed=1 but names no signer or files"
+  [ "$(info_value "$sign_dir/staged.txt" tag 2>/dev/null)" = "$tag" ] ||
+    die "$tag is signed, but $sign_dir/ does not hold its signed files; build, sign and seal it again"
+  echo "==> a signed build: signatures in $sign_dir/, signer: $signer"
+  # shellcheck disable=SC2086 # the names are split on purpose
+  check_signatures "$sign_dir" "$signer" $signed_files || die "a signed file is not signed as $info says (above)"
+  [ "$(sha256_of "$sign_dir/phantab.exe")" = "$(sha256_of "$exe")" ] ||
+    die "$exe is not the signed program in $sign_dir/; build, sign and seal $tag again"
+  run_check="$sign_dir/run-check.exe"
+  case " $signed_files " in
+    *" install.ps1 "*)
+      install_ps1="$sign_dir/install.ps1"
+      # The signature is a comment block after the script's last line; above it the bytes are the checkout's.
+      cmp -s -n "$(wc -c <scripts/windows-bundle/install.ps1)" scripts/windows-bundle/install.ps1 "$install_ps1" ||
+        die "the signed install.ps1 does not start with this checkout's install.ps1"
+      ;;
+    *) echo "bundle-windows.sh: note: install.ps1 was not signed (PHANTAB_SIGN_SCRIPT=0 at stage); it ships unsigned" ;;
+  esac
+else
+  build_run_check "$run_check"
+fi
 
 echo "==> staging phantab-windows-x64/"
 stage="$work/zip/phantab-windows-x64"
 mkdir -p "$stage"
 cp "$exe" "$stage/phantab.exe"
 cp -R extension/dist "$stage/extension"
-cp scripts/windows-bundle/install.ps1 "$stage/install.ps1"
-cp "$work/unsigned-check.exe" "$stage/unsigned-check.exe"
+cp "$install_ps1" "$stage/install.ps1"
+cp "$run_check" "$stage/run-check.exe"
 cp docs/INSTALL-WINDOWS.md "$stage/INSTALL-WINDOWS.md"
 cp LICENSE "$stage/LICENSE"
 cp NOTICE "$stage/NOTICE"
