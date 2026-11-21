@@ -132,6 +132,11 @@ by hand is not signed.
 - To check an action's pin against its release: `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` can
   answer with an annotated tag object, not the commit. When its `object.type` is `tag`, read
   `gh api repos/<owner>/<repo>/git/tags/<that sha>` for the commit.
+- `win32::tests::a_failed_wait_hides_the_kept_windows` (crate `phantab-window`) fails now and then on
+  Windows, about one run of that crate's tests in fifteen, with `timed out waiting until the keeper
+  thread has ended`; alone it passes. The cause is not known: the test's timing, or the keeper not
+  ending after a failed wait. On a branch that does not touch `crates/phantab-window`, run the gate
+  again; `cargo test -p phantab-window --lib` in a loop shows it.
 - GNU Windows builds fail with "error calling dlltool 'dlltool.exe': program not found" until WinLibs'
   `mingw64/bin` is on PATH (`scripts/dev-env.sh`).
 - Branded Chrome 137+ ignores `--load-extension`. Use Chrome for Testing, or load the extension through
